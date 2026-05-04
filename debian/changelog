@@ -1,0 +1,5 @@
+lcs (1.0.0-1) unstable; urgency=medium
+
+  * Initial Debian package.
+
+ -- Petr Bena <petr@bena.rocks>  Sun, 03 May 2026 23:00:00 +0200

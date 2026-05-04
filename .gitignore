@@ -1,0 +1,30 @@
+# Build outputs
+/lcs
+/lcsd
+/o/
+/packaging/output/
+*.o
+*.a
+*.so
+
+# Debian package build outputs
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper.log
+/debian/*.postrm.debhelper
+/*.buildinfo
+/*.changes
+/*.deb
+/*.ddeb
+
+# Local runtime files
+*.sock
+*.pid
+core
+core.*
+
+# Editor / OS noise
+*~
+.DS_Store

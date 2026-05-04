@@ -1,0 +1,16 @@
+Source: lcs
+Section: admin
+Priority: optional
+Maintainer: Petr Bena <petr@bena.rocks>
+Build-Depends: debhelper-compat (= 12)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: lcs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, iproute2
+Description: Lightweight cluster service for quorum-managed VIPs
+ lcs is a small Linux cluster service for quorum voting and safe virtual
+ IP address ownership.
+ .
+ This package provides the lcs CLI, the lcsd daemon, and a systemd unit.

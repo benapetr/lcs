@@ -1,0 +1,23 @@
+[Unit]
+Description=Lightweight Cluster Service daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/lcsd --foreground --no-timestamp --config /etc/lcs/lcs.conf
+Restart=on-failure
+RestartSec=2s
+RuntimeDirectory=lcs
+RuntimeDirectoryMode=0755
+ConfigurationDirectory=lcs
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+# lcsd manages VIP addresses and sends ARP probes/announcements.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
