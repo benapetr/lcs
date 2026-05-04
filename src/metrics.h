@@ -6,6 +6,6 @@
 
 #include "daemon_state.h"
 
-void handle_metrics_client(int fd, const daemon_state_t *st);
+void lcs_metrics_handle_client(int fd, const daemon_state_t *st);
 
 #endif

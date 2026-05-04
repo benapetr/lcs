@@ -14,7 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 
-int encode_lease_msg(unsigned char *payload, size_t cap, size_t *len,
+int lease_encode_msg(unsigned char *payload, size_t cap, size_t *len,
                      uint16_t resource_id, uint16_t owner_node,
                      uint64_t epoch, uint64_t lease_id, uint32_t lease_ms,
                      uint64_t sender_instance_id)
@@ -32,7 +32,7 @@ int encode_lease_msg(unsigned char *payload, size_t cap, size_t *len,
     return 0;
 }
 
-int decode_lease_msg(const daemon_state_t *st, const void *payload, size_t len,
+int lease_decode_msg(const daemon_state_t *st, const void *payload, size_t len,
                      uint16_t *resource_id, uint16_t *owner_node,
                      uint64_t *epoch, uint64_t *lease_id, uint32_t *lease_ms,
                      uint64_t *sender_instance_id)
@@ -52,13 +52,13 @@ int decode_lease_msg(const daemon_state_t *st, const void *payload, size_t len,
     return 0;
 }
 
-int accept_lease_message(daemon_state_t *st, uint16_t type, const void *payload,
+int lease_accept_message(daemon_state_t *st, uint16_t type, const void *payload,
                          size_t len, int source_node_idx)
 {
     uint16_t resource_id, owner_node;
     uint64_t epoch, lease_id, sender_instance_id;
     uint32_t lease_ms;
-    if (decode_lease_msg(st, payload, len, &resource_id, &owner_node, &epoch,
+    if (lease_decode_msg(st, payload, len, &resource_id, &owner_node, &epoch,
                          &lease_id, &lease_ms, &sender_instance_id) != 0)
     {
         lcs_log_debug("rejecting lease message type=%u from %s: invalid payload length=%zu",
@@ -183,7 +183,7 @@ int accept_lease_message(daemon_state_t *st, uint16_t type, const void *payload,
     return 0;
 }
 
-int send_peer_lease(daemon_state_t *st, int node_idx, uint16_t type,
+int lease_send_peer(daemon_state_t *st, int node_idx, uint16_t type,
                     int vip_idx, int owner_idx, uint64_t epoch, uint64_t lease_id,
                     int epoll_fd)
 {
@@ -193,7 +193,7 @@ int send_peer_lease(daemon_state_t *st, int node_idx, uint16_t type,
     uint32_t resp_len = 0;
     int32_t status = -1;
     char _msg[128];
-    if (encode_lease_msg(req, sizeof(req), &req_len, (uint16_t)vip_idx,
+    if (lease_encode_msg(req, sizeof(req), &req_len, (uint16_t)vip_idx,
                          (uint16_t)owner_idx, epoch, lease_id, st->cfg.lease_ms,
                          st->instance_id) != 0 ||
         peer_rpc(st, epoll_fd, node_idx, type, req, (uint32_t)req_len, LCS_MSG_LEASE_ACK,
@@ -214,7 +214,7 @@ int send_peer_lease(daemon_state_t *st, int node_idx, uint16_t type,
     return status == 0 ? 0 : -1;
 }
 
-int acquire_majority_lease(daemon_state_t *st, int vip_idx, int owner_idx,
+int lease_acquire_majority(daemon_state_t *st, int vip_idx, int owner_idx,
                            uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     if (!has_quorum(st))
@@ -225,7 +225,7 @@ int acquire_majority_lease(daemon_state_t *st, int vip_idx, int owner_idx,
     {
         if ((int)i == st->self_index)
             continue;
-        if (send_peer_lease(st, (int)i, LCS_MSG_LEASE_REQ, vip_idx, owner_idx,
+        if (lease_send_peer(st, (int)i, LCS_MSG_LEASE_REQ, vip_idx, owner_idx,
                             epoch, lease_id, epoll_fd) == 0)
         {
             acked[i] = true;
@@ -263,31 +263,31 @@ int acquire_majority_lease(daemon_state_t *st, int vip_idx, int owner_idx,
     for (size_t i = 0; i < st->cfg.node_count; i++)
     {
         if (acked[i])
-            send_peer_lease(st, (int)i, LCS_MSG_LEASE_RELEASE, vip_idx, owner_idx,
+            lease_send_peer(st, (int)i, LCS_MSG_LEASE_RELEASE, vip_idx, owner_idx,
                             epoch, lease_id, epoll_fd);
     }
     return -1;
 }
 
-void release_majority_lease(daemon_state_t *st, int vip_idx, int owner_idx,
+void lease_release_majority(daemon_state_t *st, int vip_idx, int owner_idx,
                              uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     for (size_t i = 0; i < st->cfg.node_count; i++)
     {
         if ((int)i == st->self_index)
             continue;
-        send_peer_lease(st, (int)i, LCS_MSG_LEASE_RELEASE, vip_idx, owner_idx,
+        lease_send_peer(st, (int)i, LCS_MSG_LEASE_RELEASE, vip_idx, owner_idx,
                         epoch, lease_id, epoll_fd);
     }
 }
 
-int handle_owner_release_request(daemon_state_t *st, const void *payload, size_t len,
+int lease_handle_owner_release_request(daemon_state_t *st, const void *payload, size_t len,
                                  int source_node_idx)
 {
     uint16_t resource_id, owner_node;
     uint64_t epoch, lease_id, sender_instance_id;
     uint32_t lease_ms;
-    if (decode_lease_msg(st, payload, len, &resource_id, &owner_node, &epoch,
+    if (lease_decode_msg(st, payload, len, &resource_id, &owner_node, &epoch,
                          &lease_id, &lease_ms, &sender_instance_id) != 0)
         return -1;
 
@@ -326,7 +326,7 @@ int handle_owner_release_request(daemon_state_t *st, const void *payload, size_t
     return 0;
 }
 
-int request_old_owner_release(daemon_state_t *st, int old_owner_idx, int vip_idx,
+int lease_request_old_owner_release(daemon_state_t *st, int old_owner_idx, int vip_idx,
                                uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     unsigned char req[LCS_MAX_FRAME];
@@ -335,7 +335,7 @@ int request_old_owner_release(daemon_state_t *st, int old_owner_idx, int vip_idx
     uint32_t resp_len = 0;
     int32_t status = -1;
     char _msg[128];
-    if (encode_lease_msg(req, sizeof(req), &req_len, (uint16_t)vip_idx,
+    if (lease_encode_msg(req, sizeof(req), &req_len, (uint16_t)vip_idx,
                          (uint16_t)old_owner_idx, epoch, lease_id, 0,
                          st->instance_id) != 0 ||
         peer_rpc(st, epoll_fd, old_owner_idx, LCS_MSG_OWNER_RELEASE_REQ,
@@ -346,7 +346,7 @@ int request_old_owner_release(daemon_state_t *st, int old_owner_idx, int vip_idx
     return status == 0 ? 0 : -1;
 }
 
-int wait_for_old_lease_expiry(daemon_state_t *st, int vip_idx)
+int lease_wait_for_old_lease_expiry(daemon_state_t *st, int vip_idx)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
     if (!res->lease_deadline_ms)
@@ -363,7 +363,7 @@ int wait_for_old_lease_expiry(daemon_state_t *st, int vip_idx)
     return 0;
 }
 
-int prepare_controlled_handoff(daemon_state_t *st, int vip_idx, int epoll_fd)
+int lease_prepare_controlled_handoff(daemon_state_t *st, int vip_idx, int epoll_fd)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
     int old_owner = res->owner_node;
@@ -373,7 +373,7 @@ int prepare_controlled_handoff(daemon_state_t *st, int vip_idx, int epoll_fd)
     uint64_t old_epoch = res->epoch;
     uint64_t old_lease_id = res->lease_id;
     if (node_is_online(st, (size_t)old_owner) &&
-        request_old_owner_release(st, old_owner, vip_idx, old_epoch, old_lease_id, epoll_fd) == 0)
+        lease_request_old_owner_release(st, old_owner, vip_idx, old_epoch, old_lease_id, epoll_fd) == 0)
     {
         lcs_log_info("old owner %s confirmed release of VIP %s",
                      st->cfg.nodes[old_owner].name, st->cfg.vips[vip_idx].name);
@@ -381,12 +381,12 @@ int prepare_controlled_handoff(daemon_state_t *st, int vip_idx, int epoll_fd)
     }
     lcs_log_info("old owner %s did not confirm release of VIP %s; waiting for lease expiry",
                  node_name_or_none(st, old_owner), st->cfg.vips[vip_idx].name);
-    if (wait_for_old_lease_expiry(st, vip_idx) != 0)
+    if (lease_wait_for_old_lease_expiry(st, vip_idx) != 0)
         return -1;
     return 0;
 }
 
-void expire_remote_leases(daemon_state_t *st)
+void lease_expire_remote(daemon_state_t *st)
 {
     uint64_t now = lcs_now_ms();
     uint64_t grace_ms = st->cfg.renew_ms ? st->cfg.renew_ms : 1000u;

@@ -8,10 +8,10 @@
 
 #include <stdint.h>
 
-void send_error(int fd, uint32_t seq, const char *msg);
-int compute_move_response(daemon_state_t *st, const void *payload, uint32_t len,
+void client_send_error(int fd, uint32_t seq, const char *msg);
+int client_compute_move_response(daemon_state_t *st, const void *payload, uint32_t len,
                           int epoll_fd, int32_t *status, char *message,
                           size_t message_len);
-void handle_client(int fd, daemon_state_t *st, int epoll_fd);
+void client_handle(int fd, daemon_state_t *st, int epoll_fd);
 
 #endif

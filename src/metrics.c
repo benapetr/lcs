@@ -66,7 +66,7 @@ static void write_best_effort(int fd, const void *buf, size_t len)
     }
 }
 
-void handle_metrics_client(int fd, const daemon_state_t *st)
+void lcs_metrics_handle_client(int fd, const daemon_state_t *st)
 {
     char req[512];
     ssize_t req_len = read(fd, req, sizeof(req));

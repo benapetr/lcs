@@ -304,7 +304,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    cleanup_local_vips_without_lease(&st);
+    resources_cleanup_local_vips_without_lease(&st);
 
     int local_fd = create_unix_listener(st.cfg.socket_path);
     if (local_fd < 0)
@@ -411,11 +411,9 @@ int main(int argc, char **argv)
         for (int i = 0; i < rc; i++)
         {
             uint32_t event_id = events[i].data.u32;
-            if (event_id == LCS_EPOLL_PEER ||
-                (event_id >= LCS_EPOLL_PEER_CONN_BASE &&
-                 event_id < LCS_EPOLL_HANDSHAKE_BASE + LCS_HANDSHAKE_MAX))
+            if (event_id == LCS_EPOLL_PEER || (event_id >= LCS_EPOLL_PEER_CONN_BASE && event_id < LCS_EPOLL_HANDSHAKE_BASE + LCS_HANDSHAKE_MAX))
             {
-                pump_peer_epoll_event(&st, epoll_fd, &events[i]);
+                peer_pump_epoll_event(&st, epoll_fd, &events[i]);
                 continue;
             }
             if (!(events[i].events & EPOLLIN))
@@ -425,43 +423,42 @@ int main(int argc, char **argv)
                 int client = accept4(local_fd, NULL, NULL, SOCK_CLOEXEC);
                 if (client >= 0)
                 {
-                    handle_client(client, &st, epoll_fd);
+                    client_handle(client, &st, epoll_fd);
                     close(client);
                 }
             } else if (event_id == LCS_EPOLL_METRICS && metrics_fd >= 0)
             {
                 for (;;)
                 {
-                    int client = accept4(metrics_fd, NULL, NULL,
-                                         SOCK_CLOEXEC | SOCK_NONBLOCK);
+                    int client = accept4(metrics_fd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
                     if (client < 0)
                     {
                         if (errno != EAGAIN && errno != EWOULDBLOCK)
                             lcs_log_debug("metrics accept failed: %s", strerror(errno));
                         break;
                     }
-                    handle_metrics_client(client, &st);
+                    lcs_metrics_handle_client(client, &st);
                     close(client);
                 }
             }
         }
-        poll_peers(&st, epoll_fd);
-        expire_handshakes(&st, epoll_fd);
-        expire_remote_leases(&st);
-        process_resource_hooks(&st, epoll_fd);
-        maintain_owned_leases(&st, epoll_fd);
-        auto_place(&st, epoll_fd);
+        peer_poll(&st, epoll_fd);
+        handshake_expire(&st, epoll_fd);
+        lease_expire_remote(&st);
+        resources_process_hooks(&st, epoll_fd);
+        resources_maintain_owned_leases(&st, epoll_fd);
+        resources_auto_place(&st, epoll_fd);
     }
-    graceful_shutdown_resources(&st, epoll_fd);
+    resources_graceful_shutdown(&st, epoll_fd);
     for (size_t i = 0; i < st.cfg.node_count; i++)
     {
         if ((int)i != st.self_index && st.peers[i].fd >= 0)
-            close_peer_connection(&st, epoll_fd, (int)i, false, NULL);
+            peer_close_connection(&st, epoll_fd, (int)i, false, NULL);
     }
     for (size_t i = 0; i < LCS_HANDSHAKE_MAX; i++)
     {
         if (st.handshakes[i].active)
-            close_handshake(&st, epoll_fd, (int)i, "shutdown");
+            handshake_close(&st, epoll_fd, (int)i, "shutdown");
     }
     close(epoll_fd);
     close(local_fd);

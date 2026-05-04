@@ -18,7 +18,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static const char *hook_name(resource_hook_type_t type)
+static const char *resources_hook_name(resource_hook_type_t type)
 {
     switch (type)
     {
@@ -35,7 +35,7 @@ static const char *hook_name(resource_hook_type_t type)
     }
 }
 
-static const char *hook_path(const lcs_vip_config_t *vip, resource_hook_type_t type)
+static const char *resources_hook_path(const lcs_vip_config_t *vip, resource_hook_type_t type)
 {
     switch (type)
     {
@@ -52,7 +52,7 @@ static const char *hook_path(const lcs_vip_config_t *vip, resource_hook_type_t t
     }
 }
 
-static void clear_hook(resource_runtime_t *res)
+static void resources_clear_hook(resource_runtime_t *res)
 {
     res->hook_pid = 0;
     res->hook_type = LCS_HOOK_NONE;
@@ -61,32 +61,32 @@ static void clear_hook(resource_runtime_t *res)
     res->hook_lease_id = 0;
 }
 
-static void cancel_hook(daemon_state_t *st, int vip_idx)
+static void resources_cancel_hook(daemon_state_t *st, int vip_idx)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
     if (res->hook_pid <= 0)
         return;
 
     lcs_log_warn("cancelling %s hook for VIP %s pid=%ld",
-                 hook_name(res->hook_type), st->cfg.vips[vip_idx].name,
+                 resources_hook_name(res->hook_type), st->cfg.vips[vip_idx].name,
                  (long)res->hook_pid);
     kill(res->hook_pid, SIGKILL);
     waitpid(res->hook_pid, NULL, 0);
-    clear_hook(res);
+    resources_clear_hook(res);
 }
 
-static int start_hook(daemon_state_t *st, int vip_idx, resource_hook_type_t type, uint64_t epoch, uint64_t lease_id)
+static int resources_start_hook(daemon_state_t *st, int vip_idx, resource_hook_type_t type, uint64_t epoch, uint64_t lease_id)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
     const lcs_vip_config_t *vip = &st->cfg.vips[vip_idx];
-    const char *path = hook_path(vip, type);
+    const char *path = resources_hook_path(vip, type);
     if (!*path)
         return 1;
 
     if (res->hook_pid > 0)
     {
         lcs_log_warn("cannot start %s hook for VIP %s: %s hook pid=%ld still running",
-                     hook_name(type), vip->name, hook_name(res->hook_type),
+                     resources_hook_name(type), vip->name, resources_hook_name(res->hook_type),
                      (long)res->hook_pid);
         return -1;
     }
@@ -94,7 +94,7 @@ static int start_hook(daemon_state_t *st, int vip_idx, resource_hook_type_t type
     pid_t pid = fork();
     if (pid < 0)
     {
-        lcs_log_warn("failed to fork %s hook for VIP %s: %s", hook_name(type), vip->name, strerror(errno));
+        lcs_log_warn("failed to fork %s hook for VIP %s: %s", resources_hook_name(type), vip->name, strerror(errno));
         return -1;
     }
     if (pid == 0)
@@ -110,7 +110,7 @@ static int start_hook(daemon_state_t *st, int vip_idx, resource_hook_type_t type
         setenv("LCS_VIP", vip->name, 1);
         setenv("LCS_ADDRESS", vip->address, 1);
         setenv("LCS_INTERFACE", vip->interface, 1);
-        setenv("LCS_EVENT", hook_name(type), 1);
+        setenv("LCS_EVENT", resources_hook_name(type), 1);
         setenv("LCS_EPOCH", epoch_buf, 1);
         setenv("LCS_LEASE_ID", lease_buf, 1);
         setenv("LCS_HOOK_TIMEOUT_MS", timeout_buf, 1);
@@ -124,11 +124,11 @@ static int start_hook(daemon_state_t *st, int vip_idx, resource_hook_type_t type
     res->hook_epoch = epoch;
     res->hook_lease_id = lease_id;
     lcs_log_info("started %s hook for VIP %s pid=%ld path=%s timeout_ms=%u",
-                 hook_name(type), vip->name, (long)pid, path, st->cfg.hook_timeout_ms);
+                 resources_hook_name(type), vip->name, (long)pid, path, st->cfg.hook_timeout_ms);
     return 0;
 }
 
-static void clear_local_lease(resource_runtime_t *res, uint64_t epoch)
+static void resources_clear_local_lease(resource_runtime_t *res, uint64_t epoch)
 {
     res->epoch = epoch;
     res->owner_node = -1;
@@ -140,7 +140,7 @@ static void clear_local_lease(resource_runtime_t *res, uint64_t epoch)
     res->conflict_reason[0] = '\0';
 }
 
-static int complete_local_activation(daemon_state_t *st, int vip_idx, uint64_t epoch,
+static int resources_complete_local_activation(daemon_state_t *st, int vip_idx, uint64_t epoch,
                                      uint64_t lease_id, int epoll_fd)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
@@ -148,16 +148,16 @@ static int complete_local_activation(daemon_state_t *st, int vip_idx, uint64_t e
     int conflict_rc = lcs_vip_conflict_check(&st->cfg, &st->cfg.vips[vip_idx]);
     if (conflict_rc > 0)
     {
-        release_majority_lease(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd);
-        enter_conflict_state(st, vip_idx, epoch + 1, "VIP answered conflict probe before activation");
-        broadcast_state_sync(st, epoll_fd);
+        lease_release_majority(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd);
+        resources_enter_conflict_state(st, vip_idx, epoch + 1, "VIP answered conflict probe before activation");
+        peer_broadcast_state_sync(st, epoll_fd);
         return -1;
     }
     if (conflict_rc < 0)
     {
         lcs_log_warn("auto-place failed VIP %s: conflict probe failed", st->cfg.vips[vip_idx].name);
-        release_majority_lease(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd);
-        clear_local_lease(res, epoch);
+        lease_release_majority(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd);
+        resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + st->cfg.lease_ms;
         return -1;
     }
@@ -167,8 +167,8 @@ static int complete_local_activation(daemon_state_t *st, int vip_idx, uint64_t e
                      st->cfg.vips[vip_idx].name,
                      st->cfg.vips[vip_idx].address,
                      st->cfg.vips[vip_idx].interface);
-        release_majority_lease(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd);
-        clear_local_lease(res, epoch);
+        lease_release_majority(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd);
+        resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + st->cfg.lease_ms;
         return -1;
     }
@@ -191,11 +191,11 @@ static int complete_local_activation(daemon_state_t *st, int vip_idx, uint64_t e
     lcs_log_info("activated VIP %s on %s epoch=%llu",
                  st->cfg.vips[vip_idx].name, st->cfg.nodes[st->self_index].name,
                  (unsigned long long)epoch);
-    start_hook(st, vip_idx, LCS_HOOK_POST_START, epoch, lease_id);
+    resources_start_hook(st, vip_idx, LCS_HOOK_POST_START, epoch, lease_id);
     return 0;
 }
 
-static void release_local_resource_internal(daemon_state_t *st, int vip_idx, int epoll_fd, bool allow_hooks)
+static void resources_release_local_internal(daemon_state_t *st, int vip_idx, int epoll_fd, bool allow_hooks)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
     uint64_t release_epoch = res->epoch + 1;
@@ -204,18 +204,18 @@ static void release_local_resource_internal(daemon_state_t *st, int vip_idx, int
 
     if (!locally_owned)
     {
-        clear_local_lease(res, release_epoch);
+        resources_clear_local_lease(res, release_epoch);
         return;
     }
 
     if (!allow_hooks)
-        cancel_hook(st, vip_idx);
+        resources_cancel_hook(st, vip_idx);
     else if (res->hook_pid > 0 && res->hook_type != LCS_HOOK_PRE_STOP)
-        cancel_hook(st, vip_idx);
+        resources_cancel_hook(st, vip_idx);
     if (allow_hooks && res->state == LCS_RES_ACTIVE && *st->cfg.vips[vip_idx].pre_stop)
     {
         res->state = LCS_RES_STOPPING;
-        if (start_hook(st, vip_idx, LCS_HOOK_PRE_STOP, res->epoch, res->lease_id) == 0)
+        if (resources_start_hook(st, vip_idx, LCS_HOOK_PRE_STOP, res->epoch, res->lease_id) == 0)
             return;
         lcs_log_warn("continuing VIP %s stop without pre-stop hook",  st->cfg.vips[vip_idx].name);
     }
@@ -223,13 +223,13 @@ static void release_local_resource_internal(daemon_state_t *st, int vip_idx, int
     if (res->state == LCS_RES_ACTIVE || res->state == LCS_RES_STOPPING)
         lcs_vip_del(&st->cfg.vips[vip_idx]);
 
-    release_majority_lease(st, vip_idx, st->self_index, release_epoch, old_lease_id, epoll_fd);
-    clear_local_lease(res, release_epoch);
+    lease_release_majority(st, vip_idx, st->self_index, release_epoch, old_lease_id, epoll_fd);
+    resources_clear_local_lease(res, release_epoch);
     if (allow_hooks)
-        start_hook(st, vip_idx, LCS_HOOK_POST_STOP, release_epoch, old_lease_id);
+        resources_start_hook(st, vip_idx, LCS_HOOK_POST_STOP, release_epoch, old_lease_id);
 }
 
-void cleanup_local_vips_without_lease(daemon_state_t *st)
+void resources_cleanup_local_vips_without_lease(daemon_state_t *st)
 {
     if (st->cfg.nodes[st->self_index].role != LCS_NODE_FULL)
     {
@@ -245,7 +245,7 @@ void cleanup_local_vips_without_lease(daemon_state_t *st)
     }
 }
 
-void enter_conflict_state(daemon_state_t *st, int vip_idx, uint64_t epoch,
+void resources_enter_conflict_state(daemon_state_t *st, int vip_idx, uint64_t epoch,
                           const char *reason)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
@@ -268,7 +268,7 @@ void enter_conflict_state(daemon_state_t *st, int vip_idx, uint64_t epoch,
                  res->conflict_reason);
 }
 
-int activate_local_resource(daemon_state_t *st, int vip_idx, uint64_t epoch, int epoll_fd)
+int resources_activate_local(daemon_state_t *st, int vip_idx, uint64_t epoch, int epoll_fd)
 {
     if (st->cfg.nodes[st->self_index].role != LCS_NODE_FULL)
     {
@@ -292,7 +292,7 @@ int activate_local_resource(daemon_state_t *st, int vip_idx, uint64_t epoch, int
         return -1;
     }
     uint64_t lease_id = lcs_random_u64();
-    if (acquire_majority_lease(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd) != 0)
+    if (lease_acquire_majority(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd) != 0)
     {
         lcs_log_debug2("auto-place failed VIP %s: could not acquire majority lease for epoch=%llu",
                        st->cfg.vips[vip_idx].name, (unsigned long long)epoch);
@@ -302,25 +302,25 @@ int activate_local_resource(daemon_state_t *st, int vip_idx, uint64_t epoch, int
     if (*st->cfg.vips[vip_idx].pre_start)
     {
         res->state = LCS_RES_STARTING;
-        if (start_hook(st, vip_idx, LCS_HOOK_PRE_START, epoch, lease_id) == 0)
+        if (resources_start_hook(st, vip_idx, LCS_HOOK_PRE_START, epoch, lease_id) == 0)
             return 0;
         lcs_log_warn("auto-place failed VIP %s: failed to start pre-start hook",
                      st->cfg.vips[vip_idx].name);
-        release_majority_lease(st, vip_idx, st->self_index, epoch, lease_id,
+        lease_release_majority(st, vip_idx, st->self_index, epoch, lease_id,
                                epoll_fd);
-        clear_local_lease(res, epoch);
+        resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + st->cfg.lease_ms;
         return -1;
     }
-    return complete_local_activation(st, vip_idx, epoch, lease_id, epoll_fd);
+    return resources_complete_local_activation(st, vip_idx, epoch, lease_id, epoll_fd);
 }
 
-void release_local_resource(daemon_state_t *st, int vip_idx, int epoll_fd)
+void resources_release_local(daemon_state_t *st, int vip_idx, int epoll_fd)
 {
-    release_local_resource_internal(st, vip_idx, epoll_fd, true);
+    resources_release_local_internal(st, vip_idx, epoll_fd, true);
 }
 
-void graceful_shutdown_resources(daemon_state_t *st, int epoll_fd)
+void resources_graceful_shutdown(daemon_state_t *st, int epoll_fd)
 {
     for (size_t i = 0; i < st->cfg.vip_count; i++)
     {
@@ -329,14 +329,14 @@ void graceful_shutdown_resources(daemon_state_t *st, int epoll_fd)
             res->owner_instance_id == st->instance_id)
         {
             lcs_log_info("releasing VIP %s before shutdown", st->cfg.vips[i].name);
-            release_local_resource(st, (int)i, epoll_fd);
+            resources_release_local(st, (int)i, epoll_fd);
         }
     }
     uint64_t deadline = lcs_now_ms() + st->cfg.hook_timeout_ms + 100u;
     for (;;)
     {
         bool pending = false;
-        process_resource_hooks(st, epoll_fd);
+        resources_process_hooks(st, epoll_fd);
         for (size_t i = 0; i < st->cfg.vip_count; i++)
         {
             if (st->resources[i].hook_pid > 0)
@@ -347,10 +347,10 @@ void graceful_shutdown_resources(daemon_state_t *st, int epoll_fd)
         usleep(10000);
     }
     for (size_t i = 0; i < st->cfg.vip_count; i++)
-        cancel_hook(st, (int)i);
+        resources_cancel_hook(st, (int)i);
 }
 
-void auto_place(daemon_state_t *st, int epoll_fd)
+void resources_auto_place(daemon_state_t *st, int epoll_fd)
 {
     if (!has_quorum(st))
     {
@@ -388,11 +388,11 @@ void auto_place(daemon_state_t *st, int epoll_fd)
                        st->cfg.nodes[st->self_index].name,
                        (unsigned long long)res->epoch,
                        (unsigned long long)(res->epoch + 1));
-        activate_local_resource(st, (int)i, res->epoch + 1, epoll_fd);
+        resources_activate_local(st, (int)i, res->epoch + 1, epoll_fd);
     }
 }
 
-void maintain_owned_leases(daemon_state_t *st, int epoll_fd)
+void resources_maintain_owned_leases(daemon_state_t *st, int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
     for (size_t i = 0; i < st->cfg.vip_count; i++)
@@ -407,14 +407,14 @@ void maintain_owned_leases(daemon_state_t *st, int epoll_fd)
         if (!has_quorum(st))
         {
             lcs_log_warn("dropping VIP %s because quorum is lost", st->cfg.vips[i].name);
-            release_local_resource_internal(st, (int)i, epoll_fd, false);
+            resources_release_local_internal(st, (int)i, epoll_fd, false);
             continue;
         }
         if (res->lease_deadline_ms && now >= res->lease_deadline_ms)
         {
             lcs_log_warn("dropping VIP %s because local lease expired",
                          st->cfg.vips[i].name);
-            release_local_resource_internal(st, (int)i, epoll_fd, false);
+            resources_release_local_internal(st, (int)i, epoll_fd, false);
             continue;
         }
         if (res->renew_after_ms && now < res->renew_after_ms)
@@ -425,7 +425,7 @@ void maintain_owned_leases(daemon_state_t *st, int epoll_fd)
             if ((int)n == st->self_index)
                 continue;
 
-            if (send_peer_lease(st, (int)n, LCS_MSG_LEASE_RENEW, (int)i, st->self_index, res->epoch, res->lease_id, epoll_fd) == 0)
+            if (lease_send_peer(st, (int)n, LCS_MSG_LEASE_RENEW, (int)i, st->self_index, res->epoch, res->lease_id, epoll_fd) == 0)
                 votes++;
         }
         if ((uint32_t)votes >= st->quorum_needed)
@@ -438,7 +438,7 @@ void maintain_owned_leases(daemon_state_t *st, int epoll_fd)
         } else if (now + st->cfg.renew_ms >= res->lease_deadline_ms)
         {
             lcs_log_warn("dropping VIP %s because lease renewal failed", st->cfg.vips[i].name);
-            release_local_resource_internal(st, (int)i, epoll_fd, false);
+            resources_release_local_internal(st, (int)i, epoll_fd, false);
         } else
         {
             res->renew_after_ms = now + st->cfg.renew_ms;
@@ -446,7 +446,7 @@ void maintain_owned_leases(daemon_state_t *st, int epoll_fd)
     }
 }
 
-void process_resource_hooks(daemon_state_t *st, int epoll_fd)
+void resources_process_hooks(daemon_state_t *st, int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
     for (size_t i = 0; i < st->cfg.vip_count; i++)
@@ -462,7 +462,7 @@ void process_resource_hooks(daemon_state_t *st, int epoll_fd)
         if (!done && res->hook_deadline_ms && now >= res->hook_deadline_ms)
         {
             lcs_log_warn("%s hook for VIP %s timed out; killing pid=%ld",
-                         hook_name(res->hook_type), st->cfg.vips[i].name,
+                         resources_hook_name(res->hook_type), st->cfg.vips[i].name,
                          (long)res->hook_pid);
             kill(res->hook_pid, SIGKILL);
             waitpid(res->hook_pid, &status, 0);
@@ -474,7 +474,7 @@ void process_resource_hooks(daemon_state_t *st, int epoll_fd)
         if (rc < 0)
         {
             lcs_log_warn("%s hook for VIP %s waitpid failed: %s",
-                         hook_name(res->hook_type), st->cfg.vips[i].name,
+                         resources_hook_name(res->hook_type), st->cfg.vips[i].name,
                          strerror(errno));
             ok = false;
         }
@@ -482,8 +482,8 @@ void process_resource_hooks(daemon_state_t *st, int epoll_fd)
         resource_hook_type_t type = res->hook_type;
         uint64_t hook_epoch = res->hook_epoch;
         uint64_t hook_lease_id = res->hook_lease_id;
-        lcs_log_info("%s hook for VIP %s completed status=%s", hook_name(type), st->cfg.vips[i].name, ok ? "ok" : "failed");
-        clear_hook(res);
+        lcs_log_info("%s hook for VIP %s completed status=%s", resources_hook_name(type), st->cfg.vips[i].name, ok ? "ok" : "failed");
+        resources_clear_hook(res);
 
         if (type == LCS_HOOK_PRE_START)
         {
@@ -499,24 +499,24 @@ void process_resource_hooks(daemon_state_t *st, int epoll_fd)
                              still_current ? "true" : "false");
                 if (still_current)
                 {
-                    release_majority_lease(st, (int)i, st->self_index, hook_epoch, hook_lease_id, epoll_fd);
-                    clear_local_lease(res, hook_epoch);
+                    lease_release_majority(st, (int)i, st->self_index, hook_epoch, hook_lease_id, epoll_fd);
+                    resources_clear_local_lease(res, hook_epoch);
                     res->next_activation_attempt_ms = now + st->cfg.lease_ms;
                 }
                 continue;
             }
-            complete_local_activation(st, (int)i, hook_epoch, hook_lease_id, epoll_fd);
+            resources_complete_local_activation(st, (int)i, hook_epoch, hook_lease_id, epoll_fd);
         } else if (type == LCS_HOOK_PRE_STOP)
         {
             if (!ok)
             {
                 lcs_log_warn("pre-stop hook for VIP %s failed; stopping VIP anyway", st->cfg.vips[i].name);
             }
-            release_local_resource_internal(st, (int)i, epoll_fd, false);
-            start_hook(st, (int)i, LCS_HOOK_POST_STOP, hook_epoch + 1, hook_lease_id);
+            resources_release_local_internal(st, (int)i, epoll_fd, false);
+            resources_start_hook(st, (int)i, LCS_HOOK_POST_STOP, hook_epoch + 1, hook_lease_id);
         } else if (!ok)
         {
-            lcs_log_warn("%s hook for VIP %s failed after VIP event", hook_name(type), st->cfg.vips[i].name);
+            lcs_log_warn("%s hook for VIP %s failed after VIP event", resources_hook_name(type), st->cfg.vips[i].name);
         }
     }
 }

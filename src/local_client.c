@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
-void send_error(int fd, uint32_t seq, const char *msg)
+void client_send_error(int fd, uint32_t seq, const char *msg)
 {
     unsigned char payload[256];
     size_t len = 0;
@@ -21,7 +21,7 @@ void send_error(int fd, uint32_t seq, const char *msg)
         lcs_write_frame(fd, LCS_MSG_ERROR, seq, payload, (uint32_t)len);
 }
 
-static void handle_status(int fd, uint32_t seq, const daemon_state_t *st)
+static void client_handle_status(int fd, uint32_t seq, const daemon_state_t *st)
 {
     unsigned char payload[LCS_MAX_FRAME];
     lcs_buf_writer_t w;
@@ -33,7 +33,7 @@ static void handle_status(int fd, uint32_t seq, const daemon_state_t *st)
                                  (uint16_t)st->votes_seen,
                                  has_quorum(st) ? 1 : 0) != 0)
     {
-        send_error(fd, seq, "failed to encode status header");
+        client_send_error(fd, seq, "failed to encode status header");
         return;
     }
     for (size_t i = 0; i < st->cfg.node_count; i++)
@@ -44,7 +44,7 @@ static void handle_status(int fd, uint32_t seq, const daemon_state_t *st)
                                    i == (size_t)st->self_index ? 1 : 0,
                                    st->cfg.nodes[i].name) != 0)
         {
-            send_error(fd, seq, "failed to encode status node");
+            client_send_error(fd, seq, "failed to encode status node");
             return;
         }
     }
@@ -61,14 +61,14 @@ static void handle_status(int fd, uint32_t seq, const daemon_state_t *st)
                                   st->cfg.vips[i].interface,
                                   st->resources[i].conflict_reason) != 0)
         {
-            send_error(fd, seq, "failed to encode status vip");
+            client_send_error(fd, seq, "failed to encode status vip");
             return;
         }
     }
     lcs_write_frame(fd, LCS_MSG_STATUS_RESP, seq, payload, (uint32_t)w.len);
 }
 
-int compute_move_response(daemon_state_t *st, const void *payload, uint32_t len,
+int client_compute_move_response(daemon_state_t *st, const void *payload, uint32_t len,
                                  int epoll_fd, int32_t *status, char *message,
                                  size_t message_len)
 {
@@ -130,12 +130,12 @@ int compute_move_response(daemon_state_t *st, const void *payload, uint32_t len,
         {
             *status = 0;
             snprintf(message, message_len, "already active on target");
-        } else if (prepare_controlled_handoff(st, vip_idx, epoll_fd) != 0)
+        } else if (lease_prepare_controlled_handoff(st, vip_idx, epoll_fd) != 0)
         {
             *status = -1;
             snprintf(message, message_len,
                      "old owner did not release and lease expiry is unknown");
-        } else if (activate_local_resource(st, vip_idx, res->epoch + 1, epoll_fd) == 0)
+        } else if (resources_activate_local(st, vip_idx, res->epoch + 1, epoll_fd) == 0)
         {
             *status = 0;
             snprintf(message, message_len, "%s",
@@ -150,12 +150,12 @@ int compute_move_response(daemon_state_t *st, const void *payload, uint32_t len,
     return *status == 0 ? 0 : -1;
 }
 
-static void handle_move(int fd, uint32_t seq, daemon_state_t *st, const void *payload,
+static void client_handle_move(int fd, uint32_t seq, daemon_state_t *st, const void *payload,
                         uint32_t len, int epoll_fd)
 {
     int32_t status = -1;
     char message[128] = "";
-    compute_move_response(st, payload, len, epoll_fd, &status, message, sizeof(message));
+    client_compute_move_response(st, payload, len, epoll_fd, &status, message, sizeof(message));
     unsigned char resp_payload[256];
     size_t resp_len = 0;
     if (lcs_encode_simple_resp(resp_payload, sizeof(resp_payload), &resp_len,
@@ -163,7 +163,7 @@ static void handle_move(int fd, uint32_t seq, daemon_state_t *st, const void *pa
         lcs_write_frame(fd, LCS_MSG_MOVE_RESP, seq, resp_payload, (uint32_t)resp_len);
 }
 
-static void handle_clear_conflict(int fd, uint32_t seq, daemon_state_t *st,
+static void client_handle_clear_conflict(int fd, uint32_t seq, daemon_state_t *st,
                                   const void *payload, uint32_t len, int epoll_fd)
 {
     char vip_name[LCS_NAME_MAX + 1];
@@ -199,7 +199,7 @@ static void handle_clear_conflict(int fd, uint32_t seq, daemon_state_t *st,
                 res->renew_after_ms = 0;
                 res->next_activation_attempt_ms = 0;
                 res->conflict_reason[0] = '\0';
-                broadcast_state_sync(st, epoll_fd);
+                peer_broadcast_state_sync(st, epoll_fd);
                 status = 0;
                 snprintf(message, sizeof(message), "conflict cleared");
                 lcs_log_info("admin cleared conflict for VIP %s epoch=%llu",
@@ -217,7 +217,7 @@ static void handle_clear_conflict(int fd, uint32_t seq, daemon_state_t *st,
     }
 }
 
-void handle_client(int fd, daemon_state_t *st, int epoll_fd)
+void client_handle(int fd, daemon_state_t *st, int epoll_fd)
 {
     unsigned char payload[LCS_MAX_FRAME];
     lcs_frame_header_t hdr;
@@ -230,16 +230,16 @@ void handle_client(int fd, daemon_state_t *st, int epoll_fd)
     switch (hdr.type)
     {
         case LCS_MSG_STATUS_REQ:
-            handle_status(fd, hdr.seq, st);
+            client_handle_status(fd, hdr.seq, st);
             break;
         case LCS_MSG_MOVE_REQ:
-            handle_move(fd, hdr.seq, st, payload, hdr.length, epoll_fd);
+            client_handle_move(fd, hdr.seq, st, payload, hdr.length, epoll_fd);
             break;
         case LCS_MSG_CLEAR_CONFLICT_REQ:
-            handle_clear_conflict(fd, hdr.seq, st, payload, hdr.length, epoll_fd);
+            client_handle_clear_conflict(fd, hdr.seq, st, payload, hdr.length, epoll_fd);
             break;
         default:
-            send_error(fd, hdr.seq, "unsupported local CLI message");
+            client_send_error(fd, hdr.seq, "unsupported local CLI message");
             break;
     }
 }
