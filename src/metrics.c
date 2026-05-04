@@ -17,12 +17,14 @@ static int metrics_append(char *buf, size_t cap, size_t *len, const char *fmt, .
 {
     if (*len >= cap)
         return -1;
+
     va_list ap;
     va_start(ap, fmt);
     int n = vsnprintf(buf + *len, cap - *len, fmt, ap);
     va_end(ap);
     if (n < 0 || (size_t)n >= cap - *len)
         return -1;
+
     *len += (size_t)n;
     return 0;
 }
@@ -123,6 +125,7 @@ void handle_metrics_client(int fd, const daemon_state_t *st)
         double remaining = 0.0;
         if (res->lease_deadline_ms > now)
             remaining = (double)(res->lease_deadline_ms - now) / 1000.0;
+            
         metrics_append(body, cap, &len,
                        "lcs_vip_epoch{cluster=\"%s\",vip=\"%s\"} %llu\n",
                        cluster, st->cfg.vips[i].name,
@@ -148,7 +151,9 @@ void handle_metrics_client(int fd, const daemon_state_t *st)
                               "Connection: close\r\n\r\n", len);
     if (header_len > 0)
         write_best_effort(fd, header, (size_t)header_len);
+
     if (len)
         write_best_effort(fd, body, len);
+
     free(body);
 }

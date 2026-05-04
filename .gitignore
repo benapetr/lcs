@@ -10,6 +10,7 @@
 # Debian package build outputs
 /debian/.debhelper/
 /debian/debhelper-build-stamp
+/debian/lcs/
 /debian/files
 /debian/*.substvars
 /debian/*.debhelper.log
