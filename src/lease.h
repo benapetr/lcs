@@ -25,6 +25,7 @@ int lease_start_acquire(daemon_state_t *st, int vip_idx, int owner_idx,
                         uint64_t epoch, uint64_t lease_id, int epoll_fd);
 int lease_start_renew(daemon_state_t *st, int vip_idx, int epoll_fd);
 bool lease_operation_active(const daemon_state_t *st, int vip_idx);
+void lease_cancel_operations(daemon_state_t *st, int vip_idx);
 void lease_process_operations(daemon_state_t *st, int epoll_fd);
 
 void lease_release_majority(daemon_state_t *st, int vip_idx, int owner_idx,

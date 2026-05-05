@@ -31,6 +31,9 @@
 
 volatile sig_atomic_t g_stop;
 int g_peer_listener_fd = -1;
+int g_local_fd = -1;
+int g_tcp_fd = -1;
+int g_metrics_fd = -1;
 
 static void on_signal(int signo)
 {
@@ -176,6 +179,66 @@ static int create_tcp_listener(const char *bind_address, uint16_t port)
     return fd;
 }
 
+int lcs_init_metrics_socket(daemon_state_t *st)
+{
+    if (st->cfg.metrics_enabled)
+    {
+        g_metrics_fd = create_tcp_listener(st->cfg.metrics_bind_address, st->cfg.metrics_port);
+        if (g_metrics_fd < 0)
+        {
+            lcs_log_error("failed to listen on metrics HTTP %s:%u: %s", st->cfg.metrics_bind_address, st->cfg.metrics_port, strerror(errno));
+            close(g_local_fd);
+            close(g_tcp_fd);
+            unlink(st->cfg.socket_path);
+            return 1;
+        }
+        if (set_fd_nonblocking(g_metrics_fd) != 0)
+        {
+            lcs_log_error("failed to set metrics listener nonblocking: %s", strerror(errno));
+            close(g_local_fd);
+            close(g_tcp_fd);
+            close(g_metrics_fd);
+            unlink(st->cfg.socket_path);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int lcs_init_open_sockets(daemon_state_t *st)
+{
+    g_local_fd = create_unix_listener(st->cfg.socket_path);
+    if (g_local_fd < 0)
+    {
+        lcs_log_error("failed to listen on %s: %s", st->cfg.socket_path, strerror(errno));
+        return 1;
+    }
+    if (set_fd_nonblocking(g_local_fd) != 0)
+    {
+        lcs_log_error("failed to set local listener nonblocking: %s", strerror(errno));
+        close(g_local_fd);
+        unlink(st->cfg.socket_path);
+        return 1;
+    }
+    g_tcp_fd = create_tcp_listener(st->cfg.bind_address, st->cfg.port);
+    if (g_tcp_fd < 0)
+    {
+        lcs_log_error("failed to listen on TCP %s:%u: %s", *st->cfg.bind_address ? st->cfg.bind_address : "*", st->cfg.port, strerror(errno));
+        close(g_local_fd);
+        unlink(st->cfg.socket_path);
+        return 1;
+    }
+    if (set_fd_nonblocking(g_tcp_fd) != 0)
+    {
+        lcs_log_error("failed to set TCP listener nonblocking: %s", strerror(errno));
+        close(g_local_fd);
+        close(g_tcp_fd);
+        unlink(st->cfg.socket_path);
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *config_path = LCS_DEFAULT_CONFIG_PATH;
@@ -312,80 +375,35 @@ int main(int argc, char **argv)
 
     resources_cleanup_local_vips_without_lease(&st);
 
-    int local_fd = create_unix_listener(st.cfg.socket_path);
-    if (local_fd < 0)
-    {
-        lcs_log_error("failed to listen on %s: %s", st.cfg.socket_path, strerror(errno));
+    if (lcs_init_open_sockets(&st) != 0)
         return 1;
-    }
-    if (set_fd_nonblocking(local_fd) != 0)
-    {
-        lcs_log_error("failed to set local listener nonblocking: %s", strerror(errno));
-        close(local_fd);
-        unlink(st.cfg.socket_path);
+    
+    g_peer_listener_fd = g_tcp_fd;
+
+    if (lcs_init_metrics_socket(&st) != 0)
         return 1;
-    }
-    int tcp_fd = create_tcp_listener(st.cfg.bind_address, st.cfg.port);
-    if (tcp_fd < 0)
-    {
-        lcs_log_error("failed to listen on TCP %s:%u: %s", *st.cfg.bind_address ? st.cfg.bind_address : "*", st.cfg.port, strerror(errno));
-        close(local_fd);
-        unlink(st.cfg.socket_path);
-        return 1;
-    }
-    if (set_fd_nonblocking(tcp_fd) != 0)
-    {
-        lcs_log_error("failed to set TCP listener nonblocking: %s", strerror(errno));
-        close(local_fd);
-        close(tcp_fd);
-        unlink(st.cfg.socket_path);
-        return 1;
-    }
-    g_peer_listener_fd = tcp_fd;
-    int metrics_fd = -1;
-    if (st.cfg.metrics_enabled)
-    {
-        metrics_fd = create_tcp_listener(st.cfg.metrics_bind_address, st.cfg.metrics_port);
-        if (metrics_fd < 0)
-        {
-            lcs_log_error("failed to listen on metrics HTTP %s:%u: %s",
-                          st.cfg.metrics_bind_address, st.cfg.metrics_port, strerror(errno));
-            close(local_fd);
-            close(tcp_fd);
-            unlink(st.cfg.socket_path);
-            return 1;
-        }
-        if (set_fd_nonblocking(metrics_fd) != 0)
-        {
-            lcs_log_error("failed to set metrics listener nonblocking: %s", strerror(errno));
-            close(local_fd);
-            close(tcp_fd);
-            close(metrics_fd);
-            unlink(st.cfg.socket_path);
-            return 1;
-        }
-    }
+    
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)
     {
         lcs_log_error("failed to create epoll instance: %s", strerror(errno));
-        close(local_fd);
-        close(tcp_fd);
-        if (metrics_fd >= 0)
-            close(metrics_fd);
+        close(g_local_fd);
+        close(g_tcp_fd);
+        if (g_metrics_fd >= 0)
+            close(g_metrics_fd);
         unlink(st.cfg.socket_path);
         return 1;
     }
-    if (add_epoll_fd(epoll_fd, local_fd, LCS_EPOLL_LOCAL) != 0 ||
-        add_epoll_fd(epoll_fd, tcp_fd, LCS_EPOLL_PEER) != 0 ||
-        (metrics_fd >= 0 && add_epoll_fd(epoll_fd, metrics_fd, LCS_EPOLL_METRICS) != 0))
+    if (add_epoll_fd(epoll_fd, g_local_fd, LCS_EPOLL_LOCAL) != 0 ||
+        add_epoll_fd(epoll_fd, g_tcp_fd, LCS_EPOLL_PEER) != 0 ||
+        (g_metrics_fd >= 0 && add_epoll_fd(epoll_fd, g_metrics_fd, LCS_EPOLL_METRICS) != 0))
     {
         lcs_log_error("failed to register listener with epoll: %s", strerror(errno));
         close(epoll_fd);
-        close(local_fd);
-        close(tcp_fd);
-        if (metrics_fd >= 0)
-            close(metrics_fd);
+        close(g_local_fd);
+        close(g_tcp_fd);
+        if (g_metrics_fd >= 0)
+            close(g_metrics_fd);
         unlink(st.cfg.socket_path);
         return 1;
     }
@@ -393,10 +411,10 @@ int main(int argc, char **argv)
     {
         lcs_log_error("failed to write pidfile %s: %s", st.cfg.pidfile_path, strerror(errno));
         close(epoll_fd);
-        close(local_fd);
-        close(tcp_fd);
-        if (metrics_fd >= 0)
-            close(metrics_fd);
+        close(g_local_fd);
+        close(g_tcp_fd);
+        if (g_metrics_fd >= 0)
+            close(g_metrics_fd);
         unlink(st.cfg.socket_path);
         return 1;
     }
@@ -404,20 +422,23 @@ int main(int argc, char **argv)
                  st.cfg.self_name, (unsigned long long)st.instance_id,
                  st.cfg.socket_path,
                  *st.cfg.bind_address ? st.cfg.bind_address : "*", st.cfg.port,
-                 metrics_fd >= 0 ? st.cfg.metrics_bind_address : "-",
-                 metrics_fd >= 0 ? st.cfg.metrics_port : 0,
+                 g_metrics_fd >= 0 ? st.cfg.metrics_bind_address : "-",
+                 g_metrics_fd >= 0 ? st.cfg.metrics_port : 0,
                  st.quorum_needed, st.cfg.node_count);
 
     scheduler_t sched = {
         .epoll_fd = epoll_fd,
-        .local_fd = local_fd,
-        .metrics_fd = metrics_fd,
+        .local_fd = g_local_fd,
+        .metrics_fd = g_metrics_fd,
     };
+
+    // Main loop
     while (!g_stop)
     {
         if (scheduler_run_once(&st, &sched) != 0)
             break;
     }
+
     resources_graceful_shutdown(&st, epoll_fd);
     for (size_t i = 0; i < st.cfg.node_count; i++)
     {
@@ -431,10 +452,10 @@ int main(int argc, char **argv)
     }
     client_close_all(&st, epoll_fd);
     close(epoll_fd);
-    close(local_fd);
-    close(tcp_fd);
-    if (metrics_fd >= 0)
-        close(metrics_fd);
+    close(g_local_fd);
+    close(g_tcp_fd);
+    if (g_metrics_fd >= 0)
+        close(g_metrics_fd);
     g_peer_listener_fd = -1;
     unlink(st.cfg.socket_path);
     if (*st.cfg.pidfile_path)

@@ -9,7 +9,8 @@
 #include <netdb.h>
 
 // Node
-typedef struct {
+typedef struct
+{
     char name[LCS_NAME_MAX + 1];
     lcs_node_role_t role;
     char address[LCS_ADDR_MAX + 1];
@@ -17,7 +18,8 @@ typedef struct {
 } lcs_node_config_t;
 
 // VIP
-typedef struct {
+typedef struct
+{
     char name[LCS_NAME_MAX + 1];
     char address[LCS_ADDR_MAX + 1];
     char interface[LCS_NAME_MAX + 1];
@@ -28,7 +30,8 @@ typedef struct {
 } lcs_vip_config_t;
 
 // Cluster info
-typedef struct {
+typedef struct
+{
     char cluster_name[LCS_NAME_MAX + 1];
     char self_name[LCS_NAME_MAX + 1];
     char bind_address[LCS_ADDR_MAX + 1];

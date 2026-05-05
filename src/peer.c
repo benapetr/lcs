@@ -702,8 +702,6 @@ static int peer_handle_request_frame(daemon_state_t *st, int epoll_fd, int sourc
             }
             return peer_queue_frame(st, epoll_fd, source_node_idx, LCS_MSG_STATE_SYNC_RESP,
                                     hdr->seq, payload, (uint32_t)len);
-        case LCS_MSG_STATE_SYNC_RESP:
-            return apply_state(st, payload, hdr->length, source_node_idx);
         case LCS_MSG_LEASE_REQ:
         case LCS_MSG_LEASE_RENEW:
         case LCS_MSG_LEASE_RELEASE:
@@ -1005,7 +1003,7 @@ static int peer_process_frame(daemon_state_t *st, int epoll_fd, int node_idx,
         return -1;
     }
     if (hdr->type == LCS_MSG_STATE_SYNC_RESP)
-        return peer_handle_request_frame(st, epoll_fd, node_idx, hdr, payload);
+        return apply_state(st, payload, hdr->length, node_idx);
 
     lcs_log_warn("peer %s unexpected response frame: type=%u seq=%u length=%u inflight=%zu",
                  st->cfg.nodes[node_idx].name, hdr->type, hdr->seq, hdr->length,

@@ -145,6 +145,9 @@ static int resources_complete_local_activation(daemon_state_t *st, int vip_idx, 
 {
     resource_runtime_t *res = &st->resources[vip_idx];
     uint64_t now = lcs_now_ms();
+    // TODO: VIP conflict probing is intentionally still synchronous. Making ARP/ND
+    // probes fully scheduler-driven would require a separate async probe state
+    // machine for little practical benefit while probe waits remain short.
     int conflict_rc = lcs_vip_conflict_check(&st->cfg, &st->cfg.vips[vip_idx]);
     if (conflict_rc > 0)
     {
@@ -249,6 +252,7 @@ void resources_enter_conflict_state(daemon_state_t *st, int vip_idx, uint64_t ep
                           const char *reason)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
+    lease_cancel_operations(st, vip_idx);
     if (res->owner_node == st->self_index &&
         res->owner_instance_id == st->instance_id &&
         res->state == LCS_RES_ACTIVE)

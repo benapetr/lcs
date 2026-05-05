@@ -223,6 +223,15 @@ bool lease_operation_active(const daemon_state_t *st, int vip_idx)
     return false;
 }
 
+void lease_cancel_operations(daemon_state_t *st, int vip_idx)
+{
+    for (size_t i = 0; i < LCS_LEASE_OP_MAX; i++)
+    {
+        if (st->lease_ops[i].active && st->lease_ops[i].vip_idx == vip_idx)
+            lease_op_clear(&st->lease_ops[i]);
+    }
+}
+
 static void lease_rpc_callback(void *ctx, int status,
                                const unsigned char *payload, uint32_t len)
 {
@@ -364,6 +373,37 @@ static void lease_finish_acquire(daemon_state_t *st, int epoll_fd,
                                  lease_runtime_t *op)
 {
     resource_runtime_t *res = &st->resources[op->vip_idx];
+    if (!has_quorum(st))
+    {
+        lcs_log_warn("discarding lease acquire for VIP %s epoch=%llu because quorum is lost",
+                     st->cfg.vips[op->vip_idx].name,
+                     (unsigned long long)op->epoch);
+        lease_op_send_release_to_acked(st, epoll_fd, op);
+        res->next_activation_attempt_ms = lcs_now_ms() + st->cfg.renew_ms;
+        if (op->pending_rpcs > 0)
+            return;
+        lease_op_clear(op);
+        return;
+    }
+    if (res->state == LCS_RES_CONFLICT ||
+        res->epoch > op->epoch ||
+        (res->owner_node >= 0 &&
+         (res->owner_node != op->owner_idx ||
+          res->owner_instance_id != st->instance_id ||
+          res->lease_id != op->lease_id ||
+          res->epoch > op->epoch)))
+    {
+        lcs_log_warn("discarding stale lease acquire for VIP %s epoch=%llu state=%u owner=%s local_epoch=%llu",
+                     st->cfg.vips[op->vip_idx].name,
+                     (unsigned long long)op->epoch, (unsigned)res->state,
+                     node_name_or_none(st, res->owner_node),
+                     (unsigned long long)res->epoch);
+        lease_op_send_release_to_acked(st, epoll_fd, op);
+        if (op->pending_rpcs > 0)
+            return;
+        lease_op_clear(op);
+        return;
+    }
     if ((uint32_t)op->votes >= st->quorum_needed)
     {
         uint64_t now = lcs_now_ms();
@@ -403,6 +443,26 @@ static void lease_finish_renew(daemon_state_t *st, int epoll_fd,
 {
     resource_runtime_t *res = &st->resources[op->vip_idx];
     uint64_t now = lcs_now_ms();
+    if (res->owner_node != st->self_index ||
+        res->owner_instance_id != st->instance_id ||
+        res->epoch != op->epoch ||
+        res->lease_id != op->lease_id)
+    {
+        lcs_log_debug("discarding stale lease renew result for VIP %s epoch=%llu lease=%llu",
+                      st->cfg.vips[op->vip_idx].name,
+                      (unsigned long long)op->epoch,
+                      (unsigned long long)op->lease_id);
+        lease_op_clear(op);
+        return;
+    }
+    if (!has_quorum(st))
+    {
+        lcs_log_warn("dropping VIP %s because quorum is lost",
+                     st->cfg.vips[op->vip_idx].name);
+        resources_drop_local(st, op->vip_idx, epoll_fd);
+        lease_op_clear(op);
+        return;
+    }
     if ((uint32_t)op->votes >= st->quorum_needed)
     {
         res->lease_deadline_ms = now + st->cfg.lease_ms;
@@ -513,6 +573,7 @@ int lease_handle_owner_release_request(daemon_state_t *st, const void *payload, 
     res->renew_after_ms = 0;
     res->conflict_reason[0] = '\0';
     res->next_activation_attempt_ms = lcs_now_ms() + st->cfg.lease_ms;
+    lease_cancel_operations(st, (int)resource_id);
     lcs_log_info("released VIP %s for controlled handoff at epoch=%llu",
                  st->cfg.vips[resource_id].name, (unsigned long long)epoch);
     return 0;
