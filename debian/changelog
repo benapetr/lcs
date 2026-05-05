@@ -1,3 +1,10 @@
+lcs (1.0.1-1) unstable; urgency=medium
+
+  * Fixed issues related to bad async implementation in earlier version
+  * lcs is now much more reliable in manual VIP switches
+
+ -- Petr Bena <petr@bena.rocks>  Sun, 05 May 2026 23:00:00 +0200
+
 lcs (1.0.0-1) unstable; urgency=medium
 
   * Initial Debian package.
