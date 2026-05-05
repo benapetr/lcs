@@ -937,6 +937,9 @@ static int peer_process_frame(daemon_state_t *st, int epoll_fd, int node_idx,
         return -1;
     }
     peer_mark_seen(st, node_idx, st->peers[node_idx].instance_id);
+    if (peer_is_request_type(hdr->type))
+        return peer_handle_request_frame(st, epoll_fd, node_idx, hdr, payload);
+
     if (peer->pending_active && hdr->seq == peer->pending_seq)
     {
         if (hdr->type != peer->pending_expected_type || hdr->length > peer->pending_resp_cap)
@@ -957,7 +960,14 @@ static int peer_process_frame(daemon_state_t *st, int epoll_fd, int node_idx,
         peer->pending_done = true;
         return 0;
     }
-    return peer_handle_request_frame(st, epoll_fd, node_idx, hdr, payload);
+    if (hdr->type == LCS_MSG_STATE_SYNC_RESP)
+        return peer_handle_request_frame(st, epoll_fd, node_idx, hdr, payload);
+
+    lcs_log_warn("peer %s unexpected response frame: type=%u seq=%u length=%u pending=%s expected_type=%u expected_seq=%u",
+                 st->cfg.nodes[node_idx].name, hdr->type, hdr->seq, hdr->length,
+                 peer->pending_active ? "true" : "false",
+                 peer->pending_expected_type, peer->pending_seq);
+    return -1;
 }
 
 static int peer_parse_frames(daemon_state_t *st, int epoll_fd, int node_idx)
