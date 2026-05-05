@@ -60,9 +60,7 @@ typedef struct
     char conflict_reason[LCS_REASON_MAX + 1];
 } resource_runtime_t;
 
-typedef void (*peer_rpc_callback_t)(void *ctx, int status,
-                                    const unsigned char *payload,
-                                    uint32_t len);
+typedef void (*peer_rpc_callback_t)(void *ctx, int status, const unsigned char *payload, uint32_t len);
 
 typedef struct
 {

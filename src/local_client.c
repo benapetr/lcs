@@ -34,8 +34,7 @@ int client_index_from_epoll_id(uint32_t id)
     return (int)(id - LCS_EPOLL_LOCAL_CLIENT_BASE);
 }
 
-static int client_update_epoll(int epoll_fd, int slot_idx,
-                               const local_client_runtime_t *client)
+static int client_update_epoll(int epoll_fd, int slot_idx, const local_client_runtime_t *client)
 {
     if (!client->active || client->fd < 0)
         return -1;
@@ -70,8 +69,7 @@ static int client_alloc_buffers(local_client_runtime_t *client)
     return 0;
 }
 
-static void client_close_slot(daemon_state_t *st, int epoll_fd, int slot_idx,
-                              const char *reason)
+static void client_close_slot(daemon_state_t *st, int epoll_fd, int slot_idx, const char *reason)
 {
     local_client_runtime_t *client = &st->local_clients[slot_idx];
     if (!client->active)
@@ -379,7 +377,7 @@ void client_accept(daemon_state_t *st, int epoll_fd, int listen_fd)
             continue;
         }
         client->active = true;
-        if (add_epoll_fd_events(epoll_fd, fd, client_epoll_id(slot_idx), EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) != 0)
+        if (lcs_add_epoll_fd_events(epoll_fd, fd, client_epoll_id(slot_idx), EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) != 0)
         {
             client_close_slot(st, epoll_fd, slot_idx, "epoll add failed");
             continue;

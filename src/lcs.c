@@ -100,7 +100,8 @@ static int cmd_status(const char *socket_path)
     uint8_t has_quorum;
     if (lcs_decode_status_header(&r, &node_count, &vip_count, &self_node,
                                  &quorum_needed, &votes_seen, &has_quorum) != 0 ||
-        node_count > LCS_MAX_NODES || vip_count > LCS_MAX_VIPS) {
+        node_count > LCS_MAX_NODES || vip_count > LCS_MAX_VIPS)
+    {
         fprintf(stderr, "lcs: invalid status response header\n");
         return 1;
     }
@@ -192,8 +193,7 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip)
     }
     if (hdr.type != LCS_MSG_CLEAR_CONFLICT_RESP && hdr.type != LCS_MSG_ERROR)
     {
-        fprintf(stderr, "lcs: invalid clear-conflict response: got message type %u, expected %u or %u\n",
-                hdr.type, LCS_MSG_CLEAR_CONFLICT_RESP, LCS_MSG_ERROR);
+        fprintf(stderr, "lcs: invalid clear-conflict response: got message type %u, expected %u or %u\n", hdr.type, LCS_MSG_CLEAR_CONFLICT_RESP, LCS_MSG_ERROR);
         close(fd);
         return 1;
     }

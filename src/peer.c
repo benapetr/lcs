@@ -152,8 +152,7 @@ static int peer_update_epoll(daemon_state_t *st, int epoll_fd, int node_idx)
     return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, peer->fd, &ev);
 }
 
-static int peer_encode_hello(const daemon_state_t *st, unsigned char *payload, size_t cap,
-                        size_t *len, uint8_t mode)
+static int peer_encode_hello(const daemon_state_t *st, unsigned char *payload, size_t cap, size_t *len, uint8_t mode)
 {
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, cap);
@@ -820,8 +819,8 @@ static int peer_register_connection(daemon_state_t *st, int epoll_fd, int node_i
     if (peer->fd >= 0)
         peer_close_connection(st, epoll_fd, node_idx, false, "duplicate session replaced");
     if (peer_ensure_buffers(peer) != 0 ||
-        set_fd_nonblocking(fd) != 0 ||
-        add_epoll_fd(epoll_fd, fd, peer_epoll_id(node_idx)) != 0)
+        lcs_set_fd_nonblocking(fd) != 0 ||
+        lcs_add_epoll_fd(epoll_fd, fd, peer_epoll_id(node_idx)) != 0)
     {
         peer_free_buffers(peer);
         return -1;
@@ -1113,16 +1112,13 @@ void peer_pump_epoll_event(daemon_state_t *st, int epoll_fd, const struct epoll_
         }
         if (ev->events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR))
         {
-            lcs_log_debug("peer %s epoll close event mask=0x%x",
-                          st->cfg.nodes[peer_idx].name, ev->events);
+            lcs_log_debug("peer %s epoll close event mask=0x%x", st->cfg.nodes[peer_idx].name, ev->events);
             peer_close_connection(st, epoll_fd, peer_idx, true, "connection closed");
         } else
         {
-            if ((ev->events & EPOLLOUT) &&
-                peer_flush_output(st, epoll_fd, peer_idx) != 0)
+            if ((ev->events & EPOLLOUT) && peer_flush_output(st, epoll_fd, peer_idx) != 0)
             {
-                peer_close_connection(st, epoll_fd, peer_idx, true,
-                                      "connection write failed");
+                peer_close_connection(st, epoll_fd, peer_idx, true, "connection write failed");
                 return;
             }
             if (ev->events & EPOLLIN)
@@ -1141,7 +1137,7 @@ void peer_pump_epoll_event(daemon_state_t *st, int epoll_fd, const struct epoll_
                     lcs_log_debug("peer accept failed: %s", strerror(errno));
                 break;
             }
-            if (set_fd_nonblocking(peer_fd) != 0)
+            if (lcs_set_fd_nonblocking(peer_fd) != 0)
             {
                 close(peer_fd);
                 continue;
@@ -1176,14 +1172,12 @@ void peer_pump_epoll_event(daemon_state_t *st, int epoll_fd, const struct epoll_
             hs->fd = peer_fd;
             hs->node_idx = -1;
             hs->deadline_ms = lcs_now_ms() + peer_handshake_timeout_ms(st);
-            if (add_epoll_fd_events(epoll_fd, peer_fd, handshake_epoll_id(slot_idx),
-                                    EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) != 0)
+            if (lcs_add_epoll_fd_events(epoll_fd, peer_fd, handshake_epoll_id(slot_idx), EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) != 0)
             {
                 handshake_close(st, epoll_fd, slot_idx, "epoll add failed");
                 continue;
             }
-            lcs_log_debug3("accepted inbound peer handshake slot=%d fd=%d deadline_ms=%llu",
-                           slot_idx, peer_fd, (unsigned long long)hs->deadline_ms);
+            lcs_log_debug3("accepted inbound peer handshake slot=%d fd=%d deadline_ms=%llu", slot_idx, peer_fd, (unsigned long long)hs->deadline_ms);
             recompute_votes(st);
         }
     }
@@ -1212,7 +1206,7 @@ static int peer_connect(daemon_state_t *st, int epoll_fd, int node_idx)
             saved_errno = errno;
             continue;
         }
-        if (set_fd_nonblocking(fd) != 0)
+        if (lcs_set_fd_nonblocking(fd) != 0)
         {
             saved_errno = errno;
             close(fd);
@@ -1246,8 +1240,7 @@ static int peer_connect(daemon_state_t *st, int epoll_fd, int node_idx)
     peer->in_len = 0;
     peer->out_off = 0;
     peer->out_len = 0;
-    if (add_epoll_fd_events(epoll_fd, fd, peer_epoll_id(node_idx),
-                            EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) != 0)
+    if (lcs_add_epoll_fd_events(epoll_fd, fd, peer_epoll_id(node_idx), EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) != 0)
     {
         close(fd);
         peer->fd = -1;
@@ -1267,6 +1260,7 @@ void peer_broadcast_state_sync(daemon_state_t *st, int epoll_fd)
     {
         if ((int)i == st->self_index || st->peers[i].fd < 0)
             continue;
+
         if (peer_send_state_sync(st, epoll_fd, (int)i) != 0)
             lcs_log_debug("state sync broadcast to %s failed", st->cfg.nodes[i].name);
     }
@@ -1279,8 +1273,7 @@ void peer_poll(daemon_state_t *st, int epoll_fd)
     {
         if ((int)i == st->self_index)
             continue;
-        if (st->peers[i].fd < 0 && st->self_index < (int)i &&
-            (!st->peers[i].next_sync_ms || now >= st->peers[i].next_sync_ms))
+        if (st->peers[i].fd < 0 && st->self_index < (int)i && (!st->peers[i].next_sync_ms || now >= st->peers[i].next_sync_ms))
         {
             if (peer_connect(st, epoll_fd, (int)i) != 0)
             {
@@ -1294,8 +1287,7 @@ void peer_poll(daemon_state_t *st, int epoll_fd)
         {
             if (st->peers[i].connect_deadline_ms && now >= st->peers[i].connect_deadline_ms)
             {
-                lcs_log_debug3("peer %s setup timed out state=%d",
-                               st->cfg.nodes[i].name, st->peers[i].conn_state);
+                lcs_log_debug3("peer %s setup timed out state=%d", st->cfg.nodes[i].name, st->peers[i].conn_state);
                 peer_close_connection(st, epoll_fd, (int)i, true, "connect/hello timeout");
             }
             continue;
@@ -1303,8 +1295,7 @@ void peer_poll(daemon_state_t *st, int epoll_fd)
         for (size_t j = 0; j < LCS_MAX_PEER_RPC_INFLIGHT; j++)
         {
             peer_rpc_runtime_t *rpc = &st->peers[i].in_flight[j];
-            if (rpc->active && !rpc->done && rpc->deadline_ms &&
-                now >= rpc->deadline_ms)
+            if (rpc->active && !rpc->done && rpc->deadline_ms && now >= rpc->deadline_ms)
             {
                 lcs_log_debug3("peer %s RPC seq=%u type=%u timed out waiting for type=%u",
                                st->cfg.nodes[i].name, rpc->seq, rpc->req_type,

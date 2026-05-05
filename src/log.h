@@ -6,8 +6,7 @@
 
 #include <stdbool.h>
 
-void lcs_log_open(const char *ident, bool foreground, int verbosity,
-                  bool syslog_enabled, bool timestamp_enabled);
+void lcs_log_open(const char *ident, bool foreground, int verbosity, bool syslog_enabled, bool timestamp_enabled);
 void lcs_log_close(void);
 void lcs_log_info(const char *fmt, ...);
 void lcs_log_warn(const char *fmt, ...);

@@ -7,7 +7,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 
-int add_epoll_fd(int epoll_fd, int fd, uint32_t id)
+int lcs_add_epoll_fd(int epoll_fd, int fd, uint32_t id)
 {
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
@@ -16,7 +16,7 @@ int add_epoll_fd(int epoll_fd, int fd, uint32_t id)
     return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 }
 
-int add_epoll_fd_events(int epoll_fd, int fd, uint32_t id, uint32_t events)
+int lcs_add_epoll_fd_events(int epoll_fd, int fd, uint32_t id, uint32_t events)
 {
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
@@ -25,7 +25,7 @@ int add_epoll_fd_events(int epoll_fd, int fd, uint32_t id, uint32_t events)
     return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 }
 
-int set_fd_nonblocking(int fd)
+int lcs_set_fd_nonblocking(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0)

@@ -38,7 +38,8 @@ typedef struct __attribute__((packed))
     unsigned char tpa[4];
 } lcs_arp_packet_t;
 
-typedef struct {
+typedef struct
+{
     int ifindex;
     unsigned char mac[ETH_ALEN];
     unsigned int flags;
@@ -60,8 +61,7 @@ static int run_ip_addr(const char *op, const lcs_vip_config_t *vip)
         return 0;
     }
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "ip addr %s %s dev %s >/dev/null 2>&1",
-             op, vip->address, vip->interface);
+    snprintf(cmd, sizeof(cmd), "ip addr %s %s dev %s >/dev/null 2>&1", op, vip->address, vip->interface);
     int rc = system(cmd);
     if (rc != 0)
     {
@@ -72,9 +72,7 @@ static int run_ip_addr(const char *op, const lcs_vip_config_t *vip)
     return 0;
 }
 
-static int parse_vip_addr_prefix(const char *address, int *family,
-                                 unsigned char *addr, size_t addr_len,
-                                 uint8_t *prefix_len)
+static int parse_vip_addr_prefix(const char *address, int *family, unsigned char *addr, size_t addr_len, uint8_t *prefix_len)
 {
     char buf[LCS_ADDR_MAX + 1];
     snprintf(buf, sizeof(buf), "%s", address);
@@ -109,8 +107,7 @@ static int parse_vip_addr_prefix(const char *address, int *family,
     return -1;
 }
 
-static int add_rtattr(struct nlmsghdr *nlh, size_t max_len, int type,
-                      const void *data, size_t data_len)
+static int add_rtattr(struct nlmsghdr *nlh, size_t max_len, int type, const void *data, size_t data_len)
 {
     size_t len = RTA_LENGTH(data_len);
     size_t new_len = NLMSG_ALIGN(nlh->nlmsg_len) + RTA_ALIGN(len);
@@ -139,16 +136,14 @@ static int netlink_addr_op(const char *op, const lcs_vip_config_t *vip, bool add
     unsigned int ifindex = if_nametoindex(vip->interface);
     if (!ifindex)
     {
-        lcs_log_warn("netlink VIP %s %s on %s failed: unknown interface",
-                     op, vip->address, vip->interface);
+        lcs_log_warn("netlink VIP %s %s on %s failed: unknown interface", op, vip->address, vip->interface);
         return -1;
     }
 
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     if (fd < 0)
     {
-        lcs_log_warn("netlink VIP %s %s on %s failed: %s",
-                     op, vip->address, vip->interface, strerror(errno));
+        lcs_log_warn("netlink VIP %s %s on %s failed: %s", op, vip->address, vip->interface, strerror(errno));
         return -1;
     }
 
@@ -171,7 +166,7 @@ static int netlink_addr_op(const char *op, const lcs_vip_config_t *vip, bool add
     size_t addr_len = family == AF_INET ? sizeof(struct in_addr) : sizeof(struct in6_addr);
     if (add_rtattr(&req.nlh, sizeof(req), IFA_LOCAL, addr, addr_len) != 0 ||
         add_rtattr(&req.nlh, sizeof(req), IFA_ADDRESS, addr, addr_len) != 0)
-        {
+    {
         close(fd);
         return -1;
     }
@@ -179,11 +174,9 @@ static int netlink_addr_op(const char *op, const lcs_vip_config_t *vip, bool add
     struct sockaddr_nl nladdr;
     memset(&nladdr, 0, sizeof(nladdr));
     nladdr.nl_family = AF_NETLINK;
-    if (sendto(fd, &req, req.nlh.nlmsg_len, 0,
-               (struct sockaddr *)&nladdr, sizeof(nladdr)) < 0)
-               {
-        lcs_log_warn("netlink VIP %s %s on %s failed: %s",
-                     op, vip->address, vip->interface, strerror(errno));
+    if (sendto(fd, &req, req.nlh.nlmsg_len, 0, (struct sockaddr *)&nladdr, sizeof(nladdr)) < 0)
+    {
+        lcs_log_warn("netlink VIP %s %s on %s failed: %s", op, vip->address, vip->interface, strerror(errno));
         close(fd);
         return -1;
     }
@@ -192,15 +185,12 @@ static int netlink_addr_op(const char *op, const lcs_vip_config_t *vip, bool add
     ssize_t n = recv(fd, resp, sizeof(resp), 0);
     if (n < 0)
     {
-        lcs_log_warn("netlink VIP %s %s on %s ack failed: %s",
-                     op, vip->address, vip->interface, strerror(errno));
+        lcs_log_warn("netlink VIP %s %s on %s ack failed: %s", op, vip->address, vip->interface, strerror(errno));
         close(fd);
         return -1;
     }
-    for (struct nlmsghdr *nlh = (struct nlmsghdr *)resp;
-         NLMSG_OK(nlh, (unsigned int)n);
-         nlh = NLMSG_NEXT(nlh, n))
-         {
+    for (struct nlmsghdr *nlh = (struct nlmsghdr *)resp; NLMSG_OK(nlh, (unsigned int)n); nlh = NLMSG_NEXT(nlh, n))
+    {
         if (nlh->nlmsg_type == NLMSG_ERROR)
         {
             struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
@@ -213,13 +203,11 @@ static int netlink_addr_op(const char *op, const lcs_vip_config_t *vip, bool add
             if (!add && err->error == -EADDRNOTAVAIL)
             {
                 close(fd);
-                lcs_log_info("netlink VIP %s %s on %s already absent",
-                             op, vip->address, vip->interface);
+                lcs_log_info("netlink VIP %s %s on %s already absent", op, vip->address, vip->interface);
                 return 0;
             }
             errno = -err->error;
-            lcs_log_warn("netlink VIP %s %s on %s failed: %s",
-                         op, vip->address, vip->interface, strerror(errno));
+            lcs_log_warn("netlink VIP %s %s on %s failed: %s", op, vip->address, vip->interface, strerror(errno));
             close(fd);
             return -1;
         }
