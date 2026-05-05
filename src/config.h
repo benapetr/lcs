@@ -29,7 +29,6 @@ typedef struct
     char post_stop[LCS_PATH_MAX + 1];
 } lcs_vip_config_t;
 
-// Cluster info
 typedef struct
 {
     char cluster_name[LCS_NAME_MAX + 1];

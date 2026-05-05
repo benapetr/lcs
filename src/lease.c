@@ -232,14 +232,12 @@ void lease_cancel_operations(daemon_state_t *st, int vip_idx)
     }
 }
 
-static void lease_rpc_callback(void *ctx, int status,
-                               const unsigned char *payload, uint32_t len)
+static void lease_rpc_callback(void *ctx, int status, const unsigned char *payload, uint32_t len)
 {
     lease_rpc_context_t *rpc_ctx = ctx;
     lease_runtime_t *op = rpc_ctx->op;
     int node_idx = rpc_ctx->node_idx;
-    if (!op || !op->active || op->id != rpc_ctx->op_id ||
-        node_idx < 0 || node_idx >= LCS_MAX_NODES)
+    if (!op || !op->active || op->id != rpc_ctx->op_id || node_idx < 0 || node_idx >= LCS_MAX_NODES)
         return;
     op->rpc_done[node_idx] = true;
     op->rpc_status[node_idx] = status;
@@ -268,8 +266,7 @@ static uint16_t lease_op_message_type(lease_op_type_t type)
     }
 }
 
-static int lease_op_send_to_peer(daemon_state_t *st, int epoll_fd,
-                                 lease_runtime_t *op, int node_idx)
+static int lease_op_send_to_peer(daemon_state_t *st, int epoll_fd, lease_runtime_t *op, int node_idx)
 {
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
@@ -293,8 +290,7 @@ static int lease_op_send_to_peer(daemon_state_t *st, int epoll_fd,
     return 0;
 }
 
-static void lease_op_send_release_to_acked(daemon_state_t *st, int epoll_fd,
-                                           lease_runtime_t *op)
+static void lease_op_send_release_to_acked(daemon_state_t *st, int epoll_fd, lease_runtime_t *op)
 {
     op->type = LCS_LEASE_OP_RELEASE;
     op->pending_rpcs = 0;
@@ -333,20 +329,18 @@ static int lease_start_operation(daemon_state_t *st, int epoll_fd,
     return 0;
 }
 
-int lease_start_acquire(daemon_state_t *st, int vip_idx, int owner_idx,
-                        uint64_t epoch, uint64_t lease_id, int epoll_fd)
+int lease_start_acquire(daemon_state_t *st, int vip_idx, int owner_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     if (!has_quorum(st))
         return -1;
-    return lease_start_operation(st, epoll_fd, LCS_LEASE_OP_ACQUIRE, vip_idx,
-                                 owner_idx, epoch, lease_id);
+
+    return lease_start_operation(st, epoll_fd, LCS_LEASE_OP_ACQUIRE, vip_idx, owner_idx, epoch, lease_id);
 }
 
 int lease_start_renew(daemon_state_t *st, int vip_idx, int epoll_fd)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
-    return lease_start_operation(st, epoll_fd, LCS_LEASE_OP_RENEW, vip_idx,
-                                 st->self_index, res->epoch, res->lease_id);
+    return lease_start_operation(st, epoll_fd, LCS_LEASE_OP_RENEW, vip_idx, st->self_index, res->epoch, res->lease_id);
 }
 
 static void lease_process_result(daemon_state_t *st, lease_runtime_t *op)
@@ -357,10 +351,7 @@ static void lease_process_result(daemon_state_t *st, lease_runtime_t *op)
             continue;
         int32_t status = -1;
         char msg[128];
-        if (op->rpc_status[i] == 0 &&
-            lcs_decode_simple_resp(op->rpc_resp[i], op->rpc_resp_len[i],
-                                   &status, msg, sizeof(msg)) == 0 &&
-            status == 0)
+        if (op->rpc_status[i] == 0 && lcs_decode_simple_resp(op->rpc_resp[i], op->rpc_resp_len[i], &status, msg, sizeof(msg)) == 0 && status == 0)
         {
             op->acked[i] = true;
             if (op->type != LCS_LEASE_OP_RELEASE)
@@ -369,8 +360,7 @@ static void lease_process_result(daemon_state_t *st, lease_runtime_t *op)
     }
 }
 
-static void lease_finish_acquire(daemon_state_t *st, int epoll_fd,
-                                 lease_runtime_t *op)
+static void lease_finish_acquire(daemon_state_t *st, int epoll_fd, lease_runtime_t *op)
 {
     resource_runtime_t *res = &st->resources[op->vip_idx];
     if (!has_quorum(st))
@@ -419,8 +409,7 @@ static void lease_finish_acquire(daemon_state_t *st, int epoll_fd,
                       st->cfg.vips[op->vip_idx].name,
                       (unsigned long long)op->epoch, op->votes,
                       st->quorum_needed);
-        if (resources_activate_acquired_local(st, op->vip_idx, op->epoch,
-                                              op->lease_id, epoll_fd) != 0)
+        if (resources_activate_acquired_local(st, op->vip_idx, op->epoch, op->lease_id, epoll_fd) != 0)
             res->next_activation_attempt_ms = now + st->cfg.lease_ms;
         if (op->type == LCS_LEASE_OP_RELEASE)
             return;
@@ -438,8 +427,7 @@ static void lease_finish_acquire(daemon_state_t *st, int epoll_fd,
     lease_op_clear(op);
 }
 
-static void lease_finish_renew(daemon_state_t *st, int epoll_fd,
-                               lease_runtime_t *op)
+static void lease_finish_renew(daemon_state_t *st, int epoll_fd, lease_runtime_t *op)
 {
     resource_runtime_t *res = &st->resources[op->vip_idx];
     uint64_t now = lcs_now_ms();
@@ -457,8 +445,7 @@ static void lease_finish_renew(daemon_state_t *st, int epoll_fd,
     }
     if (!has_quorum(st))
     {
-        lcs_log_warn("dropping VIP %s because quorum is lost",
-                     st->cfg.vips[op->vip_idx].name);
+        lcs_log_warn("dropping VIP %s because quorum is lost", st->cfg.vips[op->vip_idx].name);
         resources_drop_local(st, op->vip_idx, epoll_fd);
         lease_op_clear(op);
         return;
@@ -472,8 +459,7 @@ static void lease_finish_renew(daemon_state_t *st, int epoll_fd,
                       (unsigned long long)op->epoch, op->votes);
     } else if (now + st->cfg.renew_ms >= res->lease_deadline_ms)
     {
-        lcs_log_warn("dropping VIP %s because lease renewal failed",
-                     st->cfg.vips[op->vip_idx].name);
+        lcs_log_warn("dropping VIP %s because lease renewal failed", st->cfg.vips[op->vip_idx].name);
         resources_drop_local(st, op->vip_idx, epoll_fd);
     } else
     {
@@ -502,8 +488,7 @@ void lease_process_operations(daemon_state_t *st, int epoll_fd)
     }
 }
 
-void lease_release_majority(daemon_state_t *st, int vip_idx, int owner_idx,
-                             uint64_t epoch, uint64_t lease_id, int epoll_fd)
+void lease_release_majority(daemon_state_t *st, int vip_idx, int owner_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     for (size_t i = 0; i < LCS_LEASE_OP_MAX; i++)
     {
@@ -529,23 +514,19 @@ void lease_release_majority(daemon_state_t *st, int vip_idx, int owner_idx,
             lease_op_clear(op);
         return;
     }
-    (void)lease_start_operation(st, epoll_fd, LCS_LEASE_OP_RELEASE, vip_idx,
-                                owner_idx, epoch, lease_id);
+    (void)lease_start_operation(st, epoll_fd, LCS_LEASE_OP_RELEASE, vip_idx, owner_idx, epoch, lease_id);
 }
 
-int lease_handle_owner_release_request(daemon_state_t *st, const void *payload, size_t len,
-                                 int source_node_idx)
+int lease_handle_owner_release_request(daemon_state_t *st, const void *payload, size_t len, int source_node_idx)
 {
     uint16_t resource_id, owner_node;
     uint64_t epoch, lease_id, sender_instance_id;
     uint32_t lease_ms;
-    if (lease_decode_msg(st, payload, len, &resource_id, &owner_node, &epoch,
-                         &lease_id, &lease_ms, &sender_instance_id) != 0)
+    if (lease_decode_msg(st, payload, len, &resource_id, &owner_node, &epoch, &lease_id, &lease_ms, &sender_instance_id) != 0)
         return -1;
 
     (void)lease_ms;
-    if (source_node_idx >= 0 && ((size_t)source_node_idx >= st->cfg.node_count ||
-                                  sender_instance_id != st->peers[source_node_idx].instance_id))
+    if (source_node_idx >= 0 && ((size_t)source_node_idx >= st->cfg.node_count || sender_instance_id != st->peers[source_node_idx].instance_id))
         return -1;
 
     if (owner_node != (uint16_t)st->self_index)
@@ -574,8 +555,7 @@ int lease_handle_owner_release_request(daemon_state_t *st, const void *payload, 
     res->conflict_reason[0] = '\0';
     res->next_activation_attempt_ms = lcs_now_ms() + st->cfg.lease_ms;
     lease_cancel_operations(st, (int)resource_id);
-    lcs_log_info("released VIP %s for controlled handoff at epoch=%llu",
-                 st->cfg.vips[resource_id].name, (unsigned long long)epoch);
+    lcs_log_info("released VIP %s for controlled handoff at epoch=%llu", st->cfg.vips[resource_id].name, (unsigned long long)epoch);
     return 0;
 }
 

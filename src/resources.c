@@ -272,9 +272,7 @@ void resources_enter_conflict_state(daemon_state_t *st, int vip_idx, uint64_t ep
                  res->conflict_reason);
 }
 
-int resources_activate_acquired_local(daemon_state_t *st, int vip_idx,
-                                      uint64_t epoch, uint64_t lease_id,
-                                      int epoll_fd)
+int resources_activate_acquired_local(daemon_state_t *st, int vip_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     resource_runtime_t *res = &st->resources[vip_idx];
     uint64_t now = lcs_now_ms();
@@ -298,16 +296,14 @@ int resources_activate_local(daemon_state_t *st, int vip_idx, uint64_t epoch, in
 {
     if (st->cfg.nodes[st->self_index].role != LCS_NODE_FULL)
     {
-        lcs_log_debug("refusing to activate VIP %s on non-full-member node",
-                      st->cfg.vips[vip_idx].name);
+        lcs_log_debug("refusing to activate VIP %s on non-full-member node", st->cfg.vips[vip_idx].name);
         return -1;
     }
     resource_runtime_t *res = &st->resources[vip_idx];
     uint64_t now = lcs_now_ms();
     if (res->state == LCS_RES_CONFLICT)
     {
-        lcs_log_warn("refusing to activate VIP %s because it is in conflict state",
-                     st->cfg.vips[vip_idx].name);
+        lcs_log_warn("refusing to activate VIP %s because it is in conflict state", st->cfg.vips[vip_idx].name);
         return -1;
     }
     if (res->next_activation_attempt_ms && now < res->next_activation_attempt_ms)
@@ -318,8 +314,7 @@ int resources_activate_local(daemon_state_t *st, int vip_idx, uint64_t epoch, in
         return -1;
     }
     uint64_t lease_id = lcs_random_u64();
-    if (lease_start_acquire(st, vip_idx, st->self_index, epoch, lease_id,
-                            epoll_fd) != 0)
+    if (lease_start_acquire(st, vip_idx, st->self_index, epoch, lease_id, epoll_fd) != 0)
     {
         lcs_log_debug2("auto-place failed VIP %s: could not start majority lease acquire for epoch=%llu",
                        st->cfg.vips[vip_idx].name, (unsigned long long)epoch);
@@ -404,8 +399,7 @@ void resources_auto_place(daemon_state_t *st, int epoll_fd)
         }
         if (lease_operation_active(st, (int)i))
         {
-            lcs_log_debug2("auto-place skip VIP %s: lease operation already pending",
-                           st->cfg.vips[i].name);
+            lcs_log_debug2("auto-place skip VIP %s: lease operation already pending", st->cfg.vips[i].name);
             continue;
         }
         lcs_log_debug2("auto-place try VIP %s on %s current_epoch=%llu next_epoch=%llu",

@@ -46,25 +46,21 @@ static void move_complete(daemon_state_t *st, int epoll_fd, move_runtime_t *move
 {
     if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT)
     {
-        client_complete_move(st, epoll_fd, move->local_client_slot,
-                             move->local_client_id, move->client_seq,
-                             move->final_status, move->final_message);
+        client_complete_move(st, epoll_fd, move->local_client_slot, move->local_client_id, move->client_seq, move->final_status, move->final_message);
     } else if (move->origin == LCS_MOVE_ORIGIN_PEER)
     {
-        peer_send_simple_response(st, epoll_fd, move->source_node_idx,
-                                  move->peer_seq, LCS_MSG_MOVE_RESP,
-                                  move->final_status, move->final_message);
+        peer_queue_simple_resp(st, epoll_fd, move->source_node_idx, move->peer_seq, LCS_MSG_MOVE_RESP, move->final_status, move->final_message);
     }
     move_clear(move);
 }
 
-static void move_peer_callback(void *ctx, int status,
-                               const unsigned char *payload, uint32_t len)
+static void move_peer_callback(void *ctx, int status, const unsigned char *payload, uint32_t len)
 {
     move_rpc_context_t *rpc_ctx = ctx;
     move_runtime_t *move = rpc_ctx->move;
     if (!move || !move->active || move->id != rpc_ctx->move_id)
         return;
+
     move->peer_done = true;
     move->peer_status = status;
     move->peer_resp_len = 0;
@@ -75,14 +71,12 @@ static void move_peer_callback(void *ctx, int status,
     }
 }
 
-static void move_rpc_callback(void *ctx, int status,
-                              const unsigned char *payload, uint32_t len)
+static void move_rpc_callback(void *ctx, int status, const unsigned char *payload, uint32_t len)
 {
     move_rpc_context_t *rpc_ctx = ctx;
     move_runtime_t *move = rpc_ctx->move;
     int node_idx = rpc_ctx->node_idx;
-    if (!move || !move->active || move->id != rpc_ctx->move_id ||
-        node_idx < 0 || node_idx >= LCS_MAX_NODES)
+    if (!move || !move->active || move->id != rpc_ctx->move_id || node_idx < 0 || node_idx >= LCS_MAX_NODES)
         return;
     move->rpc_done[node_idx] = true;
     move->rpc_status[node_idx] = status;
@@ -100,8 +94,7 @@ static void move_fail_immediate_local(daemon_state_t *st, int epoll_fd,
                                       int local_slot, uint64_t local_client_id,
                                       uint32_t client_seq, const char *message)
 {
-    client_complete_move(st, epoll_fd, local_slot, local_client_id, client_seq,
-                         -1, message);
+    client_complete_move(st, epoll_fd, local_slot, local_client_id, client_seq, -1, message);
 }
 
 static int move_validate_request(daemon_state_t *st, const void *payload,
@@ -110,8 +103,7 @@ static int move_validate_request(daemon_state_t *st, const void *payload,
 {
     char vip_name[LCS_NAME_MAX + 1];
     char target_name[LCS_NAME_MAX + 1];
-    if (lcs_decode_move_req(payload, len, vip_name, sizeof(vip_name),
-                            target_name, sizeof(target_name)) != 0)
+    if (lcs_decode_move_req(payload, len, vip_name, sizeof(vip_name), target_name, sizeof(target_name)) != 0)
     {
         snprintf(message, message_len, "invalid move request length");
         return -1;
@@ -142,8 +134,7 @@ static void move_set_failed(move_runtime_t *move, const char *message)
     snprintf(move->final_message, sizeof(move->final_message), "%s", message);
 }
 
-static void move_start_owner_release(daemon_state_t *st, int epoll_fd,
-                                     move_runtime_t *move)
+static void move_start_owner_release(daemon_state_t *st, int epoll_fd, move_runtime_t *move)
 {
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
@@ -187,8 +178,7 @@ static void move_apply_local_lease(daemon_state_t *st, move_runtime_t *move)
     res->conflict_reason[0] = '\0';
 }
 
-static void move_start_failed_release(daemon_state_t *st, int epoll_fd,
-                                      move_runtime_t *move)
+static void move_start_failed_release(daemon_state_t *st, int epoll_fd, move_runtime_t *move)
 {
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
@@ -223,8 +213,7 @@ static void move_start_failed_release(daemon_state_t *st, int epoll_fd,
         move->phase = LCS_MOVE_PHASE_RELEASE_FAILED_LEASE;
 }
 
-static void move_start_lease_acquire(daemon_state_t *st, int epoll_fd,
-                                     move_runtime_t *move)
+static void move_start_lease_acquire(daemon_state_t *st, int epoll_fd, move_runtime_t *move)
 {
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
@@ -268,12 +257,10 @@ static void move_start_lease_acquire(daemon_state_t *st, int epoll_fd,
     move->phase = LCS_MOVE_PHASE_WAIT_LEASE;
 }
 
-static void move_finish_activation(daemon_state_t *st, int epoll_fd,
-                                   move_runtime_t *move)
+static void move_finish_activation(daemon_state_t *st, int epoll_fd, move_runtime_t *move)
 {
     move_apply_local_lease(st, move);
-    if (resources_activate_acquired_local(st, move->vip_idx, move->epoch,
-                                          move->lease_id, epoll_fd) == 0)
+    if (resources_activate_acquired_local(st, move->vip_idx, move->epoch, move->lease_id, epoll_fd) == 0)
     {
         move->final_status = 0;
         snprintf(move->final_message, sizeof(move->final_message), "%s",
@@ -286,8 +273,7 @@ static void move_finish_activation(daemon_state_t *st, int epoll_fd,
     move_complete(st, epoll_fd, move);
 }
 
-static void move_start_target(daemon_state_t *st, int epoll_fd,
-                              move_runtime_t *move)
+static void move_start_target(daemon_state_t *st, int epoll_fd, move_runtime_t *move)
 {
     resource_runtime_t *res = &st->resources[move->vip_idx];
     if (res->owner_node == st->self_index &&
@@ -335,8 +321,7 @@ static int move_start_remote_target(daemon_state_t *st, int epoll_fd,
     move_runtime_t *move = move_alloc(st);
     if (!move)
     {
-        move_fail_immediate_local(st, epoll_fd, local_slot, local_client_id,
-                                  client_seq, "move table is full");
+        move_fail_immediate_local(st, epoll_fd, local_slot, local_client_id, client_seq, "move table is full");
         return -1;
     }
     move->origin = LCS_MOVE_ORIGIN_LOCAL_CLIENT;
@@ -365,8 +350,7 @@ static int move_start_remote_target(daemon_state_t *st, int epoll_fd,
             st->resources[vip_idx].state == LCS_RES_ACTIVE)
         {
             move->final_status = 0;
-            snprintf(move->final_message, sizeof(move->final_message),
-                     "move completed");
+            snprintf(move->final_message, sizeof(move->final_message), "move completed");
         }
         move_complete(st, epoll_fd, move);
         return -1;
@@ -385,22 +369,18 @@ int move_start_local_client(daemon_state_t *st, int epoll_fd, int local_slot,
     int target_idx = -1;
     char message[128] = "";
     uint64_t local_client_id = st->local_clients[local_slot].id;
-    if (move_validate_request(st, payload, len, &vip_idx, &target_idx,
-                              message, sizeof(message)) != 0)
+    if (move_validate_request(st, payload, len, &vip_idx, &target_idx, message, sizeof(message)) != 0)
     {
-        move_fail_immediate_local(st, epoll_fd, local_slot, local_client_id,
-                                  client_seq, message);
+        move_fail_immediate_local(st, epoll_fd, local_slot, local_client_id, client_seq, message);
         return -1;
     }
     if (target_idx != st->self_index)
-        return move_start_remote_target(st, epoll_fd, local_slot, client_seq,
-                                        payload, len, vip_idx, target_idx);
+        return move_start_remote_target(st, epoll_fd, local_slot, client_seq, payload, len, vip_idx, target_idx);
 
     move_runtime_t *move = move_alloc(st);
     if (!move)
     {
-        move_fail_immediate_local(st, epoll_fd, local_slot, local_client_id,
-                                  client_seq, "move table is full");
+        move_fail_immediate_local(st, epoll_fd, local_slot, local_client_id, client_seq, "move table is full");
         return -1;
     }
     move->origin = LCS_MOVE_ORIGIN_LOCAL_CLIENT;
@@ -423,25 +403,20 @@ int move_start_peer_request(daemon_state_t *st, int epoll_fd, int source_node_id
     int vip_idx = -1;
     int target_idx = -1;
     char message[128] = "";
-    if (move_validate_request(st, payload, len, &vip_idx, &target_idx,
-                              message, sizeof(message)) != 0)
+    if (move_validate_request(st, payload, len, &vip_idx, &target_idx, message, sizeof(message)) != 0)
     {
-        peer_send_simple_response(st, epoll_fd, source_node_idx, peer_seq,
-                                  LCS_MSG_MOVE_RESP, -1, message);
+        peer_queue_simple_resp(st, epoll_fd, source_node_idx, peer_seq, LCS_MSG_MOVE_RESP, -1, message);
         return -1;
     }
     if (target_idx != st->self_index)
     {
-        peer_send_simple_response(st, epoll_fd, source_node_idx, peer_seq,
-                                  LCS_MSG_MOVE_RESP, -1,
-                                  "move request reached non-target node");
+        peer_queue_simple_resp(st, epoll_fd, source_node_idx, peer_seq, LCS_MSG_MOVE_RESP, -1, "move request reached non-target node");
         return -1;
     }
     move_runtime_t *move = move_alloc(st);
     if (!move)
     {
-        peer_send_simple_response(st, epoll_fd, source_node_idx, peer_seq,
-                                  LCS_MSG_MOVE_RESP, -1, "move table is full");
+        peer_queue_simple_resp(st, epoll_fd, source_node_idx, peer_seq, LCS_MSG_MOVE_RESP, -1, "move table is full");
         return -1;
     }
     move->origin = LCS_MOVE_ORIGIN_PEER;
@@ -455,8 +430,7 @@ int move_start_peer_request(daemon_state_t *st, int epoll_fd, int source_node_id
     return 0;
 }
 
-static void move_process_target(move_runtime_t *move, daemon_state_t *st,
-                                int epoll_fd, uint64_t now)
+static void move_process_target(move_runtime_t *move, daemon_state_t *st, int epoll_fd, uint64_t now)
 {
     if (move->phase == LCS_MOVE_PHASE_WAIT_OWNER_RELEASE)
     {
@@ -496,8 +470,7 @@ static void move_process_target(move_runtime_t *move, daemon_state_t *st,
     }
 }
 
-static void move_process_lease(move_runtime_t *move, daemon_state_t *st,
-                               int epoll_fd)
+static void move_process_lease(move_runtime_t *move, daemon_state_t *st, int epoll_fd)
 {
     for (size_t i = 0; i < st->cfg.node_count; i++)
     {
@@ -572,24 +545,26 @@ void move_process(daemon_state_t *st, int epoll_fd)
                        st->resources[move->vip_idx].state == LCS_RES_ACTIVE)
             {
                 move->final_status = 0;
-                snprintf(move->final_message, sizeof(move->final_message),
-                         "move completed");
+                snprintf(move->final_message, sizeof(move->final_message), "move completed");
             } else
+            {
                 move_set_failed(move, "target node move request failed");
+            }
             move_complete(st, epoll_fd, move);
-        } else if (move->phase == LCS_MOVE_PHASE_WAIT_OWNER_RELEASE ||
-                   move->phase == LCS_MOVE_PHASE_WAIT_OLD_LEASE_EXPIRY)
+        } else if (move->phase == LCS_MOVE_PHASE_WAIT_OWNER_RELEASE || move->phase == LCS_MOVE_PHASE_WAIT_OLD_LEASE_EXPIRY)
+        {
             move_process_target(move, st, epoll_fd, now);
-        else if (move->phase == LCS_MOVE_PHASE_WAIT_LEASE)
+        } else if (move->phase == LCS_MOVE_PHASE_WAIT_LEASE)
+        {
             move_process_lease(move, st, epoll_fd);
-        else if (move->phase == LCS_MOVE_PHASE_RELEASE_FAILED_LEASE &&
-                 move->pending_rpcs == 0)
+        } else if (move->phase == LCS_MOVE_PHASE_RELEASE_FAILED_LEASE && move->pending_rpcs == 0)
+        {
             move_complete(st, epoll_fd, move);
+        }
     }
 }
 
-void move_cancel_local_client(daemon_state_t *st, int local_slot,
-                              uint64_t local_client_id)
+void move_cancel_local_client(daemon_state_t *st, int local_slot, uint64_t local_client_id)
 {
     for (size_t i = 0; i < LCS_MOVE_OP_MAX; i++)
     {

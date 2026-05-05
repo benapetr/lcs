@@ -534,6 +534,7 @@ int main(int argc, char **argv)
     static daemon_state_t st;
     if (load_daemon_config(&opts, &st) != 0)
         return 1;
+
     if (enter_runtime_mode(&opts) != 0)
         return 1;
 
