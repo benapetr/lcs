@@ -8,8 +8,12 @@
 
 void resources_cleanup_local_vips_without_lease(daemon_state_t *st);
 void resources_enter_conflict_state(daemon_state_t *st, int vip_idx, uint64_t epoch, const char *reason);
+int  resources_activate_acquired_local(daemon_state_t *st, int vip_idx,
+                                       uint64_t epoch, uint64_t lease_id,
+                                       int epoll_fd);
 int  resources_activate_local(daemon_state_t *st, int vip_idx, uint64_t epoch, int epoll_fd);
 void resources_release_local(daemon_state_t *st, int vip_idx, int epoll_fd);
+void resources_drop_local(daemon_state_t *st, int vip_idx, int epoll_fd);
 void resources_graceful_shutdown(daemon_state_t *st, int epoll_fd);
 void resources_auto_place(daemon_state_t *st, int epoll_fd);
 void resources_maintain_owned_leases(daemon_state_t *st, int epoll_fd);

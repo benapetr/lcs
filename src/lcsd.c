@@ -11,6 +11,7 @@
 #include "metrics.h"
 #include "peer.h"
 #include "resources.h"
+#include "scheduler.h"
 #include "util.h"
 #include "vip.h"
 
@@ -229,6 +230,7 @@ int main(int argc, char **argv)
                 return 2;
         }
     }
+
     if (daemonize && foreground)
     {
         fprintf(stderr, "lcsd: --daemonize cannot be combined with --foreground/--stdout\n");
@@ -245,11 +247,13 @@ int main(int argc, char **argv)
         lcs_log_close();
         return 1;
     }
+
     if (daemonize && daemonize_process() != 0)
     {
         fprintf(stderr, "lcsd: failed to daemonize: %s\n", strerror(errno));
         return 1;
     }
+
     bool syslog_enabled = st.cfg.syslog_enabled && !no_syslog;
     lcs_log_open("lcsd", foreground, verbosity, syslog_enabled, !no_timestamp);
     lcs_vip_set_backend(st.cfg.vip_backend);
@@ -257,8 +261,10 @@ int main(int argc, char **argv)
     st.instance_id = lcs_random_u64();
     st.quorum_needed = lcs_config_quorum(&st.cfg);
     st.votes_seen = 1;
+
     for (size_t i = 0; i < st.cfg.node_count; i++)
         st.peers[i].fd = -1;
+        
     for (size_t i = 0; i < st.cfg.vip_count; i++)
     {
         st.resources[i].owner_node = -1;
@@ -312,12 +318,17 @@ int main(int argc, char **argv)
         lcs_log_error("failed to listen on %s: %s", st.cfg.socket_path, strerror(errno));
         return 1;
     }
+    if (set_fd_nonblocking(local_fd) != 0)
+    {
+        lcs_log_error("failed to set local listener nonblocking: %s", strerror(errno));
+        close(local_fd);
+        unlink(st.cfg.socket_path);
+        return 1;
+    }
     int tcp_fd = create_tcp_listener(st.cfg.bind_address, st.cfg.port);
     if (tcp_fd < 0)
     {
-        lcs_log_error("failed to listen on TCP %s:%u: %s",
-                      *st.cfg.bind_address ? st.cfg.bind_address : "*",
-                      st.cfg.port, strerror(errno));
+        lcs_log_error("failed to listen on TCP %s:%u: %s", *st.cfg.bind_address ? st.cfg.bind_address : "*", st.cfg.port, strerror(errno));
         close(local_fd);
         unlink(st.cfg.socket_path);
         return 1;
@@ -397,57 +408,15 @@ int main(int argc, char **argv)
                  metrics_fd >= 0 ? st.cfg.metrics_port : 0,
                  st.quorum_needed, st.cfg.node_count);
 
+    scheduler_t sched = {
+        .epoll_fd = epoll_fd,
+        .local_fd = local_fd,
+        .metrics_fd = metrics_fd,
+    };
     while (!g_stop)
     {
-        struct epoll_event events[64];
-        int rc = epoll_wait(epoll_fd, events, 64, LCS_DEFAULT_LOOP_TIMEOUT_MS);
-        if (rc < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            lcs_log_error("epoll_wait failed: %s", strerror(errno));
+        if (scheduler_run_once(&st, &sched) != 0)
             break;
-        }
-        for (int i = 0; i < rc; i++)
-        {
-            uint32_t event_id = events[i].data.u32;
-            if (event_id == LCS_EPOLL_PEER || (event_id >= LCS_EPOLL_PEER_CONN_BASE && event_id < LCS_EPOLL_HANDSHAKE_BASE + LCS_HANDSHAKE_MAX))
-            {
-                peer_pump_epoll_event(&st, epoll_fd, &events[i]);
-                continue;
-            }
-            if (!(events[i].events & EPOLLIN))
-                continue;
-            if (event_id == LCS_EPOLL_LOCAL)
-            {
-                int client = accept4(local_fd, NULL, NULL, SOCK_CLOEXEC);
-                if (client >= 0)
-                {
-                    client_handle(client, &st, epoll_fd);
-                    close(client);
-                }
-            } else if (event_id == LCS_EPOLL_METRICS && metrics_fd >= 0)
-            {
-                for (;;)
-                {
-                    int client = accept4(metrics_fd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
-                    if (client < 0)
-                    {
-                        if (errno != EAGAIN && errno != EWOULDBLOCK)
-                            lcs_log_debug("metrics accept failed: %s", strerror(errno));
-                        break;
-                    }
-                    lcs_metrics_handle_client(client, &st);
-                    close(client);
-                }
-            }
-        }
-        peer_poll(&st, epoll_fd);
-        handshake_expire(&st, epoll_fd);
-        lease_expire_remote(&st);
-        resources_process_hooks(&st, epoll_fd);
-        resources_maintain_owned_leases(&st, epoll_fd);
-        resources_auto_place(&st, epoll_fd);
     }
     resources_graceful_shutdown(&st, epoll_fd);
     for (size_t i = 0; i < st.cfg.node_count; i++)
@@ -460,6 +429,7 @@ int main(int argc, char **argv)
         if (st.handshakes[i].active)
             handshake_close(&st, epoll_fd, (int)i, "shutdown");
     }
+    client_close_all(&st, epoll_fd);
     close(epoll_fd);
     close(local_fd);
     close(tcp_fd);

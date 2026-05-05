@@ -6,8 +6,8 @@
 #include "cluster.h"
 #include "epoll_util.h"
 #include "lease.h"
-#include "local_client.h"
 #include "log.h"
+#include "move.h"
 #include "protocol.h"
 #include "util.h"
 
@@ -33,7 +33,6 @@ static int handshake_update_epoll(daemon_state_t *st, int epoll_fd, int slot_idx
 static int handshake_flush_output(daemon_state_t *st, int epoll_fd, int slot_idx);
 static void peer_mark_sync_failed(daemon_state_t *st, int node_idx);
 static int peer_send_state_sync(daemon_state_t *st, int epoll_fd, int node_idx);
-static void peer_pump_events_until_pending(daemon_state_t *st, int epoll_fd, int node_idx, uint64_t deadline_ms);
 static void peer_free_buffers(peer_runtime_t *peer);
 static void handshake_free_buffers(inbound_handshake_t *hs);
 
@@ -296,6 +295,14 @@ static int peer_queue_simple_resp(daemon_state_t *st, int epoll_fd, int node_idx
     return peer_queue_frame(st, epoll_fd, node_idx, type, seq, payload, (uint32_t)len);
 }
 
+int peer_send_simple_response(daemon_state_t *st, int epoll_fd, int node_idx,
+                              uint32_t seq, uint16_t type, int32_t status,
+                              const char *message)
+{
+    return peer_queue_simple_resp(st, epoll_fd, node_idx, seq, type, status,
+                                  message);
+}
+
 static int peer_flush_output(daemon_state_t *st, int epoll_fd, int node_idx)
 {
     peer_runtime_t *peer = &st->peers[node_idx];
@@ -543,6 +550,97 @@ static const char *peer_error_message(const void *payload, size_t len, char *buf
     return buf;
 }
 
+static size_t peer_inflight_count(const peer_runtime_t *peer)
+{
+    size_t count = 0;
+    for (size_t i = 0; i < LCS_MAX_PEER_RPC_INFLIGHT; i++)
+    {
+        if (peer->in_flight[i].active)
+            count++;
+    }
+    return count;
+}
+
+static void peer_clear_rpc(peer_rpc_runtime_t *rpc)
+{
+    memset(rpc, 0, sizeof(*rpc));
+}
+
+static void peer_complete_rpc(peer_rpc_runtime_t *rpc, int status)
+{
+    rpc->status = status;
+    rpc->done = true;
+    if (rpc->callback)
+    {
+        uint32_t len = rpc->resp_len ? *rpc->resp_len : 0;
+        rpc->callback(rpc->callback_ctx, status, rpc->resp_payload, len);
+        peer_clear_rpc(rpc);
+    }
+}
+
+static peer_rpc_runtime_t *peer_find_rpc_by_seq(peer_runtime_t *peer, uint32_t seq)
+{
+    for (size_t i = 0; i < LCS_MAX_PEER_RPC_INFLIGHT; i++)
+    {
+        if (peer->in_flight[i].active && peer->in_flight[i].seq == seq)
+            return &peer->in_flight[i];
+    }
+    return NULL;
+}
+
+static peer_rpc_runtime_t *peer_find_rpc(peer_runtime_t *peer, uint32_t seq,
+                                         uint16_t expected_type)
+{
+    peer_rpc_runtime_t *rpc = peer_find_rpc_by_seq(peer, seq);
+    if (!rpc || rpc->expected_type != expected_type)
+        return NULL;
+    return rpc;
+}
+
+static peer_rpc_runtime_t *peer_register_rpc(peer_runtime_t *peer, int peer_idx,
+                                             uint16_t req_type,
+                                             uint16_t expected_type,
+                                             uint64_t deadline_ms,
+                                             unsigned char *resp_payload,
+                                             size_t resp_cap,
+                                             uint32_t *resp_len,
+                                             peer_rpc_callback_t callback,
+                                             void *callback_ctx)
+{
+    for (size_t i = 0; i < LCS_MAX_PEER_RPC_INFLIGHT; i++)
+    {
+        peer_rpc_runtime_t *rpc = &peer->in_flight[i];
+        if (rpc->active)
+            continue;
+        peer_clear_rpc(rpc);
+        rpc->active = true;
+        rpc->peer_idx = peer_idx;
+        rpc->seq = lcs_next_seq();
+        rpc->req_type = req_type;
+        rpc->expected_type = expected_type;
+        rpc->deadline_ms = deadline_ms;
+        rpc->resp_payload = resp_payload;
+        rpc->resp_cap = resp_cap;
+        rpc->resp_len = resp_len;
+        rpc->callback = callback;
+        rpc->callback_ctx = callback_ctx;
+        if (resp_len)
+            *resp_len = 0;
+        return rpc;
+    }
+    return NULL;
+}
+
+static void peer_fail_inflight_rpcs(peer_runtime_t *peer)
+{
+    for (size_t i = 0; i < LCS_MAX_PEER_RPC_INFLIGHT; i++)
+    {
+        peer_rpc_runtime_t *rpc = &peer->in_flight[i];
+        if (rpc->active && !rpc->done)
+            peer_complete_rpc(rpc, -1);
+    }
+}
+
 static void peer_reset_sequence_cache(peer_runtime_t *peer)
 {
     memset(peer->seen_request_seqs, 0, sizeof(peer->seen_request_seqs));
@@ -621,18 +719,9 @@ static int peer_handle_request_frame(daemon_state_t *st, int epoll_fd, int sourc
             return peer_queue_simple_resp(st, epoll_fd, source_node_idx, hdr->seq,
                                           LCS_MSG_OWNER_RELEASE_RESP, -1, "owner release rejected");
         case LCS_MSG_MOVE_REQ:
-        {
-            int32_t status = -1;
-            char message[128] = "";
-            if (client_compute_move_response(st, payload, hdr->length, epoll_fd, &status,
-                                      message, sizeof(message)) != 0)
-            {
-                status = -1;
-                snprintf(message, sizeof(message), "move request failed");
-            }
-            return peer_queue_simple_resp(st, epoll_fd, source_node_idx, hdr->seq,
-                                          LCS_MSG_MOVE_RESP, status, message);
-        }
+            move_start_peer_request(st, epoll_fd, source_node_idx, hdr->seq,
+                                    payload, hdr->length);
+            return 0;
         default:
             peer_queue_simple_resp(st, epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR,
                                    -1, "unsupported peer message");
@@ -697,10 +786,10 @@ void peer_close_connection(daemon_state_t *st, int epoll_fd, int node_idx,
     peer_runtime_t *peer = &st->peers[node_idx];
     if (peer->fd >= 0)
     {
-        lcs_log_debug3("closing peer %s fd=%d mark_offline=%s reason=%s pending=%s out_bytes=%zu in_bytes=%zu",
+        lcs_log_debug3("closing peer %s fd=%d mark_offline=%s reason=%s inflight=%zu out_bytes=%zu in_bytes=%zu",
                        st->cfg.nodes[node_idx].name, peer->fd,
                        mark_offline ? "true" : "false", reason ? reason : "-",
-                       peer->pending_active ? "true" : "false",
+                       peer_inflight_count(peer),
                        peer->out_len > peer->out_off ? peer->out_len - peer->out_off : 0,
                        peer->in_len);
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, peer->fd, NULL);
@@ -708,12 +797,7 @@ void peer_close_connection(daemon_state_t *st, int epoll_fd, int node_idx,
         peer->fd = -1;
     }
     peer_free_buffers(peer);
-    if (peer->pending_active)
-    {
-        peer->pending_status = -1;
-        peer->pending_done = true;
-        peer->pending_active = false;
-    }
+    peer_fail_inflight_rpcs(peer);
     peer->outbound = false;
     peer->conn_state = LCS_PEER_DISCONNECTED;
     peer->connect_deadline_ms = 0;
@@ -747,9 +831,6 @@ static int peer_register_connection(daemon_state_t *st, int epoll_fd, int node_i
     peer->fd = fd;
     peer->conn_state = LCS_PEER_ESTABLISHED;
     peer->outbound = outbound;
-    peer->pending_active = false;
-    peer->pending_done = false;
-    peer->pending_status = 0;
     peer->in_len = 0;
     peer->out_off = 0;
     peer->out_len = 0;
@@ -820,94 +901,44 @@ static int peer_complete_outbound_hello(daemon_state_t *st, int epoll_fd, int no
     return 0;
 }
 
-static void peer_clear_pending_request(peer_runtime_t *peer)
-{
-    peer->pending_active = false;
-    peer->pending_done = false;
-    peer->pending_status = 0;
-    peer->pending_seq = 0;
-    peer->pending_expected_type = 0;
-    peer->pending_resp_payload = NULL;
-    peer->pending_resp_cap = 0;
-    peer->pending_resp_len = NULL;
-}
-
-static void peer_pump_events_until_pending(daemon_state_t *st, int epoll_fd,
-                                           int node_idx, uint64_t deadline_ms)
+int peer_rpc_async(daemon_state_t *st, int epoll_fd, int node_idx, uint16_t req_type,
+                   const void *req_payload, uint32_t req_len,
+                   uint16_t expected_type, unsigned char *resp_payload,
+                   size_t resp_cap, uint32_t *resp_len, uint32_t timeout_ms,
+                   peer_rpc_callback_t callback, void *callback_ctx)
 {
     peer_runtime_t *peer = &st->peers[node_idx];
-    while (!peer->pending_done && !g_stop)
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED)
     {
-        uint64_t now = lcs_now_ms();
-        if (now >= deadline_ms)
-        {
-            peer->pending_status = -1;
-            peer->pending_done = true;
-            break;
-        }
-        int timeout_ms = (int)(deadline_ms - now);
-        if (timeout_ms > 100)
-            timeout_ms = 100;
-        struct epoll_event events[32];
-        int rc = epoll_wait(epoll_fd, events, 32, timeout_ms);
-        if (rc < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            peer->pending_status = -1;
-            peer->pending_done = true;
-            break;
-        }
-        for (int i = 0; i < rc && !peer->pending_done; i++)
-            peer_pump_epoll_event(st, epoll_fd, &events[i]);
-        peer_poll(st, epoll_fd);
-        recompute_votes(st);
-    }
-}
-
-int peer_rpc(daemon_state_t *st, int epoll_fd, int node_idx, uint16_t req_type,
-             const void *req_payload, uint32_t req_len,
-             uint16_t expected_type, unsigned char *resp_payload,
-             size_t resp_cap, uint32_t *resp_len, uint32_t timeout_ms)
-{
-    peer_runtime_t *peer = &st->peers[node_idx];
-    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED || peer->pending_active)
-    {
-        lcs_log_debug("peer %s persistent request type=%u unavailable: fd=%d state=%d pending=%s",
+        lcs_log_debug("peer %s persistent request type=%u unavailable: fd=%d state=%d inflight=%zu",
                       st->cfg.nodes[node_idx].name, req_type, peer->fd, peer->conn_state,
-                      peer->pending_active ? "true" : "false");
-        return -1;
-    }
-    peer_clear_pending_request(peer);
-    peer->pending_active = true;
-    peer->pending_seq = lcs_next_seq();
-    peer->pending_expected_type = expected_type;
-    peer->pending_resp_payload = resp_payload;
-    peer->pending_resp_cap = resp_cap;
-    peer->pending_resp_len = resp_len;
-    if (resp_len)
-        *resp_len = 0;
-        
-    if (peer_queue_frame(st, epoll_fd, node_idx, req_type, peer->pending_seq, req_payload, req_len) != 0 ||
-        peer_flush_output(st, epoll_fd, node_idx) != 0)
-    {
-        lcs_log_debug("peer %s persistent request type=%u seq=%u queue/write failed",
-                      st->cfg.nodes[node_idx].name, req_type, peer->pending_seq);
-        peer_close_connection(st, epoll_fd, node_idx, true, "request queue/write failed");
-        peer_clear_pending_request(peer);
+                      peer_inflight_count(peer));
         return -1;
     }
     uint64_t deadline_ms = lcs_now_ms() + timeout_ms;
-    peer_pump_events_until_pending(st, epoll_fd, node_idx, deadline_ms);
-    int rc = peer->pending_status == 0 ? 0 : -1;
-    if (rc != 0)
+    peer_rpc_runtime_t *rpc = peer_register_rpc(peer, node_idx, req_type, expected_type,
+                                                deadline_ms, resp_payload, resp_cap,
+                                                resp_len, callback, callback_ctx);
+    if (!rpc)
     {
-        lcs_log_debug("peer %s persistent request type=%u seq=%u failed status=%d done=%s",
-                      st->cfg.nodes[node_idx].name, req_type, peer->pending_seq,
-                      peer->pending_status, peer->pending_done ? "true" : "false");
+        lcs_log_debug("peer %s persistent request type=%u unavailable: in-flight table full",
+                      st->cfg.nodes[node_idx].name, req_type);
+        return -1;
     }
-    peer_clear_pending_request(peer);
-    return rc;
+
+    lcs_log_debug3("peer %s registered RPC request type=%u expected=%u seq=%u deadline_ms=%llu",
+                   st->cfg.nodes[node_idx].name, req_type, expected_type, rpc->seq,
+                   (unsigned long long)deadline_ms);
+    if (peer_queue_frame(st, epoll_fd, node_idx, req_type, rpc->seq, req_payload, req_len) != 0 ||
+        peer_flush_output(st, epoll_fd, node_idx) != 0)
+    {
+        lcs_log_debug("peer %s persistent request type=%u seq=%u queue/write failed",
+                      st->cfg.nodes[node_idx].name, req_type, rpc->seq);
+        peer_close_connection(st, epoll_fd, node_idx, true, "request queue/write failed");
+        peer_clear_rpc(rpc);
+        return -1;
+    }
+    return 0;
 }
 
 static int peer_send_state_sync(daemon_state_t *st, int epoll_fd, int node_idx)
@@ -940,33 +971,45 @@ static int peer_process_frame(daemon_state_t *st, int epoll_fd, int node_idx,
     if (peer_is_request_type(hdr->type))
         return peer_handle_request_frame(st, epoll_fd, node_idx, hdr, payload);
 
-    if (peer->pending_active && hdr->seq == peer->pending_seq)
+    peer_rpc_runtime_t *rpc = peer_find_rpc(peer, hdr->seq, hdr->type);
+    if (rpc)
     {
-        if (hdr->type != peer->pending_expected_type || hdr->length > peer->pending_resp_cap)
+        uint32_t seq = hdr->seq;
+        uint16_t type = hdr->type;
+        size_t resp_cap = rpc->resp_cap;
+        if (hdr->length > resp_cap)
         {
-            peer->pending_status = -1;
-            peer->pending_done = true;
-            lcs_log_warn("peer %s invalid pending response: type=%u seq=%u length=%u expected_type=%u expected_seq=%u buffer=%zu",
+            peer_complete_rpc(rpc, -1);
+            lcs_log_warn("peer %s invalid RPC response: type=%u seq=%u length=%u buffer=%zu",
                          st->cfg.nodes[node_idx].name, hdr->type, hdr->seq, hdr->length,
-                         peer->pending_expected_type, peer->pending_seq,
-                         peer->pending_resp_cap);
+                         resp_cap);
             return -1;
         }
         if (hdr->length)
-            memcpy(peer->pending_resp_payload, payload, hdr->length);
-        if (peer->pending_resp_len)
-            *peer->pending_resp_len = hdr->length;
-        peer->pending_status = 0;
-        peer->pending_done = true;
+            memcpy(rpc->resp_payload, payload, hdr->length);
+        if (rpc->resp_len)
+            *rpc->resp_len = hdr->length;
+        peer_complete_rpc(rpc, 0);
+        lcs_log_debug3("peer %s completed RPC seq=%u type=%u",
+                       st->cfg.nodes[node_idx].name, seq, type);
         return 0;
+    }
+    peer_rpc_runtime_t *same_seq_rpc = peer_find_rpc_by_seq(peer, hdr->seq);
+    if (same_seq_rpc)
+    {
+        uint16_t expected_type = same_seq_rpc->expected_type;
+        peer_complete_rpc(same_seq_rpc, -1);
+        lcs_log_warn("peer %s invalid RPC response: type=%u seq=%u expected_type=%u",
+                     st->cfg.nodes[node_idx].name, hdr->type, hdr->seq,
+                     expected_type);
+        return -1;
     }
     if (hdr->type == LCS_MSG_STATE_SYNC_RESP)
         return peer_handle_request_frame(st, epoll_fd, node_idx, hdr, payload);
 
-    lcs_log_warn("peer %s unexpected response frame: type=%u seq=%u length=%u pending=%s expected_type=%u expected_seq=%u",
+    lcs_log_warn("peer %s unexpected response frame: type=%u seq=%u length=%u inflight=%zu",
                  st->cfg.nodes[node_idx].name, hdr->type, hdr->seq, hdr->length,
-                 peer->pending_active ? "true" : "false",
-                 peer->pending_expected_type, peer->pending_seq);
+                 peer_inflight_count(peer));
     return -1;
 }
 
@@ -1258,6 +1301,18 @@ void peer_poll(daemon_state_t *st, int epoll_fd)
                 peer_close_connection(st, epoll_fd, (int)i, true, "connect/hello timeout");
             }
             continue;
+        }
+        for (size_t j = 0; j < LCS_MAX_PEER_RPC_INFLIGHT; j++)
+        {
+            peer_rpc_runtime_t *rpc = &st->peers[i].in_flight[j];
+            if (rpc->active && !rpc->done && rpc->deadline_ms &&
+                now >= rpc->deadline_ms)
+            {
+                lcs_log_debug3("peer %s RPC seq=%u type=%u timed out waiting for type=%u",
+                               st->cfg.nodes[i].name, rpc->seq, rpc->req_type,
+                               rpc->expected_type);
+                peer_complete_rpc(rpc, -1);
+            }
         }
         if (st->peers[i].next_sync_ms && now < st->peers[i].next_sync_ms)
             continue;
