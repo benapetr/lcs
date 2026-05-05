@@ -1,0 +1,1 @@
+This cluster consists of 3 nodes a b c with 1 VIP, just copy each config as /etc/lcs/lcs.conf on each node
