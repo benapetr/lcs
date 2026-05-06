@@ -48,13 +48,13 @@ mode = strict
 
 [vip vip1]
 group = service
-priority = 1
+priority = 2
 address = 127.0.0.201/32
 interface = lo
 
 [vip vip2]
 group = service
-priority = 2
+priority = 1
 address = 127.0.0.202/32
 interface = lo
 EOF
@@ -87,6 +87,10 @@ wait_for_quorum node3
 
 wait_until 15 "vip1 owner node1" vip_owner_has node1 vip1 node1
 wait_until 15 "vip2 owner node1" vip_owner_has node1 vip2 node1
+wait_until 15 "vip1 owner node1 as seen by node2" vip_owner_has node2 vip1 node1
+wait_until 15 "vip2 owner node1 as seen by node2" vip_owner_has node2 vip2 node1
+wait_until 15 "vip1 owner node1 as seen by node3" vip_owner_has node3 vip1 node1
+wait_until 15 "vip2 owner node1 as seen by node3" vip_owner_has node3 vip2 node1
 
 log "moving follower vip2 to node2 through node1 CLI"
 "$LCS" -s "$(node_socket node1)" move vip2 node2

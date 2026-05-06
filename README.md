@@ -94,9 +94,11 @@ VIPs can be assigned to optional groups:
 - `strict` mode may keep lower-priority VIPs stopped when the rule cannot be satisfied.
 - `best-effort` mode keeps VIPs available if possible, then rebalances when topology allows.
 
-Priority is local to each group. Lower numbers are higher priority. If a priority is not set, LCS derives it from the deterministic sorted VIP order.
+Priority is local to each group. Higher numbers are higher priority. If a priority is not set, LCS derives it from inverse sorted VIP order, so earlier sorted VIPs get higher default priority.
 
 Automatic rebalance uses the same safe move path as `lcs move`: the old owner releases first, quorum records a newer lease epoch, and the target activates only after it obtains a majority lease. Only one automatic rebalance move runs at a time.
+
+For `keep-together` groups, moving any member through `lcs move` moves the highest-priority group member first. Other group members then follow through normal rebalance.
 
 # Observability
 

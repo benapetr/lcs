@@ -48,13 +48,13 @@ mode = strict
 
 [vip vip1]
 group = service
-priority = 1
+priority = 2
 address = 127.0.0.201/32
 interface = lo
 
 [vip vip2]
 group = service
-priority = 2
+priority = 1
 address = 127.0.0.202/32
 interface = lo
 EOF
@@ -83,7 +83,7 @@ wait_until 15 "vip2 owner node2" vip_owner_has node1 vip2 node2
 
 status_text node1 | grep -Fq "vip1 127.0.0.201/32 dev=lo state=active owner=node1" || die "vip1 not active on node1"
 status_text node1 | grep -Fq "vip2 127.0.0.202/32 dev=lo state=active owner=node2" || die "vip2 not active on node2"
-status_text node1 | grep -Fq "group=service priority=1" || die "missing vip1 group status"
-status_text node1 | grep -Fq "group=service priority=2" || die "missing vip2 group status"
+status_text node1 | grep -F "vip1 " | grep -Fq "group=service priority=2" || die "missing vip1 group status"
+status_text node1 | grep -F "vip2 " | grep -Fq "group=service priority=1" || die "missing vip2 group status"
 
 log "group anti-affinity regression passed"

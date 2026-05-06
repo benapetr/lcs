@@ -48,13 +48,13 @@ mode = best-effort
 
 [vip vip1]
 group = service
-priority = 1
+priority = 2
 address = 127.0.0.201/32
 interface = lo
 
 [vip vip2]
 group = service
-priority = 2
+priority = 1
 address = 127.0.0.202/32
 interface = lo
 EOF

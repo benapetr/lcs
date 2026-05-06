@@ -68,6 +68,8 @@ Group placement is enforced during automatic VIP placement and during periodic r
 
 For best-effort anti-affinity, if multiple group VIPs temporarily run on one node because too few full-members were online, LCS moves lower-priority VIPs away when another full-member becomes available. For keep-together, if grouped VIPs end up split across full-members, LCS moves lower-priority VIPs to the active owner of the highest-priority grouped VIP.
 
+For `keep-together` groups, a manual `lcs move` request for any group member is redirected to the highest-priority member first. This prevents a lower-priority follower from being moved away and then immediately moved back by rebalance.
+
 ## `[vip NAME]`
 
 | Key | Required | Default | Description |
@@ -75,7 +77,7 @@ For best-effort anti-affinity, if multiple group VIPs temporarily run on one nod
 | `address` | yes | — | VIP address in CIDR notation, e.g. `192.0.2.10/32` or `2001:db8::10/128`. |
 | `interface` | yes | — | Linux interface on which the VIP is added and probed. |
 | `group` | no | — | Group name from a `[group NAME]` section. |
-| `priority` | no | sorted VIP index | Positive integer priority inside the group. Lower numbers are higher priority. Priorities must be unique within a group. |
+| `priority` | no | inverse sorted VIP index | Positive integer priority inside the group. Higher numbers are higher priority. Priorities must be unique within a group. |
 | `pre_start` | no | — | Absolute path to a script run after the lease is obtained but before the conflict check and VIP add. |
 | `post_start` | no | — | Absolute path to a script run after the VIP is activated and announced. |
 | `pre_stop` | no | — | Absolute path to a script run before planned VIP removal. |

@@ -33,7 +33,7 @@ static bool group_has_waiting_higher_priority_vip(int vip_idx)
 
         const lcs_vip_config_t *other_vip = &g_state.cfg.vips[i];
         const resource_runtime_t *other_res = &g_state.resources[i];
-        if (other_vip->priority >= vip->priority)
+        if (other_vip->priority <= vip->priority)
             continue;
         if (other_res->owner_node >= 0 || other_res->state == LCS_RES_CONFLICT)
             continue;
@@ -146,7 +146,7 @@ int group_move_anchor_vip(int vip_idx)
         const lcs_vip_config_t *candidate = &g_state.cfg.vips[i];
         if (candidate->group_idx != vip->group_idx)
             continue;
-        if (candidate->priority < anchor_priority)
+        if (candidate->priority > anchor_priority)
         {
             anchor = (int)i;
             anchor_priority = candidate->priority;
@@ -235,7 +235,7 @@ static int group_keep_together_rebalance(int epoll_fd, int group_idx)
             res->owner_node < 0)
             continue;
 
-        if (target < 0 || vip->priority < target_priority)
+        if (target < 0 || vip->priority > target_priority)
         {
             target = res->owner_node;
             target_priority = vip->priority;
@@ -255,7 +255,7 @@ static int group_keep_together_rebalance(int epoll_fd, int group_idx)
             res->owner_node == target)
             continue;
 
-        if (candidate < 0 || vip->priority > candidate_priority)
+        if (candidate < 0 || vip->priority < candidate_priority)
         {
             candidate = (int)i;
             candidate_priority = vip->priority;
@@ -287,7 +287,7 @@ static int group_anti_affinity_rebalance(int epoll_fd, int group_idx)
         if (unused < 0)
             continue;
 
-        if (candidate < 0 || vip->priority > candidate_priority)
+        if (candidate < 0 || vip->priority < candidate_priority)
         {
             candidate = (int)i;
             candidate_priority = vip->priority;

@@ -580,7 +580,7 @@ static int validate_groups_and_assign_vips(lcs_config_t *cfg, char *err, size_t 
     {
         lcs_vip_config_t *vip = &cfg->vips[i];
         if (!vip->priority_set)
-            vip->priority = (uint32_t)i + 1u;
+            vip->priority = (uint32_t)(cfg->vip_count - i);
         if (*vip->group_name)
         {
             int group_idx = lcs_config_group_index(cfg, vip->group_name);
