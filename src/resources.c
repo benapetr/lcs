@@ -330,6 +330,27 @@ void resources_release_local(int vip_idx, int epoll_fd)
     resources_release_local_internal(vip_idx, epoll_fd, true);
 }
 
+int resources_release_for_handoff(int vip_idx, uint64_t epoch, uint64_t lease_id)
+{
+    resource_runtime_t *res = &g_state.resources[vip_idx];
+
+    resources_cancel_hook(vip_idx);
+    if (lcs_vip_del(&g_state.cfg.vips[vip_idx]) != 0)
+        return -1;
+
+    res->owner_node = -1;
+    res->owner_instance_id = 0;
+    res->state = LCS_RES_STOPPED;
+    res->lease_id = 0;
+    res->lease_deadline_ms = 0;
+    res->renew_after_ms = 0;
+    res->conflict_reason[0] = '\0';
+    res->next_activation_attempt_ms = lcs_now_ms() + g_state.cfg.lease_ms;
+    lease_cancel_operations(vip_idx);
+    resources_start_hook(vip_idx, LCS_HOOK_POST_STOP, epoch, lease_id);
+    return 0;
+}
+
 void resources_drop_local(int vip_idx, int epoll_fd)
 {
     resources_release_local_internal(vip_idx, epoll_fd, false);

@@ -538,18 +538,8 @@ int lease_handle_owner_release_request(const void *payload, size_t len, int sour
         res->lease_id != lease_id)
         return -1;
 
-    if (lcs_vip_del(&g_state.cfg.vips[resource_id]) != 0)
+    if (resources_release_for_handoff((int)resource_id, epoch, lease_id) != 0)
         return -1;
-
-    res->owner_node = -1;
-    res->owner_instance_id = 0;
-    res->state = LCS_RES_STOPPED;
-    res->lease_id = 0;
-    res->lease_deadline_ms = 0;
-    res->renew_after_ms = 0;
-    res->conflict_reason[0] = '\0';
-    res->next_activation_attempt_ms = lcs_now_ms() + g_state.cfg.lease_ms;
-    lease_cancel_operations((int)resource_id);
     lcs_log_info("released VIP %s for controlled handoff at epoch=%llu", g_state.cfg.vips[resource_id].name, (unsigned long long)epoch);
     return 0;
 }
