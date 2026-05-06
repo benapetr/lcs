@@ -23,10 +23,10 @@ The goals:
     to have split-brain scenario or IP conflict
   - It's extremely easy to setup and operate reliably
 - Written in C - minimal footprint when it comes to RAM and CPU
-- Minimal 3rd dependencies ideally just pure C libs and standard GNU/Linux libs
+- Minimal 3rd dependencies - just standard C and GNU/Linux libs
 
 Concepts:
-- Only a trivial config file that defines all cluster members and VIP resources (see examples)
+- Only a trivial config file that defines all cluster members, resource groups and VIP resources (see examples)
 - Listens only on specified interfaces / IPs (or any by default)
 - lcsd uses TCP for daemon-to-daemon cluster communication
 - Supports both IPv4 and IPv6 for cluster node addresses and VIP resources
