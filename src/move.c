@@ -4,6 +4,7 @@
 #include "move.h"
 
 #include "cluster.h"
+#include "group.h"
 #include "lease.h"
 #include "local_client.h"
 #include "log.h"
@@ -484,8 +485,27 @@ int move_start_local_client(int epoll_fd, int local_slot,
         move_fail_immediate_local(epoll_fd, local_slot, local_client_id, client_seq, message);
         return -1;
     }
+    int anchor_idx = group_move_anchor_vip(vip_idx);
+    if (anchor_idx >= 0 && anchor_idx != vip_idx)
+    {
+        lcs_log_info("move request for VIP %s redirected to keep-together anchor VIP %s",
+                     g_state.cfg.vips[vip_idx].name,
+                     g_state.cfg.vips[anchor_idx].name);
+        vip_idx = anchor_idx;
+    }
+    unsigned char planned_req[LCS_MOVE_REQ_PAYLOAD_SIZE];
+    size_t planned_req_len = 0;
+    if (lcs_encode_move_req(planned_req, sizeof(planned_req), &planned_req_len,
+                            g_state.cfg.vips[vip_idx].name,
+                            g_state.cfg.nodes[target_idx].name) != 0)
+    {
+        move_fail_immediate_local(epoll_fd, local_slot, local_client_id, client_seq, "failed to encode move request");
+        return -1;
+    }
     if (target_idx != g_state.self_index)
-        return move_start_remote_target(epoll_fd, local_slot, client_seq, payload, len, vip_idx, target_idx);
+        return move_start_remote_target(epoll_fd, local_slot, client_seq,
+                                        planned_req, (uint32_t)planned_req_len,
+                                        vip_idx, target_idx);
 
     move_runtime_t *move = move_alloc();
     if (!move)

@@ -126,6 +126,35 @@ int group_auto_place_target(int vip_idx)
     }
 }
 
+int group_move_anchor_vip(int vip_idx)
+{
+    if (vip_idx < 0 || (size_t)vip_idx >= g_state.cfg.vip_count)
+        return vip_idx;
+
+    const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
+    if (vip->group_idx < 0)
+        return vip_idx;
+
+    const lcs_group_config_t *group = &g_state.cfg.groups[vip->group_idx];
+    if (group->type != LCS_GROUP_KEEP_TOGETHER)
+        return vip_idx;
+
+    int anchor = vip_idx;
+    uint32_t anchor_priority = vip->priority;
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    {
+        const lcs_vip_config_t *candidate = &g_state.cfg.vips[i];
+        if (candidate->group_idx != vip->group_idx)
+            continue;
+        if (candidate->priority < anchor_priority)
+        {
+            anchor = (int)i;
+            anchor_priority = candidate->priority;
+        }
+    }
+    return anchor;
+}
+
 static size_t group_member_count(int group_idx)
 {
     size_t count = 0;
