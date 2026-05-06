@@ -44,27 +44,37 @@ static move_runtime_t *move_alloc(void)
 
 static void move_complete(int epoll_fd, move_runtime_t *move)
 {
+    if (move->vip_idx >= 0 && move->target_idx >= 0)
+    {
+        const char *origin = "move";
+        if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT)
+            origin = "CLI move";
+        else if (move->origin == LCS_MOVE_ORIGIN_PEER)
+            origin = "peer move";
+        else if (move->origin == LCS_MOVE_ORIGIN_NONE)
+            origin = "internal move";
+
+        if (move->final_status == 0)
+        {
+            lcs_log_info("%s of VIP %s to %s completed: %s",
+                         origin, g_state.cfg.vips[move->vip_idx].name,
+                         cluster_node_name_or_none(move->target_idx),
+                         move->final_message);
+        } else
+        {
+            lcs_log_warn("%s of VIP %s to %s failed: %s",
+                         origin, g_state.cfg.vips[move->vip_idx].name,
+                         cluster_node_name_or_none(move->target_idx),
+                         move->final_message);
+        }
+    }
+
     if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT)
     {
         client_complete_move(epoll_fd, move->local_client_slot, move->local_client_id, move->client_seq, move->final_status, move->final_message);
     } else if (move->origin == LCS_MOVE_ORIGIN_PEER)
     {
         peer_queue_simple_resp(epoll_fd, move->source_node_idx, move->peer_seq, LCS_MSG_MOVE_RESP, move->final_status, move->final_message);
-    } else if (move->origin == LCS_MOVE_ORIGIN_NONE && move->vip_idx >= 0 && move->target_idx >= 0)
-    {
-        if (move->final_status == 0)
-        {
-            lcs_log_info("internal move of VIP %s to %s completed: %s",
-                         g_state.cfg.vips[move->vip_idx].name,
-                         cluster_node_name_or_none(move->target_idx),
-                         move->final_message);
-        } else
-        {
-            lcs_log_warn("internal move of VIP %s to %s failed: %s",
-                         g_state.cfg.vips[move->vip_idx].name,
-                         cluster_node_name_or_none(move->target_idx),
-                         move->final_message);
-        }
     }
     move_clear(move);
 }
