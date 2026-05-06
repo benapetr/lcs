@@ -5,6 +5,7 @@
 #include "config.h"
 #include "daemon_state.h"
 #include "epoll_util.h"
+#include "group.h"
 #include "lease.h"
 #include "local_client.h"
 #include "log.h"
@@ -538,6 +539,7 @@ int main(int argc, char **argv)
     bool syslog_enabled = open_daemon_log(&opts);
     initialize_daemon_state();
     log_startup_config(&opts, syslog_enabled);
+    group_log_strict_warnings();
 
     int epoll_fd = -1;
     if (setup_runtime(&epoll_fd) != 0)

@@ -8,10 +8,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define LCS_VERSION "1.0.1"
+#define LCS_VERSION "1.0.2"
 
 #define LCS_MAX_NODES 32
 #define LCS_MAX_VIPS 32
+#define LCS_MAX_GROUPS 32
 #define LCS_NAME_MAX 63
 #define LCS_ADDR_MAX 127
 #define LCS_PATH_MAX 255
@@ -53,5 +54,19 @@ typedef enum
     LCS_VIP_BACKEND_IP = 1,
     LCS_VIP_BACKEND_NETLINK = 2,
 } lcs_vip_backend_t;
+
+typedef enum
+{
+    LCS_GROUP_NONE = 0,
+    LCS_GROUP_KEEP_TOGETHER = 1,
+    LCS_GROUP_ANTI_AFFINITY = 2,
+} lcs_group_type_t;
+
+typedef enum
+{
+    LCS_GROUP_MODE_NONE = 0,
+    LCS_GROUP_MODE_STRICT = 1,
+    LCS_GROUP_MODE_BEST_EFFORT = 2,
+} lcs_group_mode_t;
 
 #endif

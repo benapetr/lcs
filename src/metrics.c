@@ -105,10 +105,13 @@ void lcs_metrics_handle_client(int fd)
     metrics_append(body, cap, &len, "# TYPE lcs_vip_epoch gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_vip_lease_remaining_seconds gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_vip_conflict gauge\n");
+    metrics_append(body, cap, &len, "# TYPE lcs_vip_priority gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_vip_failovers_total counter\n");
     for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
         const resource_runtime_t *res = &g_state.resources[i];
+        const char *group = g_state.cfg.vips[i].group_idx >= 0 ?
+                            g_state.cfg.groups[g_state.cfg.vips[i].group_idx].name : "";
         metrics_append(body, cap, &len,
                        "lcs_vip_state{cluster=\"%s\",vip=\"%s\",state=\"%s\"} 1\n",
                        cluster, g_state.cfg.vips[i].name, resource_state_name(res->state));
@@ -134,6 +137,10 @@ void lcs_metrics_handle_client(int fd)
                        "lcs_vip_conflict{cluster=\"%s\",vip=\"%s\"} %u\n",
                        cluster, g_state.cfg.vips[i].name,
                        res->state == LCS_RES_CONFLICT ? 1u : 0u);
+        metrics_append(body, cap, &len,
+                       "lcs_vip_priority{cluster=\"%s\",vip=\"%s\",group=\"%s\"} %u\n",
+                       cluster, g_state.cfg.vips[i].name, group,
+                       g_state.cfg.vips[i].priority);
         metrics_append(body, cap, &len,
                        "lcs_vip_failovers_total{cluster=\"%s\",vip=\"%s\"} %llu\n",
                        cluster, g_state.cfg.vips[i].name,

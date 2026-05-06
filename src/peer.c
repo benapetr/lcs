@@ -159,6 +159,7 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
     if (lcs_buf_put_u16(&w, LCS_PROTO_VERSION) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.self_index) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.node_count) != 0 ||
+        lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.group_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.vip_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.nodes[g_state.self_index].role) != 0 ||
         lcs_buf_put_u8(&w, mode) != 0 ||
@@ -176,13 +177,14 @@ static int peer_decode_hello(const void *payload, size_t len,
 {
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, len);
-    uint16_t proto_version, remote_idx, node_count, vip_count, role;
+    uint16_t proto_version, remote_idx, node_count, group_count, vip_count, role;
     char name[LCS_NAME_MAX + 1];
     char cluster_name[LCS_NAME_MAX + 1];
     char secret[LCS_NAME_MAX + 1];
     if (lcs_buf_get_u16(&r, &proto_version) != 0 ||
         lcs_buf_get_u16(&r, &remote_idx) != 0 ||
         lcs_buf_get_u16(&r, &node_count) != 0 ||
+        lcs_buf_get_u16(&r, &group_count) != 0 ||
         lcs_buf_get_u16(&r, &vip_count) != 0 ||
         lcs_buf_get_u16(&r, &role) != 0 ||
         lcs_buf_get_u8(&r, mode) != 0 ||
@@ -198,7 +200,9 @@ static int peer_decode_hello(const void *payload, size_t len,
     }
     int idx = lcs_config_node_index(&g_state.cfg, name);
     if (idx < 0 || idx != (int)remote_idx ||
-        node_count != g_state.cfg.node_count || vip_count != g_state.cfg.vip_count ||
+        node_count != g_state.cfg.node_count ||
+        group_count != g_state.cfg.group_count ||
+        vip_count != g_state.cfg.vip_count ||
         role != (uint16_t)g_state.cfg.nodes[idx].role)
         return -1;
     if (strcmp(cluster_name, g_state.cfg.cluster_name) != 0)

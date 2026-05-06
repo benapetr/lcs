@@ -4,6 +4,7 @@
 #include "resources.h"
 
 #include "cluster.h"
+#include "group.h"
 #include "lease.h"
 #include "log.h"
 #include "peer.h"
@@ -371,14 +372,6 @@ void resources_auto_place(int epoll_fd)
         lcs_log_debug2("auto-place skip: quorum is not available (%u votes, need %u)", g_state.votes_seen, g_state.quorum_needed);
         return;
     }
-    int target = cluster_first_online_full_member();
-    if (target != g_state.self_index)
-    {
-        lcs_log_debug2("auto-place skip: selected online full-member is %s, self is %s",
-                       cluster_node_name_or_none(target),
-                       g_state.cfg.nodes[g_state.self_index].name);
-        return;
-    }
     for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
         resource_runtime_t *res = &g_state.resources[i];
@@ -400,6 +393,20 @@ void resources_auto_place(int epoll_fd)
         if (lease_operation_active((int)i))
         {
             lcs_log_debug2("auto-place skip VIP %s: lease operation already pending", g_state.cfg.vips[i].name);
+            continue;
+        }
+        int target = group_auto_place_target((int)i);
+        if (target < 0)
+        {
+            lcs_log_debug2("auto-place skip VIP %s: group policy has no valid target", g_state.cfg.vips[i].name);
+            continue;
+        }
+        if (target != g_state.self_index)
+        {
+            lcs_log_debug2("auto-place skip VIP %s: selected full-member is %s, self is %s",
+                           g_state.cfg.vips[i].name,
+                           cluster_node_name_or_none(target),
+                           g_state.cfg.nodes[g_state.self_index].name);
             continue;
         }
         lcs_log_debug2("auto-place try VIP %s on %s current_epoch=%llu next_epoch=%llu",

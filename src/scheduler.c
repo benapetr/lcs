@@ -3,6 +3,7 @@
 
 #include "scheduler.h"
 
+#include "group.h"
 #include "lease.h"
 #include "local_client.h"
 #include "log.h"
@@ -74,6 +75,7 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     resources_process_hooks(sched->epoll_fd);
     resources_maintain_owned_leases(sched->epoll_fd);
     resources_auto_place(sched->epoll_fd);
+    group_rebalance(sched->epoll_fd);
 }
 
 int scheduler_run_once(const scheduler_t *sched)

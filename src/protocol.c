@@ -271,7 +271,8 @@ int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role,
 int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
                           uint64_t epoch, uint64_t lease_id, uint8_t state,
                           const char *name, const char *address,
-                          const char *interface, const char *reason)
+                          const char *interface, const char *group,
+                          uint32_t priority, const char *reason)
 {
     return lcs_buf_put_u16(w, id) ||
            lcs_buf_put_u16(w, owner_node) ||
@@ -281,6 +282,8 @@ int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
            lcs_buf_put_fixed_string(w, name, LCS_NAME_MAX + 1) ||
            lcs_buf_put_fixed_string(w, address, LCS_ADDR_MAX + 1) ||
            lcs_buf_put_fixed_string(w, interface, LCS_NAME_MAX + 1) ||
+           lcs_buf_put_fixed_string(w, group, LCS_NAME_MAX + 1) ||
+           lcs_buf_put_u32(w, priority) ||
            lcs_buf_put_fixed_string(w, reason, LCS_REASON_MAX + 1) ? -1 : 0;
 }
 
@@ -289,6 +292,8 @@ int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_nod
                           char *name, size_t name_len,
                           char *address, size_t address_len,
                           char *interface, size_t interface_len,
+                          char *group, size_t group_len,
+                          uint32_t *priority,
                           char *reason, size_t reason_len)
 {
     return lcs_buf_get_u16(r, id) ||
@@ -299,6 +304,8 @@ int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_nod
            lcs_buf_get_fixed_string(r, name, name_len, LCS_NAME_MAX + 1) ||
            lcs_buf_get_fixed_string(r, address, address_len, LCS_ADDR_MAX + 1) ||
            lcs_buf_get_fixed_string(r, interface, interface_len, LCS_NAME_MAX + 1) ||
+           lcs_buf_get_fixed_string(r, group, group_len, LCS_NAME_MAX + 1) ||
+           lcs_buf_get_u32(r, priority) ||
            lcs_buf_get_fixed_string(r, reason, reason_len, LCS_REASON_MAX + 1) ? -1 : 0;
 }
 

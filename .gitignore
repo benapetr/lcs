@@ -4,6 +4,7 @@
 /o/
 /packaging/output/
 *.o
+*.d
 *.a
 *.so
 

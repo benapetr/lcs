@@ -132,10 +132,13 @@ static int cmd_status(const char *socket_path)
         char name[LCS_NAME_MAX + 1];
         char address[LCS_ADDR_MAX + 1];
         char interface[LCS_NAME_MAX + 1];
+        char group[LCS_NAME_MAX + 1];
         char reason[LCS_REASON_MAX + 1];
+        uint32_t priority;
         if (lcs_decode_status_vip(&r, &id, &owner_node, &epoch, &lease_id, &state,
                                   name, sizeof(name), address, sizeof(address),
-                                  interface, sizeof(interface), reason, sizeof(reason)) != 0 ||
+                                  interface, sizeof(interface), group, sizeof(group),
+                                  &priority, reason, sizeof(reason)) != 0 ||
             id >= vip_count)
         {
             fprintf(stderr, "lcs: invalid status VIP entry\n");
@@ -145,9 +148,12 @@ static int cmd_status(const char *socket_path)
         if (owner_node != UINT16_MAX && owner_node < node_count)
             owner = node_names[owner_node];
 
-        printf("  %s %s dev=%s state=%s owner=%s epoch=%llu\n",
+        printf("  %s %s dev=%s state=%s owner=%s epoch=%llu",
                name, address, interface, state_name(state), owner,
                (unsigned long long)epoch);
+        if (*group)
+            printf(" group=%s priority=%u", group, priority);
+        printf("\n");
         if (state == LCS_RES_CONFLICT && *reason) {
             printf("    conflict: %s\n", reason);
         }

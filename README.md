@@ -4,9 +4,11 @@ This is an extremely lightweight GNU/Linux cluster service (similar to pcsd or k
 
 - Quorum (each node is either full-member or quorum-only)
 - Ability to maintain VIPs (only active at one node at a time)
+- Optional VIP groups for keep-together or anti-affinity placement
 - Option to run scripts on failover
 - Simple CLI that allows checking current state of cluster
 - Prometheus exporter bundled in
+- Resource groups (make sure VIPs are together, or that they never are together)
 - CLI allows moving the VIP between nodes
 
 It constists of two tiny binaries
@@ -66,7 +68,13 @@ address = 192.168.10.2
 role = quorum-only
 address = 192.168.10.3
 
+[group service]
+type = keep-together
+mode = best-effort
+
 [vip vip1]
+group = service
+priority = 1
 address = 127.0.0.200/32
 interface = lo
 # pre_start = /usr/local/libexec/lcs/vip-pre-start
@@ -76,6 +84,19 @@ interface = lo
 ```
 
 Similar config needs to exist on each node, only difference is IP to listen on and node name. That's all you need. Now launch lcsd on all nodes, it should form the quorum and setup VIPs. For troubleshooting use -vvv for maximal logs.
+
+# VIP groups
+
+VIPs can be assigned to optional groups:
+
+- `keep-together` prefers grouped VIPs on the same full-member.
+- `anti-affinity` prefers grouped VIPs on different full-members.
+- `strict` mode may keep lower-priority VIPs stopped when the rule cannot be satisfied.
+- `best-effort` mode keeps VIPs available if possible, then rebalances when topology allows.
+
+Priority is local to each group. Lower numbers are higher priority. If a priority is not set, LCS derives it from the deterministic sorted VIP order.
+
+Automatic rebalance uses the same safe move path as `lcs move`: the old owner releases first, quorum records a newer lease epoch, and the target activates only after it obtains a majority lease. Only one automatic rebalance move runs at a time.
 
 # Observability
 
@@ -89,7 +110,7 @@ Nodes
   node2 role=full-member online=yes
   node3 role=quorum-only online=yes
 VIPs
-  vip1 192.168.6.70/24 dev=enX0 state=active owner=node1 epoch=11
+  vip1 192.168.6.70/24 dev=enX0 state=active owner=node1 epoch=11 group=service priority=1
   ```
 
 Prometheus can be used to monitor cluster state
@@ -113,6 +134,7 @@ lcs_node_online{cluster="ingress",node="node3",role="quorum-only"} 1
 # TYPE lcs_vip_lease_remaining_seconds gauge
 # TYPE lcs_vip_conflict gauge
 # TYPE lcs_vip_failovers_total counter
+# TYPE lcs_vip_priority gauge
 lcs_vip_state{cluster="ingress",vip="vip1",state="active"} 1
 lcs_vip_owner{cluster="ingress",vip="vip1",node="node1"} 1
 lcs_vip_owner{cluster="ingress",vip="vip1",node="node2"} 0
@@ -121,4 +143,5 @@ lcs_vip_epoch{cluster="ingress",vip="vip1"} 11
 lcs_vip_lease_remaining_seconds{cluster="ingress",vip="vip1"} 3.909
 lcs_vip_conflict{cluster="ingress",vip="vip1"} 0
 lcs_vip_failovers_total{cluster="ingress",vip="vip1"} 1
+lcs_vip_priority{cluster="ingress",vip="vip1",group="service"} 1
 ```

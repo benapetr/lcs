@@ -53,12 +53,29 @@ Configuration uses an INI-style file. The same format is used on every node; onl
 | `address` | yes | — | Peer address: IPv4, IPv6, or hostname. |
 | `port` | no | cluster `port` | TCP port override for this peer. |
 
+## `[group NAME]`
+
+| Key | Required | Default | Description |
+|-----|----------|---------|-------------|
+| `type` | yes | — | `keep-together` or `anti-affinity`. |
+| `mode` | yes | — | `strict` or `best-effort`. |
+
+`keep-together` prefers all VIPs in the group on the same full-member. In `strict` mode, lower-priority VIPs remain down if they cannot be placed with the active group owner. In `best-effort` mode, LCS prefers co-location but may temporarily place VIPs independently.
+
+`anti-affinity` prefers VIPs in the group on different full-members. In `strict` mode, lower-priority VIPs remain down when there are not enough online full-members. In `best-effort` mode, LCS prefers separation but may place multiple VIPs on the same node if needed.
+
+Group placement is enforced during automatic VIP placement and during periodic rebalance. Rebalance is deterministic: only the first online full-member by sorted node name starts automatic group moves, and only one rebalance move runs at a time. Automatic rebalance uses the same controlled move machinery as `lcs move`, so the old owner releases first, the cluster records a newer lease epoch, and the target activates only after it obtains a majority lease.
+
+For best-effort anti-affinity, if multiple group VIPs temporarily run on one node because too few full-members were online, LCS moves lower-priority VIPs away when another full-member becomes available. For keep-together, if grouped VIPs end up split across full-members, LCS moves lower-priority VIPs to the active owner of the highest-priority grouped VIP.
+
 ## `[vip NAME]`
 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `address` | yes | — | VIP address in CIDR notation, e.g. `192.0.2.10/32` or `2001:db8::10/128`. |
 | `interface` | yes | — | Linux interface on which the VIP is added and probed. |
+| `group` | no | — | Group name from a `[group NAME]` section. |
+| `priority` | no | sorted VIP index | Positive integer priority inside the group. Lower numbers are higher priority. Priorities must be unique within a group. |
 | `pre_start` | no | — | Absolute path to a script run after the lease is obtained but before the conflict check and VIP add. |
 | `post_start` | no | — | Absolute path to a script run after the VIP is activated and announced. |
 | `pre_stop` | no | — | Absolute path to a script run before planned VIP removal. |
@@ -181,6 +198,13 @@ The target node activates the VIP only after it holds a current majority lease f
 # Automatic VIP placement
 
 When the cluster reaches majority quorum and a VIP has no known owner, `lcsd` automatically places it on the first eligible full-member ordered by sorted node name. Placement follows the normal sequence: advance the epoch, acquire a majority lease, run the conflict check, then add the VIP.
+
+Grouped VIPs may override this default target selection:
+
+- `keep-together` chooses an existing active group owner when possible.
+- `anti-affinity` chooses an online full-member that does not already host another active member of the same group when possible.
+- `strict` mode may leave lower-priority VIPs stopped until the rule can be satisfied.
+- `best-effort` mode may temporarily violate the rule to keep VIPs available, then rebalance when topology allows.
 
 ---
 

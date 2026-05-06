@@ -50,6 +50,21 @@ static void move_complete(int epoll_fd, move_runtime_t *move)
     } else if (move->origin == LCS_MOVE_ORIGIN_PEER)
     {
         peer_queue_simple_resp(epoll_fd, move->source_node_idx, move->peer_seq, LCS_MSG_MOVE_RESP, move->final_status, move->final_message);
+    } else if (move->origin == LCS_MOVE_ORIGIN_NONE && move->vip_idx >= 0 && move->target_idx >= 0)
+    {
+        if (move->final_status == 0)
+        {
+            lcs_log_info("internal move of VIP %s to %s completed: %s",
+                         g_state.cfg.vips[move->vip_idx].name,
+                         cluster_node_name_or_none(move->target_idx),
+                         move->final_message);
+        } else
+        {
+            lcs_log_warn("internal move of VIP %s to %s failed: %s",
+                         g_state.cfg.vips[move->vip_idx].name,
+                         cluster_node_name_or_none(move->target_idx),
+                         move->final_message);
+        }
     }
     move_clear(move);
 }
@@ -358,6 +373,91 @@ static int move_start_remote_target(int epoll_fd,
     lcs_log_debug3("move operation forwarded VIP=%s target=%s local_slot=%d",
                    g_state.cfg.vips[vip_idx].name, g_state.cfg.nodes[target_idx].name,
                    local_slot);
+    return 0;
+}
+
+bool move_any_active(void)
+{
+    for (size_t i = 0; i < LCS_MOVE_OP_MAX; i++)
+    {
+        if (g_state.moves[i].active)
+            return true;
+    }
+    return false;
+}
+
+bool move_active_for_vip(int vip_idx)
+{
+    for (size_t i = 0; i < LCS_MOVE_OP_MAX; i++)
+    {
+        if (g_state.moves[i].active && g_state.moves[i].vip_idx == vip_idx)
+            return true;
+    }
+    return false;
+}
+
+int move_start_internal(int epoll_fd, int vip_idx, int target_idx,
+                        const char *reason)
+{
+    if (vip_idx < 0 || (size_t)vip_idx >= g_state.cfg.vip_count ||
+        target_idx < 0 || (size_t)target_idx >= g_state.cfg.node_count)
+        return -1;
+    if (!cluster_has_quorum() ||
+        g_state.cfg.nodes[target_idx].role != LCS_NODE_FULL ||
+        !cluster_node_is_online((size_t)target_idx) ||
+        move_active_for_vip(vip_idx) ||
+        lease_operation_active(vip_idx))
+        return -1;
+
+    resource_runtime_t *res = &g_state.resources[vip_idx];
+    if (res->owner_node == target_idx && res->state == LCS_RES_ACTIVE)
+        return 0;
+
+    move_runtime_t *move = move_alloc();
+    if (!move)
+        return -1;
+
+    move->origin = LCS_MOVE_ORIGIN_NONE;
+    move->vip_idx = vip_idx;
+    move->target_idx = target_idx;
+    move->deadline_ms = lcs_now_ms() + (g_state.cfg.peer_timeout_ms * 3u) + g_state.cfg.lease_ms + 1000u;
+    move_set_failed(move, "internal move failed");
+    lcs_log_info("starting internal move of VIP %s to %s%s%s",
+                 g_state.cfg.vips[vip_idx].name,
+                 g_state.cfg.nodes[target_idx].name,
+                 reason && *reason ? ": " : "",
+                 reason && *reason ? reason : "");
+
+    if (target_idx == g_state.self_index)
+    {
+        move->phase = LCS_MOVE_PHASE_PREPARE_TARGET;
+        move_start_target(epoll_fd, move);
+        return 0;
+    }
+
+    unsigned char req[LCS_MOVE_REQ_PAYLOAD_SIZE];
+    size_t req_len = 0;
+    if (lcs_encode_move_req(req, sizeof(req), &req_len,
+                            g_state.cfg.vips[vip_idx].name,
+                            g_state.cfg.nodes[target_idx].name) != 0)
+    {
+        move_clear(move);
+        return -1;
+    }
+
+    move->phase = LCS_MOVE_PHASE_WAIT_TARGET;
+    move->rpc_ctx[0].move = move;
+    move->rpc_ctx[0].move_id = move->id;
+    move->rpc_ctx[0].node_idx = target_idx;
+    uint32_t timeout_ms = (g_state.cfg.peer_timeout_ms * 2u) + 1000u;
+    if (peer_rpc_async(epoll_fd, target_idx, LCS_MSG_MOVE_REQ, req,
+                       (uint32_t)req_len, LCS_MSG_MOVE_RESP, move->peer_resp,
+                       sizeof(move->peer_resp), &move->peer_resp_len,
+                       timeout_ms, move_peer_callback, &move->rpc_ctx[0]) != 0)
+    {
+        move_complete(epoll_fd, move);
+        return -1;
+    }
     return 0;
 }
 

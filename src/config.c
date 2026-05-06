@@ -18,6 +18,7 @@ typedef enum
     SEC_NONE,
     SEC_CLUSTER,
     SEC_NODE,
+    SEC_GROUP,
     SEC_VIP,
 } section_type_t;
 
@@ -115,6 +116,36 @@ static int parse_vip_backend(const char *value, lcs_vip_backend_t *backend)
     return -1;
 }
 
+static int parse_group_type(const char *value, lcs_group_type_t *type)
+{
+    if (strcmp(value, "keep-together") == 0)
+    {
+        *type = LCS_GROUP_KEEP_TOGETHER;
+        return 0;
+    }
+    if (strcmp(value, "anti-affinity") == 0)
+    {
+        *type = LCS_GROUP_ANTI_AFFINITY;
+        return 0;
+    }
+    return -1;
+}
+
+static int parse_group_mode(const char *value, lcs_group_mode_t *mode)
+{
+    if (strcmp(value, "strict") == 0)
+    {
+        *mode = LCS_GROUP_MODE_STRICT;
+        return 0;
+    }
+    if (strcmp(value, "best-effort") == 0)
+    {
+        *mode = LCS_GROUP_MODE_BEST_EFFORT;
+        return 0;
+    }
+    return -1;
+}
+
 static int parse_section(lcs_config_t *cfg, char *name, section_t *sec, char *err, size_t err_len, unsigned line)
 {
     char *end = strchr(name, ']');
@@ -159,6 +190,31 @@ static int parse_section(lcs_config_t *cfg, char *name, section_t *sec, char *er
         return 0;
     }
 
+    if (strncmp(body, "group ", 6) == 0)
+    {
+        char *group_name = lcs_trim(body + 6);
+        if (!lcs_valid_name(group_name))
+        {
+            set_err(err, err_len, line, "invalid group name");
+            return -1;
+        }
+        if (cfg->group_count >= LCS_MAX_GROUPS)
+        {
+            set_err(err, err_len, line, "too many groups");
+            return -1;
+        }
+        if (lcs_config_group_index(cfg, group_name) >= 0)
+        {
+            set_err(err, err_len, line, "duplicate group section");
+            return -1;
+        }
+        int idx = (int)cfg->group_count++;
+        set_string(cfg->groups[idx].name, sizeof(cfg->groups[idx].name), group_name);
+        sec->type = SEC_GROUP;
+        sec->index = idx;
+        return 0;
+    }
+
     if (strncmp(body, "vip ", 4) == 0)
     {
         char *vip_name = lcs_trim(body + 4);
@@ -179,6 +235,7 @@ static int parse_section(lcs_config_t *cfg, char *name, section_t *sec, char *er
         }
         int idx = (int)cfg->vip_count++;
         set_string(cfg->vips[idx].name, sizeof(cfg->vips[idx].name), vip_name);
+        cfg->vips[idx].group_idx = -1;
         sec->type = SEC_VIP;
         sec->index = idx;
         return 0;
@@ -322,9 +379,28 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
 
         if (strcmp(key, "port") == 0)
             return lcs_parse_u16(value, &node->port);
+    } else if (sec.type == SEC_GROUP)
+    {
+        lcs_group_config_t *group = &cfg->groups[sec.index];
+        if (strcmp(key, "type") == 0)
+            return parse_group_type(value, &group->type);
+
+        if (strcmp(key, "mode") == 0)
+            return parse_group_mode(value, &group->mode);
     } else if (sec.type == SEC_VIP)
     {
         lcs_vip_config_t *vip = &cfg->vips[sec.index];
+        if (strcmp(key, "group") == 0)
+            return set_string(vip->group_name, sizeof(vip->group_name), value);
+
+        if (strcmp(key, "priority") == 0)
+        {
+            if (lcs_parse_u32(value, &vip->priority) != 0 || vip->priority == 0)
+                return -1;
+            vip->priority_set = true;
+            return 0;
+        }
+
         if (strcmp(key, "address") == 0)
             return set_string(vip->address, sizeof(vip->address), value);
 
@@ -354,6 +430,13 @@ static int compare_node_config(const void *a, const void *b)
     return strcmp(na->name, nb->name);
 }
 
+static int compare_group_config(const void *a, const void *b)
+{
+    const lcs_group_config_t *ga = a;
+    const lcs_group_config_t *gb = b;
+    return strcmp(ga->name, gb->name);
+}
+
 static int compare_vip_config(const void *a, const void *b)
 {
     const lcs_vip_config_t *va = a;
@@ -364,6 +447,7 @@ static int compare_vip_config(const void *a, const void *b)
 static void sort_config(lcs_config_t *cfg)
 {
     qsort(cfg->nodes, cfg->node_count, sizeof(cfg->nodes[0]), compare_node_config);
+    qsort(cfg->groups, cfg->group_count, sizeof(cfg->groups[0]), compare_group_config);
     qsort(cfg->vips, cfg->vip_count, sizeof(cfg->vips[0]), compare_vip_config);
 }
 
@@ -453,6 +537,16 @@ int lcs_config_node_index(const lcs_config_t *cfg, const char *name)
     return -1;
 }
 
+int lcs_config_group_index(const lcs_config_t *cfg, const char *name)
+{
+    for (size_t i = 0; i < cfg->group_count; i++)
+    {
+        if (strcmp(cfg->groups[i].name, name) == 0)
+            return (int)i;
+    }
+    return -1;
+}
+
 int lcs_config_vip_index(const lcs_config_t *cfg, const char *name)
 {
     for (size_t i = 0; i < cfg->vip_count; i++)
@@ -463,7 +557,63 @@ int lcs_config_vip_index(const lcs_config_t *cfg, const char *name)
     return -1;
 }
 
-int lcs_config_validate(const lcs_config_t *cfg, char *err, size_t err_len)
+static int validate_groups_and_assign_vips(lcs_config_t *cfg, char *err, size_t err_len)
+{
+    for (size_t i = 0; i < cfg->group_count; i++)
+    {
+        const lcs_group_config_t *group = &cfg->groups[i];
+        if (group->type != LCS_GROUP_KEEP_TOGETHER &&
+            group->type != LCS_GROUP_ANTI_AFFINITY)
+        {
+            set_err(err, err_len, 0, "group type is required");
+            return -1;
+        }
+        if (group->mode != LCS_GROUP_MODE_STRICT &&
+            group->mode != LCS_GROUP_MODE_BEST_EFFORT)
+        {
+            set_err(err, err_len, 0, "group mode is required");
+            return -1;
+        }
+    }
+
+    for (size_t i = 0; i < cfg->vip_count; i++)
+    {
+        lcs_vip_config_t *vip = &cfg->vips[i];
+        if (!vip->priority_set)
+            vip->priority = (uint32_t)i + 1u;
+        if (*vip->group_name)
+        {
+            int group_idx = lcs_config_group_index(cfg, vip->group_name);
+            if (group_idx < 0)
+            {
+                set_err(err, err_len, 0, "vip references unknown group");
+                return -1;
+            }
+            vip->group_idx = group_idx;
+        } else {
+            vip->group_idx = -1;
+        }
+    }
+
+    for (size_t i = 0; i < cfg->vip_count; i++)
+    {
+        const lcs_vip_config_t *a = &cfg->vips[i];
+        if (a->group_idx < 0)
+            continue;
+        for (size_t j = i + 1; j < cfg->vip_count; j++)
+        {
+            const lcs_vip_config_t *b = &cfg->vips[j];
+            if (a->group_idx == b->group_idx && a->priority == b->priority)
+            {
+                set_err(err, err_len, 0, "duplicate vip priority in group");
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
 {
     if (!lcs_valid_name(cfg->cluster_name))
     {
@@ -527,6 +677,9 @@ int lcs_config_validate(const lcs_config_t *cfg, char *err, size_t err_len)
             return -1;
         }
     }
+    if (validate_groups_and_assign_vips(cfg, err, err_len) != 0)
+        return -1;
+
     for (size_t i = 0; i < cfg->vip_count; i++)
     {
         const lcs_vip_config_t *vip = &cfg->vips[i];

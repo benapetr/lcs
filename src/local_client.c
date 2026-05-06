@@ -162,6 +162,8 @@ static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
     {
         uint16_t owner = g_state.resources[i].owner_node < 0 ?
                          UINT16_MAX : (uint16_t)g_state.resources[i].owner_node;
+        const char *group = g_state.cfg.vips[i].group_idx >= 0 ?
+                            g_state.cfg.groups[g_state.cfg.vips[i].group_idx].name : "";
         if (lcs_encode_status_vip(&w, (uint16_t)i, owner,
                                   g_state.resources[i].epoch,
                                   g_state.resources[i].lease_id,
@@ -169,6 +171,8 @@ static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
                                   g_state.cfg.vips[i].name,
                                   g_state.cfg.vips[i].address,
                                   g_state.cfg.vips[i].interface,
+                                  group,
+                                  g_state.cfg.vips[i].priority,
                                   g_state.resources[i].conflict_reason) != 0)
         {
             client_queue_error(epoll_fd, slot_idx, seq, "failed to encode status vip");
