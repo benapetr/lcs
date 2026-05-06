@@ -247,6 +247,8 @@ typedef struct
     resource_runtime_t resources[LCS_MAX_VIPS];
 } daemon_state_t;
 
+extern daemon_state_t g_state;
+
 enum
 {
     LCS_EPOLL_LOCAL            = 1,

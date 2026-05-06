@@ -10,78 +10,72 @@
 #include <stdio.h>
 #include <string.h>
 
-bool node_is_online(const daemon_state_t *st, size_t node_idx)
+bool cluster_node_is_online(size_t node_idx)
 {
-    if ((int)node_idx == st->self_index)
+    if ((int)node_idx == g_state.self_index)
         return true;
-    if (node_idx >= st->cfg.node_count || !st->peers[node_idx].online)
+    if (node_idx >= g_state.cfg.node_count || !g_state.peers[node_idx].online)
         return false;
-    return lcs_now_ms() - st->peers[node_idx].last_seen_ms <= st->cfg.peer_timeout_ms;
+    return lcs_now_ms() - g_state.peers[node_idx].last_seen_ms <= g_state.cfg.peer_timeout_ms;
 }
 
-int first_online_full_member(const daemon_state_t *st)
+int cluster_first_online_full_member(void)
 {
     int best = -1;
-    for (size_t i = 0; i < st->cfg.node_count; i++)
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
-        if (st->cfg.nodes[i].role != LCS_NODE_FULL || !node_is_online(st, i))
+        if (g_state.cfg.nodes[i].role != LCS_NODE_FULL || !cluster_node_is_online(i))
             continue;
-        if (best < 0 || strcmp(st->cfg.nodes[i].name, st->cfg.nodes[best].name) < 0)
+        if (best < 0 || strcmp(g_state.cfg.nodes[i].name, g_state.cfg.nodes[best].name) < 0)
             best = (int)i;
     }
     return best;
 }
 
-const char *node_name_or_none(const daemon_state_t *st, int node_idx)
+const char *cluster_node_name_or_none(int node_idx)
 {
-    if (node_idx < 0 || (size_t)node_idx >= st->cfg.node_count)
+    if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count)
         return "-";
-    return st->cfg.nodes[node_idx].name;
+    return g_state.cfg.nodes[node_idx].name;
 }
 
-int has_quorum(const daemon_state_t *st)
+int cluster_has_quorum(void)
 {
-    return st->votes_seen >= st->quorum_needed;
+    return g_state.votes_seen >= g_state.quorum_needed;
 }
 
-void recompute_votes(daemon_state_t *st)
+void cluster_recompute_votes(void)
 {
     uint32_t votes = 1;
     uint64_t now = lcs_now_ms();
-    for (size_t i = 0; i < st->cfg.node_count; i++)
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
-        if ((int)i == st->self_index)
+        if ((int)i == g_state.self_index)
             continue;
-        if (st->peers[i].online && now - st->peers[i].last_seen_ms <= st->cfg.peer_timeout_ms)
+        if (g_state.peers[i].online && now - g_state.peers[i].last_seen_ms <= g_state.cfg.peer_timeout_ms)
         {
             votes++;
         } else
         {
-            if (st->peers[i].online)
-                lcs_log_info("peer %s offline", st->cfg.nodes[i].name);
-            st->peers[i].online = false;
+            if (g_state.peers[i].online)
+                lcs_log_info("peer %s offline", g_state.cfg.nodes[i].name);
+            g_state.peers[i].online = false;
         }
     }
-    st->votes_seen = votes;
+    g_state.votes_seen = votes;
 }
 
-uint32_t peer_handshake_timeout_ms(const daemon_state_t *st)
-{
-    return st->cfg.peer_timeout_ms < LCS_DEFAULT_HANDSHAKE_TIMEOUT_MS ?
-           st->cfg.peer_timeout_ms : LCS_DEFAULT_HANDSHAKE_TIMEOUT_MS;
-}
-
-int encode_state(const daemon_state_t *st, unsigned char *payload, size_t cap, size_t *len)
+int cluster_encode_state(unsigned char *payload, size_t cap, size_t *len)
 {
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, cap);
-    if (lcs_buf_put_u64(&w, st->instance_id) != 0 ||
-        lcs_buf_put_u16(&w, (uint16_t)st->cfg.vip_count) != 0)
+    if (lcs_buf_put_u64(&w, g_state.instance_id) != 0 ||
+        lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.vip_count) != 0)
         return -1;
 
-    for (size_t i = 0; i < st->cfg.vip_count; i++)
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
-        const resource_runtime_t *res = &st->resources[i];
+        const resource_runtime_t *res = &g_state.resources[i];
         uint16_t owner = res->owner_node < 0 ? UINT16_MAX : (uint16_t)res->owner_node;
         if (lcs_buf_put_u16(&w, (uint16_t)i) != 0 ||
             lcs_buf_put_u16(&w, owner) != 0 ||
@@ -99,7 +93,7 @@ int encode_state(const daemon_state_t *st, unsigned char *payload, size_t cap, s
     return 0;
 }
 
-int apply_state(daemon_state_t *st, const void *payload, size_t len, int source_node_idx)
+int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
 {
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, len);
@@ -107,12 +101,12 @@ int apply_state(daemon_state_t *st, const void *payload, size_t len, int source_
     uint16_t count;
     if (lcs_buf_get_u64(&r, &sender_instance_id) != 0 ||
         lcs_buf_get_u16(&r, &count) != 0 ||
-        count != st->cfg.vip_count)
+        count != g_state.cfg.vip_count)
         return -1;
 
     if (source_node_idx >= 0 &&
-        ((size_t)source_node_idx >= st->cfg.node_count ||
-         sender_instance_id != st->peers[source_node_idx].instance_id))
+        ((size_t)source_node_idx >= g_state.cfg.node_count ||
+         sender_instance_id != g_state.peers[source_node_idx].instance_id))
         return -1;
 
     for (uint16_t n = 0; n < count; n++)
@@ -130,10 +124,10 @@ int apply_state(daemon_state_t *st, const void *payload, size_t len, int source_
             lcs_buf_get_u64(&r, &remaining_ms) != 0 ||
             lcs_buf_get_u64(&r, &failover_count) != 0 ||
             lcs_buf_get_fixed_string(&r, reason, sizeof(reason), LCS_REASON_MAX + 1) != 0 ||
-            id >= st->cfg.vip_count)
+            id >= g_state.cfg.vip_count)
             return -1;
 
-        resource_runtime_t *res = &st->resources[id];
+        resource_runtime_t *res = &g_state.resources[id];
         if (failover_count > res->failover_count)
             res->failover_count = failover_count;
         bool incoming_conflict = state == LCS_RES_CONFLICT;
@@ -145,8 +139,8 @@ int apply_state(daemon_state_t *st, const void *payload, size_t len, int source_
                           owner_instance_id == res->owner_instance_id &&
                           (owner == UINT16_MAX ? res->owner_node < 0 : res->owner_node == (int)owner);
         bool preserve_local_transition = same_lease &&
-                                         owner == (uint16_t)st->self_index &&
-                                         owner_instance_id == st->instance_id &&
+                                         owner == (uint16_t)g_state.self_index &&
+                                         owner_instance_id == g_state.instance_id &&
                                          (res->state == LCS_RES_STARTING ||
                                           res->state == LCS_RES_STOPPING);
         bool conflict_update = incoming_conflict && epoch >= res->epoch;
@@ -154,11 +148,11 @@ int apply_state(daemon_state_t *st, const void *payload, size_t len, int source_
             continue;
         if (newer_epoch || same_lease || conflict_update)
         {
-            if (res->owner_node == st->self_index &&
-                res->owner_instance_id == st->instance_id &&
-                owner != (uint16_t)st->self_index &&
+            if (res->owner_node == g_state.self_index &&
+                res->owner_instance_id == g_state.instance_id &&
+                owner != (uint16_t)g_state.self_index &&
                 res->state == LCS_RES_ACTIVE)
-                lcs_vip_del(&st->cfg.vips[id]);
+                lcs_vip_del(&g_state.cfg.vips[id]);
             res->epoch = epoch;
             res->lease_id = lease_id;
             res->owner_node = owner == UINT16_MAX ? -1 : (int)owner;
@@ -170,7 +164,7 @@ int apply_state(daemon_state_t *st, const void *payload, size_t len, int source_
                 incoming_deadline_ms < res->lease_deadline_ms)
             {
                 lcs_log_debug3("state sync for VIP %s kept later local deadline for same lease epoch=%llu",
-                               st->cfg.vips[id].name, (unsigned long long)epoch);
+                               g_state.cfg.vips[id].name, (unsigned long long)epoch);
             } else
                 res->lease_deadline_ms = incoming_deadline_ms;
             snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",

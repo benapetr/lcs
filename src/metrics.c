@@ -4,6 +4,7 @@
 #include "metrics.h"
 
 #include "cluster.h"
+#include "daemon_state.h"
 #include "util.h"
 
 #include <errno.h>
@@ -66,7 +67,7 @@ static void write_best_effort(int fd, const void *buf, size_t len)
     }
 }
 
-void lcs_metrics_handle_client(int fd, const daemon_state_t *st)
+void lcs_metrics_handle_client(int fd)
 {
     char req[512];
     ssize_t req_len = read(fd, req, sizeof(req));
@@ -78,29 +79,25 @@ void lcs_metrics_handle_client(int fd, const daemon_state_t *st)
         return;
     size_t len = 0;
     uint64_t now = lcs_now_ms();
-    const char *cluster = *st->cfg.cluster_name ? st->cfg.cluster_name : "default";
+    const char *cluster = *g_state.cfg.cluster_name ? g_state.cfg.cluster_name : "default";
 
-    metrics_append(body, cap, &len,
-                   "# HELP lcs_cluster_quorum Whether this node currently sees cluster quorum.\n");
+    metrics_append(body, cap, &len, "# HELP lcs_cluster_quorum Whether this node currently sees cluster quorum.\n");
     metrics_append(body, cap, &len, "# TYPE lcs_cluster_quorum gauge\n");
-    metrics_append(body, cap, &len, "lcs_cluster_quorum{cluster=\"%s\"} %u\n",
-                   cluster, has_quorum(st) ? 1u : 0u);
+    metrics_append(body, cap, &len, "lcs_cluster_quorum{cluster=\"%s\"} %u\n", cluster, cluster_has_quorum() ? 1u : 0u);
     metrics_append(body, cap, &len, "# TYPE lcs_cluster_votes_seen gauge\n");
-    metrics_append(body, cap, &len, "lcs_cluster_votes_seen{cluster=\"%s\"} %u\n",
-                   cluster, st->votes_seen);
+    metrics_append(body, cap, &len, "lcs_cluster_votes_seen{cluster=\"%s\"} %u\n", cluster, g_state.votes_seen);
     metrics_append(body, cap, &len, "# TYPE lcs_cluster_votes_needed gauge\n");
-    metrics_append(body, cap, &len, "lcs_cluster_votes_needed{cluster=\"%s\"} %u\n",
-                   cluster, st->quorum_needed);
+    metrics_append(body, cap, &len, "lcs_cluster_votes_needed{cluster=\"%s\"} %u\n", cluster, g_state.quorum_needed);
 
     metrics_append(body, cap, &len, "# TYPE lcs_node_online gauge\n");
-    for (size_t i = 0; i < st->cfg.node_count; i++)
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
-        const char *role = st->cfg.nodes[i].role == LCS_NODE_FULL ?
+        const char *role = g_state.cfg.nodes[i].role == LCS_NODE_FULL ?
                            "full-member" : "quorum-only";
         metrics_append(body, cap, &len,
                        "lcs_node_online{cluster=\"%s\",node=\"%s\",role=\"%s\"} %u\n",
-                       cluster, st->cfg.nodes[i].name, role,
-                       node_is_online(st, i) ? 1u : 0u);
+                       cluster, g_state.cfg.nodes[i].name, role,
+                       cluster_node_is_online(i) ? 1u : 0u);
     }
 
     metrics_append(body, cap, &len, "# TYPE lcs_vip_state gauge\n");
@@ -109,17 +106,17 @@ void lcs_metrics_handle_client(int fd, const daemon_state_t *st)
     metrics_append(body, cap, &len, "# TYPE lcs_vip_lease_remaining_seconds gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_vip_conflict gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_vip_failovers_total counter\n");
-    for (size_t i = 0; i < st->cfg.vip_count; i++)
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
-        const resource_runtime_t *res = &st->resources[i];
+        const resource_runtime_t *res = &g_state.resources[i];
         metrics_append(body, cap, &len,
                        "lcs_vip_state{cluster=\"%s\",vip=\"%s\",state=\"%s\"} 1\n",
-                       cluster, st->cfg.vips[i].name, resource_state_name(res->state));
-        for (size_t n = 0; n < st->cfg.node_count; n++)
+                       cluster, g_state.cfg.vips[i].name, resource_state_name(res->state));
+        for (size_t n = 0; n < g_state.cfg.node_count; n++)
         {
             metrics_append(body, cap, &len,
                            "lcs_vip_owner{cluster=\"%s\",vip=\"%s\",node=\"%s\"} %u\n",
-                           cluster, st->cfg.vips[i].name, st->cfg.nodes[n].name,
+                           cluster, g_state.cfg.vips[i].name, g_state.cfg.nodes[n].name,
                            res->owner_node == (int)n ? 1u : 0u);
         }
         double remaining = 0.0;
@@ -128,18 +125,18 @@ void lcs_metrics_handle_client(int fd, const daemon_state_t *st)
             
         metrics_append(body, cap, &len,
                        "lcs_vip_epoch{cluster=\"%s\",vip=\"%s\"} %llu\n",
-                       cluster, st->cfg.vips[i].name,
+                       cluster, g_state.cfg.vips[i].name,
                        (unsigned long long)res->epoch);
         metrics_append(body, cap, &len,
                        "lcs_vip_lease_remaining_seconds{cluster=\"%s\",vip=\"%s\"} %.3f\n",
-                       cluster, st->cfg.vips[i].name, remaining);
+                       cluster, g_state.cfg.vips[i].name, remaining);
         metrics_append(body, cap, &len,
                        "lcs_vip_conflict{cluster=\"%s\",vip=\"%s\"} %u\n",
-                       cluster, st->cfg.vips[i].name,
+                       cluster, g_state.cfg.vips[i].name,
                        res->state == LCS_RES_CONFLICT ? 1u : 0u);
         metrics_append(body, cap, &len,
                        "lcs_vip_failovers_total{cluster=\"%s\",vip=\"%s\"} %llu\n",
-                       cluster, st->cfg.vips[i].name,
+                       cluster, g_state.cfg.vips[i].name,
                        (unsigned long long)res->failover_count);
     }
 

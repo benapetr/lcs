@@ -69,9 +69,9 @@ static int client_alloc_buffers(local_client_runtime_t *client)
     return 0;
 }
 
-static void client_close_slot(daemon_state_t *st, int epoll_fd, int slot_idx, const char *reason)
+static void client_close_slot(int epoll_fd, int slot_idx, const char *reason)
 {
-    local_client_runtime_t *client = &st->local_clients[slot_idx];
+    local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     if (!client->active)
         return;
     uint64_t client_id = client->id;
@@ -88,14 +88,14 @@ static void client_close_slot(daemon_state_t *st, int epoll_fd, int slot_idx, co
     client_free_buffers(client);
     memset(client, 0, sizeof(*client));
     client->fd = -1;
-    move_cancel_local_client(st, slot_idx, client_id);
+    move_cancel_local_client(slot_idx, client_id);
 }
 
-static int client_queue_frame(daemon_state_t *st, int epoll_fd, int slot_idx,
+static int client_queue_frame(int epoll_fd, int slot_idx,
                               uint16_t type, uint32_t seq, const void *payload,
                               uint32_t length)
 {
-    local_client_runtime_t *client = &st->local_clients[slot_idx];
+    local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     if (!client->active || !client->outbuf || length > LCS_MAX_FRAME)
         return -1;
     size_t frame_len = LCS_FRAME_HEADER_SIZE + (size_t)length;
@@ -123,62 +123,62 @@ static int client_queue_frame(daemon_state_t *st, int epoll_fd, int slot_idx,
     return client_update_epoll(epoll_fd, slot_idx, client);
 }
 
-static void client_queue_error(daemon_state_t *st, int epoll_fd, int slot_idx, uint32_t seq, const char *msg)
+static void client_queue_error(int epoll_fd, int slot_idx, uint32_t seq, const char *msg)
 {
     unsigned char payload[256];
     size_t len = 0;
     if (lcs_encode_simple_resp(payload, sizeof(payload), &len, -1, msg) == 0)
-        client_queue_frame(st, epoll_fd, slot_idx, LCS_MSG_ERROR, seq, payload, (uint32_t)len);
+        client_queue_frame(epoll_fd, slot_idx, LCS_MSG_ERROR, seq, payload, (uint32_t)len);
 }
 
-static void client_queue_status(daemon_state_t *st, int epoll_fd, int slot_idx, uint32_t seq)
+static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
 {
     unsigned char payload[LCS_MAX_FRAME];
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, sizeof(payload));
-    if (lcs_encode_status_header(&w, (uint16_t)st->cfg.node_count,
-                                 (uint16_t)st->cfg.vip_count,
-                                 (uint16_t)st->self_index,
-                                 (uint16_t)st->quorum_needed,
-                                 (uint16_t)st->votes_seen,
-                                 has_quorum(st) ? 1 : 0) != 0)
+    if (lcs_encode_status_header(&w, (uint16_t)g_state.cfg.node_count,
+                                 (uint16_t)g_state.cfg.vip_count,
+                                 (uint16_t)g_state.self_index,
+                                 (uint16_t)g_state.quorum_needed,
+                                 (uint16_t)g_state.votes_seen,
+                                 cluster_has_quorum() ? 1 : 0) != 0)
     {
-        client_queue_error(st, epoll_fd, slot_idx, seq, "failed to encode status header");
+        client_queue_error(epoll_fd, slot_idx, seq, "failed to encode status header");
         return;
     }
-    for (size_t i = 0; i < st->cfg.node_count; i++)
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         if (lcs_encode_status_node(&w, (uint16_t)i,
-                                   (uint16_t)st->cfg.nodes[i].role,
-                                   node_is_online(st, i) ? 1 : 0,
-                                   i == (size_t)st->self_index ? 1 : 0,
-                                   st->cfg.nodes[i].name) != 0)
+                                   (uint16_t)g_state.cfg.nodes[i].role,
+                                   cluster_node_is_online(i) ? 1 : 0,
+                                   i == (size_t)g_state.self_index ? 1 : 0,
+                                   g_state.cfg.nodes[i].name) != 0)
         {
-            client_queue_error(st, epoll_fd, slot_idx, seq,  "failed to encode status node");
+            client_queue_error(epoll_fd, slot_idx, seq,  "failed to encode status node");
             return;
         }
     }
-    for (size_t i = 0; i < st->cfg.vip_count; i++)
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
-        uint16_t owner = st->resources[i].owner_node < 0 ?
-                         UINT16_MAX : (uint16_t)st->resources[i].owner_node;
+        uint16_t owner = g_state.resources[i].owner_node < 0 ?
+                         UINT16_MAX : (uint16_t)g_state.resources[i].owner_node;
         if (lcs_encode_status_vip(&w, (uint16_t)i, owner,
-                                  st->resources[i].epoch,
-                                  st->resources[i].lease_id,
-                                  (uint8_t)st->resources[i].state,
-                                  st->cfg.vips[i].name,
-                                  st->cfg.vips[i].address,
-                                  st->cfg.vips[i].interface,
-                                  st->resources[i].conflict_reason) != 0)
+                                  g_state.resources[i].epoch,
+                                  g_state.resources[i].lease_id,
+                                  (uint8_t)g_state.resources[i].state,
+                                  g_state.cfg.vips[i].name,
+                                  g_state.cfg.vips[i].address,
+                                  g_state.cfg.vips[i].interface,
+                                  g_state.resources[i].conflict_reason) != 0)
         {
-            client_queue_error(st, epoll_fd, slot_idx, seq, "failed to encode status vip");
+            client_queue_error(epoll_fd, slot_idx, seq, "failed to encode status vip");
             return;
         }
     }
-    client_queue_frame(st, epoll_fd, slot_idx, LCS_MSG_STATUS_RESP, seq, payload, (uint32_t)w.len);
+    client_queue_frame(epoll_fd, slot_idx, LCS_MSG_STATUS_RESP, seq, payload, (uint32_t)w.len);
 }
 
-static void client_queue_simple_response(daemon_state_t *st, int epoll_fd,
+static void client_queue_simple_response(int epoll_fd,
                                          int slot_idx, uint16_t type,
                                          uint32_t seq, int32_t status,
                                          const char *message)
@@ -186,23 +186,23 @@ static void client_queue_simple_response(daemon_state_t *st, int epoll_fd,
     unsigned char payload[256];
     size_t len = 0;
     if (lcs_encode_simple_resp(payload, sizeof(payload), &len, status, message) == 0)
-        client_queue_frame(st, epoll_fd, slot_idx, type, seq, payload, (uint32_t)len);
+        client_queue_frame(epoll_fd, slot_idx, type, seq, payload, (uint32_t)len);
 }
 
-void client_complete_move(daemon_state_t *st, int epoll_fd, int slot_idx,
+void client_complete_move(int epoll_fd, int slot_idx,
                           uint64_t client_id, uint32_t seq, int32_t status,
                           const char *message)
 {
     if (slot_idx < 0 || slot_idx >= LCS_LOCAL_CLIENT_MAX)
         return;
-    local_client_runtime_t *client = &st->local_clients[slot_idx];
+    local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     if (!client->active || client->id != client_id)
         return;
-    client_queue_simple_response(st, epoll_fd, slot_idx, LCS_MSG_MOVE_RESP, seq, status, message);
+    client_queue_simple_response(epoll_fd, slot_idx, LCS_MSG_MOVE_RESP, seq, status, message);
     client->close_after_flush = true;
 }
 
-static void client_queue_clear_conflict(daemon_state_t *st, int epoll_fd,
+static void client_queue_clear_conflict(int epoll_fd,
                                         int slot_idx, uint32_t seq,
                                         const void *payload, uint32_t len)
 {
@@ -212,18 +212,18 @@ static void client_queue_clear_conflict(daemon_state_t *st, int epoll_fd,
     if (lcs_decode_clear_conflict_req(payload, len, vip_name, sizeof(vip_name)) != 0)
     {
         snprintf(message, sizeof(message), "invalid clear-conflict request");
-    } else if (!has_quorum(st))
+    } else if (!cluster_has_quorum())
     {
         snprintf(message, sizeof(message), "majority quorum is not available");
     } else
     {
-        int vip_idx = lcs_config_vip_index(&st->cfg, vip_name);
+        int vip_idx = lcs_config_vip_index(&g_state.cfg, vip_name);
         if (vip_idx < 0)
         {
             snprintf(message, sizeof(message), "unknown VIP");
         } else
         {
-            resource_runtime_t *res = &st->resources[vip_idx];
+            resource_runtime_t *res = &g_state.resources[vip_idx];
             if (res->state != LCS_RES_CONFLICT)
             {
                 status = 0;
@@ -239,43 +239,43 @@ static void client_queue_clear_conflict(daemon_state_t *st, int epoll_fd,
                 res->renew_after_ms = 0;
                 res->next_activation_attempt_ms = 0;
                 res->conflict_reason[0] = '\0';
-                peer_broadcast_state_sync(st, epoll_fd);
+                peer_broadcast_state_sync(epoll_fd);
                 status = 0;
                 snprintf(message, sizeof(message), "conflict cleared");
-                lcs_log_info("admin cleared conflict for VIP %s epoch=%llu", st->cfg.vips[vip_idx].name, (unsigned long long)res->epoch);
+                lcs_log_info("admin cleared conflict for VIP %s epoch=%llu", g_state.cfg.vips[vip_idx].name, (unsigned long long)res->epoch);
             }
         }
     }
-    client_queue_simple_response(st, epoll_fd, slot_idx, LCS_MSG_CLEAR_CONFLICT_RESP, seq, status, message);
+    client_queue_simple_response(epoll_fd, slot_idx, LCS_MSG_CLEAR_CONFLICT_RESP, seq, status, message);
 }
 
-static int client_process_frame(daemon_state_t *st, int epoll_fd, int slot_idx,
+static int client_process_frame(int epoll_fd, int slot_idx,
                                 const lcs_frame_header_t *hdr,
                                 const unsigned char *payload)
 {
-    local_client_runtime_t *client = &st->local_clients[slot_idx];
+    local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     switch (hdr->type)
     {
         case LCS_MSG_STATUS_REQ:
-            client_queue_status(st, epoll_fd, slot_idx, hdr->seq);
+            client_queue_status(epoll_fd, slot_idx, hdr->seq);
             break;
         case LCS_MSG_MOVE_REQ:
-            move_start_local_client(st, epoll_fd, slot_idx, hdr->seq, payload, hdr->length);
+            move_start_local_client(epoll_fd, slot_idx, hdr->seq, payload, hdr->length);
             return 0;
         case LCS_MSG_CLEAR_CONFLICT_REQ:
-            client_queue_clear_conflict(st, epoll_fd, slot_idx, hdr->seq, payload, hdr->length);
+            client_queue_clear_conflict(epoll_fd, slot_idx, hdr->seq, payload, hdr->length);
             break;
         default:
-            client_queue_error(st, epoll_fd, slot_idx, hdr->seq, "unsupported local CLI message");
+            client_queue_error(epoll_fd, slot_idx, hdr->seq, "unsupported local CLI message");
             break;
     }
     client->close_after_flush = true;
     return 0;
 }
 
-static int client_parse_frames(daemon_state_t *st, int epoll_fd, int slot_idx)
+static int client_parse_frames(int epoll_fd, int slot_idx)
 {
-    local_client_runtime_t *client = &st->local_clients[slot_idx];
+    local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     size_t off = 0;
     while (client->in_len - off >= LCS_FRAME_HEADER_SIZE)
     {
@@ -294,7 +294,7 @@ static int client_parse_frames(daemon_state_t *st, int epoll_fd, int slot_idx)
         if (client->in_len - off < frame_len)
             break;
 
-        if (client_process_frame(st, epoll_fd, slot_idx, &hdr, client->inbuf + off + LCS_FRAME_HEADER_SIZE) != 0)
+        if (client_process_frame(epoll_fd, slot_idx, &hdr, client->inbuf + off + LCS_FRAME_HEADER_SIZE) != 0)
             return -1;
         off += frame_len;
         if (client->close_after_flush)
@@ -311,9 +311,9 @@ static int client_parse_frames(daemon_state_t *st, int epoll_fd, int slot_idx)
     return 0;
 }
 
-static int client_flush_output(daemon_state_t *st, int epoll_fd, int slot_idx)
+static int client_flush_output(int epoll_fd, int slot_idx)
 {
-    local_client_runtime_t *client = &st->local_clients[slot_idx];
+    local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     while (client->out_off < client->out_len)
     {
         ssize_t n = write(client->fd, client->outbuf + client->out_off, client->out_len - client->out_off);
@@ -329,13 +329,13 @@ static int client_flush_output(daemon_state_t *st, int epoll_fd, int slot_idx)
     client->out_off = 0;
     client->out_len = 0;
     if (client->close_after_flush)
-        client_close_slot(st, epoll_fd, slot_idx, "response sent");
+        client_close_slot(epoll_fd, slot_idx, "response sent");
     else if (client->active)
         return client_update_epoll(epoll_fd, slot_idx, client);
     return 0;
 }
 
-void client_accept(daemon_state_t *st, int epoll_fd, int listen_fd)
+void client_accept(int epoll_fd, int listen_fd)
 {
     for (;;)
     {
@@ -349,7 +349,7 @@ void client_accept(daemon_state_t *st, int epoll_fd, int listen_fd)
         int slot_idx = -1;
         for (size_t i = 0; i < LCS_LOCAL_CLIENT_MAX; i++)
         {
-            if (!st->local_clients[i].active)
+            if (!g_state.local_clients[i].active)
             {
                 slot_idx = (int)i;
                 break;
@@ -361,13 +361,13 @@ void client_accept(daemon_state_t *st, int epoll_fd, int listen_fd)
             close(fd);
             continue;
         }
-        local_client_runtime_t *client = &st->local_clients[slot_idx];
+        local_client_runtime_t *client = &g_state.local_clients[slot_idx];
         memset(client, 0, sizeof(*client));
         client->fd = fd;
-        client->id = ++st->next_local_client_id;
+        client->id = ++g_state.next_local_client_id;
         if (client->id == 0)
-            client->id = ++st->next_local_client_id;
-        client->deadline_ms = lcs_now_ms() + st->cfg.peer_timeout_ms;
+            client->id = ++g_state.next_local_client_id;
+        client->deadline_ms = lcs_now_ms() + g_state.cfg.peer_timeout_ms;
         if (client_alloc_buffers(client) != 0)
         {
             lcs_log_warn("rejecting local client: failed to allocate buffers");
@@ -379,31 +379,31 @@ void client_accept(daemon_state_t *st, int epoll_fd, int listen_fd)
         client->active = true;
         if (lcs_add_epoll_fd_events(epoll_fd, fd, client_epoll_id(slot_idx), EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) != 0)
         {
-            client_close_slot(st, epoll_fd, slot_idx, "epoll add failed");
+            client_close_slot(epoll_fd, slot_idx, "epoll add failed");
             continue;
         }
         lcs_log_debug3("accepted local client slot=%d fd=%d", slot_idx, fd);
     }
 }
 
-void client_pump_epoll_event(daemon_state_t *st, int epoll_fd, const struct epoll_event *ev)
+void client_pump_epoll_event(int epoll_fd, const struct epoll_event *ev)
 {
     int slot_idx = client_index_from_epoll_id(ev->data.u32);
     if (slot_idx < 0)
         return;
 
-    local_client_runtime_t *client = &st->local_clients[slot_idx];
+    local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     if (!client->active)
         return;
 
     if (ev->events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR))
     {
-        client_close_slot(st, epoll_fd, slot_idx, "connection closed");
+        client_close_slot(epoll_fd, slot_idx, "connection closed");
         return;
     }
-    if ((ev->events & EPOLLOUT) && client_flush_output(st, epoll_fd, slot_idx) != 0)
+    if ((ev->events & EPOLLOUT) && client_flush_output(epoll_fd, slot_idx) != 0)
     {
-        client_close_slot(st, epoll_fd, slot_idx, "write failed");
+        client_close_slot(epoll_fd, slot_idx, "write failed");
         return;
     }
     if (!(ev->events & EPOLLIN) || !client->active)
@@ -413,16 +413,16 @@ void client_pump_epoll_event(daemon_state_t *st, int epoll_fd, const struct epol
     {
         if (client->in_len == LCS_LOCAL_CLIENT_INBUF_SIZE)
         {
-            client_close_slot(st, epoll_fd, slot_idx, "input buffer full");
+            client_close_slot(epoll_fd, slot_idx, "input buffer full");
             return;
         }
         ssize_t n = read(client->fd, client->inbuf + client->in_len, LCS_LOCAL_CLIENT_INBUF_SIZE - client->in_len);
         if (n > 0)
         {
             client->in_len += (size_t)n;
-            if (client_parse_frames(st, epoll_fd, slot_idx) != 0)
+            if (client_parse_frames(epoll_fd, slot_idx) != 0)
             {
-                client_close_slot(st, epoll_fd, slot_idx, "invalid frame");
+                client_close_slot(epoll_fd, slot_idx, "invalid frame");
                 return;
             }
             if (!client->active || client->out_len > client->out_off)
@@ -431,34 +431,34 @@ void client_pump_epoll_event(daemon_state_t *st, int epoll_fd, const struct epol
         }
         if (n == 0)
         {
-            client_close_slot(st, epoll_fd, slot_idx, "connection closed");
+            client_close_slot(epoll_fd, slot_idx, "connection closed");
             return;
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return;
         if (errno == EINTR)
             continue;
-        client_close_slot(st, epoll_fd, slot_idx, "read failed");
+        client_close_slot(epoll_fd, slot_idx, "read failed");
         return;
     }
 }
 
-void client_expire(daemon_state_t *st, int epoll_fd)
+void client_expire(int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
     for (size_t i = 0; i < LCS_LOCAL_CLIENT_MAX; i++)
     {
-        local_client_runtime_t *client = &st->local_clients[i];
+        local_client_runtime_t *client = &g_state.local_clients[i];
         if (client->active && client->deadline_ms && now >= client->deadline_ms)
-            client_close_slot(st, epoll_fd, (int)i, "client timeout");
+            client_close_slot(epoll_fd, (int)i, "client timeout");
     }
 }
 
-void client_close_all(daemon_state_t *st, int epoll_fd)
+void client_close_all(int epoll_fd)
 {
     for (size_t i = 0; i < LCS_LOCAL_CLIENT_MAX; i++)
     {
-        if (st->local_clients[i].active)
-            client_close_slot(st, epoll_fd, (int)i, "shutdown");
+        if (g_state.local_clients[i].active)
+            client_close_slot(epoll_fd, (int)i, "shutdown");
     }
 }

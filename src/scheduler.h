@@ -13,7 +13,7 @@ typedef struct
     int metrics_fd;
 } scheduler_t;
 
-int scheduler_run_once(daemon_state_t *st, const scheduler_t *sched);
-void scheduler_exec_subsystems(daemon_state_t *st, const scheduler_t *sched);
+int scheduler_run_once(const scheduler_t *sched);
+void scheduler_exec_subsystems(const scheduler_t *sched);
 
 #endif

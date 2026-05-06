@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 volatile sig_atomic_t g_stop;
+daemon_state_t g_state;
 int g_peer_listener_fd = -1;
 int g_local_fd = -1;
 int g_tcp_fd = -1;
@@ -211,57 +212,57 @@ static int create_tcp_listener(const char *bind_address, uint16_t port)
     return fd;
 }
 
-static int lcs_init_metrics_socket(daemon_state_t *st)
+static int lcs_init_metrics_socket(void)
 {
-    if (st->cfg.metrics_enabled)
+    if (g_state.cfg.metrics_enabled)
     {
-        g_metrics_fd = create_tcp_listener(st->cfg.metrics_bind_address, st->cfg.metrics_port);
+        g_metrics_fd = create_tcp_listener(g_state.cfg.metrics_bind_address, g_state.cfg.metrics_port);
         if (g_metrics_fd < 0)
         {
-            lcs_log_error("failed to listen on metrics HTTP %s:%u: %s", st->cfg.metrics_bind_address, st->cfg.metrics_port, strerror(errno));
+            lcs_log_error("failed to listen on metrics HTTP %s:%u: %s", g_state.cfg.metrics_bind_address, g_state.cfg.metrics_port, strerror(errno));
             close_listener_fds();
-            unlink(st->cfg.socket_path);
+            unlink(g_state.cfg.socket_path);
             return 1;
         }
         if (lcs_set_fd_nonblocking(g_metrics_fd) != 0)
         {
             lcs_log_error("failed to set metrics listener nonblocking: %s", strerror(errno));
             close_listener_fds();
-            unlink(st->cfg.socket_path);
+            unlink(g_state.cfg.socket_path);
             return 1;
         }
     }
     return 0;
 }
 
-static int lcs_init_open_sockets(daemon_state_t *st)
+static int lcs_init_open_sockets(void)
 {
-    g_local_fd = create_unix_listener(st->cfg.socket_path);
+    g_local_fd = create_unix_listener(g_state.cfg.socket_path);
     if (g_local_fd < 0)
     {
-        lcs_log_error("failed to listen on %s: %s", st->cfg.socket_path, strerror(errno));
+        lcs_log_error("failed to listen on %s: %s", g_state.cfg.socket_path, strerror(errno));
         return 1;
     }
     if (lcs_set_fd_nonblocking(g_local_fd) != 0)
     {
         lcs_log_error("failed to set local listener nonblocking: %s", strerror(errno));
         close_listener_fds();
-        unlink(st->cfg.socket_path);
+        unlink(g_state.cfg.socket_path);
         return 1;
     }
-    g_tcp_fd = create_tcp_listener(st->cfg.bind_address, st->cfg.port);
+    g_tcp_fd = create_tcp_listener(g_state.cfg.bind_address, g_state.cfg.port);
     if (g_tcp_fd < 0)
     {
-        lcs_log_error("failed to listen on TCP %s:%u: %s", *st->cfg.bind_address ? st->cfg.bind_address : "*", st->cfg.port, strerror(errno));
+        lcs_log_error("failed to listen on TCP %s:%u: %s", *g_state.cfg.bind_address ? g_state.cfg.bind_address : "*", g_state.cfg.port, strerror(errno));
         close_listener_fds();
-        unlink(st->cfg.socket_path);
+        unlink(g_state.cfg.socket_path);
         return 1;
     }
     if (lcs_set_fd_nonblocking(g_tcp_fd) != 0)
     {
         lcs_log_error("failed to set TCP listener nonblocking: %s", strerror(errno));
         close_listener_fds();
-        unlink(st->cfg.socket_path);
+        unlink(g_state.cfg.socket_path);
         return 1;
     }
     return 0;
@@ -334,14 +335,13 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
     return 0;
 }
 
-static int load_daemon_config(const daemon_options_t *opts, daemon_state_t *st)
+static int load_daemon_config(const daemon_options_t *opts)
 {
-    memset(st, 0, sizeof(*st));
+    memset(&g_state, 0, sizeof(g_state));
     char err[256] = {0};
-    if (lcs_config_load(opts->config_path, &st->cfg, err, sizeof(err)) != 0)
+    if (lcs_config_load(opts->config_path, &g_state.cfg, err, sizeof(err)) != 0)
     {
-        lcs_log_open("lcsd", opts->foreground, opts->verbosity,
-                     !opts->no_syslog, !opts->no_timestamp);
+        lcs_log_open("lcsd", opts->foreground, opts->verbosity, !opts->no_syslog, !opts->no_timestamp);
         lcs_log_error("config error: %s", err);
         lcs_log_close();
         return -1;
@@ -359,36 +359,34 @@ static int enter_runtime_mode(const daemon_options_t *opts)
     return 0;
 }
 
-static bool open_daemon_log(const daemon_options_t *opts, const daemon_state_t *st)
+static bool open_daemon_log(const daemon_options_t *opts)
 {
-    bool syslog_enabled = st->cfg.syslog_enabled && !opts->no_syslog;
+    bool syslog_enabled = g_state.cfg.syslog_enabled && !opts->no_syslog;
     lcs_log_open("lcsd", opts->foreground, opts->verbosity, syslog_enabled,
                  !opts->no_timestamp);
     return syslog_enabled;
 }
 
-static void initialize_daemon_state(daemon_state_t *st)
+static void initialize_daemon_state(void)
 {
-    lcs_vip_set_backend(st->cfg.vip_backend);
-    st->self_index = lcs_config_self_index(&st->cfg);
-    st->instance_id = lcs_random_u64();
-    st->quorum_needed = lcs_config_quorum(&st->cfg);
-    st->votes_seen = 1;
+    lcs_vip_set_backend(g_state.cfg.vip_backend);
+    g_state.self_index = lcs_config_self_index(&g_state.cfg);
+    g_state.instance_id = lcs_random_u64();
+    g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
+    g_state.votes_seen = 1;
 
-    for (size_t i = 0; i < st->cfg.node_count; i++)
-        st->peers[i].fd = -1;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+        g_state.peers[i].fd = -1;
 
-    for (size_t i = 0; i < st->cfg.vip_count; i++)
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
-        st->resources[i].owner_node = -1;
-        st->resources[i].owner_instance_id = 0;
-        st->resources[i].state = LCS_RES_STOPPED;
+        g_state.resources[i].owner_node = -1;
+        g_state.resources[i].owner_instance_id = 0;
+        g_state.resources[i].state = LCS_RES_STOPPED;
     }
 }
 
-static void log_startup_config(const daemon_options_t *opts,
-                               const daemon_state_t *st,
-                               bool syslog_enabled)
+static void log_startup_config(const daemon_options_t *opts, bool syslog_enabled)
 {
     lcs_log_info("startup config: config=%s foreground=%s daemonize=%s syslog=%s stdout_timestamp=%s vip_backend=%s verbosity=%d node=%s self_index=%d cluster=%s",
                  opts->config_path,
@@ -396,33 +394,33 @@ static void log_startup_config(const daemon_options_t *opts,
                  opts->daemonize ? "true" : "false",
                  syslog_enabled ? "true" : "false",
                  opts->no_timestamp ? "false" : "true",
-                 st->cfg.vip_backend == LCS_VIP_BACKEND_NETLINK ? "netlink" : "ip",
+                 g_state.cfg.vip_backend == LCS_VIP_BACKEND_NETLINK ? "netlink" : "ip",
                  opts->verbosity,
-                 st->cfg.self_name,
-                 st->self_index,
-                 *st->cfg.cluster_name ? st->cfg.cluster_name : "-");
+                 g_state.cfg.self_name,
+                 g_state.self_index,
+                 *g_state.cfg.cluster_name ? g_state.cfg.cluster_name : "-");
     lcs_log_info("startup config: bind=%s port=%u socket=%s pidfile=%s metrics=%s metrics_bind=%s metrics_port=%u nodes=%zu vips=%zu quorum_needed=%u",
-                 *st->cfg.bind_address ? st->cfg.bind_address : "*",
-                 st->cfg.port,
-                 st->cfg.socket_path,
-                 *st->cfg.pidfile_path ? st->cfg.pidfile_path : "-",
-                 st->cfg.metrics_enabled ? "true" : "false",
-                 st->cfg.metrics_enabled ? st->cfg.metrics_bind_address : "-",
-                 st->cfg.metrics_port,
-                 st->cfg.node_count,
-                 st->cfg.vip_count,
-                 st->quorum_needed);
+                 *g_state.cfg.bind_address ? g_state.cfg.bind_address : "*",
+                 g_state.cfg.port,
+                 g_state.cfg.socket_path,
+                 *g_state.cfg.pidfile_path ? g_state.cfg.pidfile_path : "-",
+                 g_state.cfg.metrics_enabled ? "true" : "false",
+                 g_state.cfg.metrics_enabled ? g_state.cfg.metrics_bind_address : "-",
+                 g_state.cfg.metrics_port,
+                 g_state.cfg.node_count,
+                 g_state.cfg.vip_count,
+                 g_state.quorum_needed);
     lcs_log_info("startup config: lease_ms=%u renew_ms=%u peer_timeout_ms=%u probe_count=%u probe_timeout_ms=%u hook_timeout_ms=%u secret_configured=%s",
-                 st->cfg.lease_ms,
-                 st->cfg.renew_ms,
-                 st->cfg.peer_timeout_ms,
-                 st->cfg.probe_count,
-                 st->cfg.probe_timeout_ms,
-                 st->cfg.hook_timeout_ms,
-                 *st->cfg.secret ? "true" : "false");
+                 g_state.cfg.lease_ms,
+                 g_state.cfg.renew_ms,
+                 g_state.cfg.peer_timeout_ms,
+                 g_state.cfg.probe_count,
+                 g_state.cfg.probe_timeout_ms,
+                 g_state.cfg.hook_timeout_ms,
+                 *g_state.cfg.secret ? "true" : "false");
 }
 
-static int setup_runtime(daemon_state_t *st, int *epoll_fd)
+static int setup_runtime(int *epoll_fd)
 {
     if (install_signal_handlers() != 0)
     {
@@ -430,14 +428,14 @@ static int setup_runtime(daemon_state_t *st, int *epoll_fd)
         return -1;
     }
 
-    resources_cleanup_local_vips_without_lease(st);
+    resources_cleanup_local_vips_without_lease();
 
-    if (lcs_init_open_sockets(st) != 0)
+    if (lcs_init_open_sockets() != 0)
         return -1;
 
     g_peer_listener_fd = g_tcp_fd;
 
-    if (lcs_init_metrics_socket(st) != 0)
+    if (lcs_init_metrics_socket() != 0)
         return -1;
 
     *epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -445,7 +443,7 @@ static int setup_runtime(daemon_state_t *st, int *epoll_fd)
     {
         lcs_log_error("failed to create epoll instance: %s", strerror(errno));
         close_listener_fds();
-        unlink(st->cfg.socket_path);
+        unlink(g_state.cfg.socket_path);
         return -1;
     }
     if (lcs_add_epoll_fd(*epoll_fd, g_local_fd, LCS_EPOLL_LOCAL) != 0 ||
@@ -456,33 +454,33 @@ static int setup_runtime(daemon_state_t *st, int *epoll_fd)
         close(*epoll_fd);
         *epoll_fd = -1;
         close_listener_fds();
-        unlink(st->cfg.socket_path);
+        unlink(g_state.cfg.socket_path);
         return -1;
     }
-    if (write_pidfile(st->cfg.pidfile_path) != 0)
+    if (write_pidfile(g_state.cfg.pidfile_path) != 0)
     {
-        lcs_log_error("failed to write pidfile %s: %s", st->cfg.pidfile_path, strerror(errno));
+        lcs_log_error("failed to write pidfile %s: %s", g_state.cfg.pidfile_path, strerror(errno));
         close(*epoll_fd);
         *epoll_fd = -1;
         close_listener_fds();
-        unlink(st->cfg.socket_path);
+        unlink(g_state.cfg.socket_path);
         return -1;
     }
     return 0;
 }
 
-static void log_daemon_started(const daemon_state_t *st)
+static void log_daemon_started(void)
 {
     lcs_log_info("lcsd started node=%s instance=%llu socket=%s tcp=%s:%u metrics=%s:%u quorum=%u/%zu",
-                 st->cfg.self_name, (unsigned long long)st->instance_id,
-                 st->cfg.socket_path,
-                 *st->cfg.bind_address ? st->cfg.bind_address : "*", st->cfg.port,
-                 g_metrics_fd >= 0 ? st->cfg.metrics_bind_address : "-",
-                 g_metrics_fd >= 0 ? st->cfg.metrics_port : 0,
-                 st->quorum_needed, st->cfg.node_count);
+                 g_state.cfg.self_name, (unsigned long long)g_state.instance_id,
+                 g_state.cfg.socket_path,
+                 *g_state.cfg.bind_address ? g_state.cfg.bind_address : "*", g_state.cfg.port,
+                 g_metrics_fd >= 0 ? g_state.cfg.metrics_bind_address : "-",
+                 g_metrics_fd >= 0 ? g_state.cfg.metrics_port : 0,
+                 g_state.quorum_needed, g_state.cfg.node_count);
 }
 
-static void run_daemon_loop(daemon_state_t *st, int epoll_fd)
+static void run_daemon_loop(int epoll_fd)
 {
     scheduler_t sched = {
         .epoll_fd = epoll_fd,
@@ -493,30 +491,30 @@ static void run_daemon_loop(daemon_state_t *st, int epoll_fd)
     // Main loop
     while (!g_stop)
     {
-        if (scheduler_run_once(st, &sched) != 0)
+        if (scheduler_run_once(&sched) != 0)
             break;
     }
 }
 
-static void shutdown_daemon(daemon_state_t *st, int epoll_fd)
+static void shutdown_daemon(int epoll_fd)
 {
-    resources_graceful_shutdown(st, epoll_fd);
-    for (size_t i = 0; i < st->cfg.node_count; i++)
+    resources_graceful_shutdown(epoll_fd);
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
-        if ((int)i != st->self_index && st->peers[i].fd >= 0)
-            peer_close_connection(st, epoll_fd, (int)i, false, NULL);
+        if ((int)i != g_state.self_index && g_state.peers[i].fd >= 0)
+            peer_close_connection(epoll_fd, (int)i, false, NULL);
     }
     for (size_t i = 0; i < LCS_HANDSHAKE_MAX; i++)
     {
-        if (st->handshakes[i].active)
-            handshake_close(st, epoll_fd, (int)i, "shutdown");
+        if (g_state.handshakes[i].active)
+            handshake_close(epoll_fd, (int)i, "shutdown");
     }
-    client_close_all(st, epoll_fd);
+    client_close_all(epoll_fd);
     close(epoll_fd);
     close_listener_fds();
-    unlink(st->cfg.socket_path);
-    if (*st->cfg.pidfile_path)
-        unlink(st->cfg.pidfile_path);
+    unlink(g_state.cfg.socket_path);
+    if (*g_state.cfg.pidfile_path)
+        unlink(g_state.cfg.pidfile_path);
     lcs_log_info("lcsd stopped");
     lcs_log_close();
 }
@@ -531,26 +529,25 @@ int main(int argc, char **argv)
     if (opts.exit_now)
         return opts.exit_code;
 
-    static daemon_state_t st;
-    if (load_daemon_config(&opts, &st) != 0)
+    if (load_daemon_config(&opts) != 0)
         return 1;
 
     if (enter_runtime_mode(&opts) != 0)
         return 1;
 
-    bool syslog_enabled = open_daemon_log(&opts, &st);
-    initialize_daemon_state(&st);
-    log_startup_config(&opts, &st, syslog_enabled);
+    bool syslog_enabled = open_daemon_log(&opts);
+    initialize_daemon_state();
+    log_startup_config(&opts, syslog_enabled);
 
     int epoll_fd = -1;
-    if (setup_runtime(&st, &epoll_fd) != 0)
+    if (setup_runtime(&epoll_fd) != 0)
     {
         lcs_log_close();
         return 1;
     }
 
-    log_daemon_started(&st);
-    run_daemon_loop(&st, epoll_fd);
-    shutdown_daemon(&st, epoll_fd);
+    log_daemon_started();
+    run_daemon_loop(epoll_fd);
+    shutdown_daemon(epoll_fd);
     return 0;
 }

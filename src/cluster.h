@@ -8,14 +8,13 @@
 
 #include <stddef.h>
 
-bool node_is_online(const daemon_state_t *st, size_t node_idx);
-int first_online_full_member(const daemon_state_t *st);
-const char *node_name_or_none(const daemon_state_t *st, int node_idx);
-int has_quorum(const daemon_state_t *st);
-void recompute_votes(daemon_state_t *st);
-uint32_t peer_handshake_timeout_ms(const daemon_state_t *st);
+bool        cluster_node_is_online(size_t node_idx);
+int         cluster_first_online_full_member(void);
+const char *cluster_node_name_or_none(int node_idx);
+int         cluster_has_quorum(void);
+void        cluster_recompute_votes(void);
 
-int encode_state(const daemon_state_t *st, unsigned char *payload, size_t cap, size_t *len);
-int apply_state(daemon_state_t *st, const void *payload, size_t len, int source_node_idx);
+int cluster_apply_state(const void *payload, size_t len, int source_node_idx);
+int cluster_encode_state(unsigned char *payload, size_t cap, size_t *len);
 
 #endif

@@ -55,12 +55,12 @@ typedef struct
     lcs_vip_config_t vips[LCS_MAX_VIPS];
 } lcs_config_t;
 
-void lcs_config_init_defaults(lcs_config_t *cfg);
-int lcs_config_load(const char *path, lcs_config_t *cfg, char *err, size_t err_len);
-int lcs_config_self_index(const lcs_config_t *cfg);
-int lcs_config_node_index(const lcs_config_t *cfg, const char *name);
-int lcs_config_vip_index(const lcs_config_t *cfg, const char *name);
-int lcs_config_validate(const lcs_config_t *cfg, char *err, size_t err_len);
-uint32_t lcs_config_quorum(const lcs_config_t *cfg);
+void      lcs_config_init_defaults(lcs_config_t *cfg);
+int       lcs_config_load(const char *path, lcs_config_t *cfg, char *err, size_t err_len);
+int       lcs_config_self_index(const lcs_config_t *cfg);
+int       lcs_config_node_index(const lcs_config_t *cfg, const char *name);
+int       lcs_config_vip_index(const lcs_config_t *cfg, const char *name);
+int       lcs_config_validate(const lcs_config_t *cfg, char *err, size_t err_len);
+uint32_t  lcs_config_quorum(const lcs_config_t *cfg);
 
 #endif
