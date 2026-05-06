@@ -8,7 +8,6 @@ This is an extremely lightweight GNU/Linux cluster service (similar to pcsd or k
 - Option to run scripts on failover
 - Simple CLI that allows checking current state of cluster
 - Prometheus exporter bundled in
-- Resource groups (make sure VIPs are together, or that they never are together)
 - CLI allows moving the VIP between nodes
 
 It constists of two tiny binaries
