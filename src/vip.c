@@ -336,12 +336,11 @@ static int send_arp_packet(int fd, int ifindex, const lcs_arp_packet_t *pkt)
     return n == (ssize_t)sizeof(*pkt) ? 0 : -1;
 }
 
-static int arp_packet_claims_ip(const unsigned char *buf, ssize_t len,
-                                const struct in_addr *ip,
-                                const unsigned char own_mac[ETH_ALEN])
+static int arp_packet_claims_ip(const unsigned char *buf, ssize_t len, const struct in_addr *ip, const unsigned char own_mac[ETH_ALEN])
 {
     if (len < (ssize_t)sizeof(lcs_arp_packet_t))
         return 0;
+        
     const lcs_arp_packet_t *pkt = (const lcs_arp_packet_t *)buf;
     if (ntohs(pkt->ethertype) != ETH_P_ARP ||
         ntohs(pkt->htype) != ARPHRD_ETHER ||
@@ -356,8 +355,7 @@ static int arp_packet_claims_ip(const unsigned char *buf, ssize_t len,
     return memcmp(pkt->spa, &ip->s_addr, sizeof(pkt->spa)) == 0;
 }
 
-static void ipv6_solicited_node_multicast(const struct in6_addr *target,
-                                          struct in6_addr *multicast)
+static void ipv6_solicited_node_multicast(const struct in6_addr *target, struct in6_addr *multicast)
 {
     memset(multicast, 0, sizeof(*multicast));
     multicast->s6_addr[0] = 0xff;
@@ -374,6 +372,7 @@ static int open_icmp6_socket(unsigned int ifindex)
     int fd = socket(AF_INET6, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_ICMPV6);
     if (fd < 0)
         return -1;
+
     int hops = 255;
     setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops));
     setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, sizeof(hops));
@@ -381,8 +380,7 @@ static int open_icmp6_socket(unsigned int ifindex)
     return fd;
 }
 
-static int send_neighbor_solicitation(int fd, unsigned int ifindex,
-                                      const struct in6_addr *target)
+static int send_neighbor_solicitation(int fd, unsigned int ifindex, const struct in6_addr *target)
 {
     struct {
         struct nd_neighbor_solicit ns;
@@ -401,9 +399,7 @@ static int send_neighbor_solicitation(int fd, unsigned int ifindex,
     return n == (ssize_t)sizeof(pkt) ? 0 : -1;
 }
 
-static int send_neighbor_advertisement(int fd, unsigned int ifindex,
-                                       const struct in6_addr *target,
-                                       const unsigned char mac[ETH_ALEN])
+static int send_neighbor_advertisement(int fd, unsigned int ifindex, const struct in6_addr *target, const unsigned char mac[ETH_ALEN])
 {
     struct {
         struct nd_neighbor_advert na;
@@ -429,8 +425,7 @@ static int send_neighbor_advertisement(int fd, unsigned int ifindex,
     return n == (ssize_t)sizeof(pkt) ? 0 : -1;
 }
 
-static int icmp6_advertises_target(const unsigned char *buf, ssize_t len,
-                                   const struct in6_addr *target)
+static int icmp6_advertises_target(const unsigned char *buf, ssize_t len, const struct in6_addr *target)
 {
     if (len < (ssize_t)sizeof(struct nd_neighbor_advert))
         return 0;
@@ -440,34 +435,29 @@ static int icmp6_advertises_target(const unsigned char *buf, ssize_t len,
     return memcmp(&na->nd_na_target, target, sizeof(*target)) == 0;
 }
 
-static int nd_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip,
-                             const struct in6_addr *vip_ip)
+static int nd_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip, const struct in6_addr *vip_ip)
 {
     lcs_if_info_t info;
     memset(&info, 0, sizeof(info));
     if (get_if_info(vip->interface, &info) < 0)
     {
-        lcs_log_warn("failed to inspect interface %s for IPv6 ND probing: %s",
-                     vip->interface, strerror(errno));
+        lcs_log_warn("failed to inspect interface %s for IPv6 ND probing: %s", vip->interface, strerror(errno));
         return -1;
     }
     if (info.flags & IFF_LOOPBACK)
     {
-        lcs_log_debug("skipping IPv6 ND conflict check for %s on loopback interface %s",
-                      vip->address, vip->interface);
+        lcs_log_debug("skipping IPv6 ND conflict check for %s on loopback interface %s", vip->address, vip->interface);
         return 0;
     }
     if (!(info.flags & IFF_UP))
     {
-        lcs_log_warn("interface %s is down; cannot ND-probe VIP %s",
-                     vip->interface, vip->address);
+        lcs_log_warn("interface %s is down; cannot ND-probe VIP %s", vip->interface, vip->address);
         return -1;
     }
     int fd = open_icmp6_socket((unsigned int)info.ifindex);
     if (fd < 0)
     {
-        lcs_log_warn("failed to open ICMPv6 socket on %s: %s",
-                     vip->interface, strerror(errno));
+        lcs_log_warn("failed to open ICMPv6 socket on %s: %s", vip->interface, strerror(errno));
         return -1;
     }
     uint32_t probe_count = cfg->probe_count ? cfg->probe_count : 1;
@@ -477,8 +467,7 @@ static int nd_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vi
     {
         if (send_neighbor_solicitation(fd, (unsigned int)info.ifindex, vip_ip) != 0)
         {
-            lcs_log_warn("failed to send ND probe for %s on %s: %s",
-                         vip->address, vip->interface, strerror(errno));
+            lcs_log_warn("failed to send ND probe for %s on %s: %s", vip->address, vip->interface, strerror(errno));
             close(fd);
             return -1;
         }
@@ -499,8 +488,7 @@ static int nd_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vi
             }
             if (icmp6_advertises_target(buf, n, vip_ip))
             {
-                lcs_log_warn("IPv6 ND conflict detected for VIP %s on %s",
-                             vip->address, vip->interface);
+                lcs_log_warn("IPv6 ND conflict detected for VIP %s on %s", vip->address, vip->interface);
                 close(fd);
                 return 1;
             }
@@ -511,33 +499,33 @@ static int nd_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vi
     return 0;
 }
 
-static int nd_announce(const lcs_config_t *cfg, const lcs_vip_config_t *vip,
-                       const struct in6_addr *vip_ip)
+static int nd_announce(const lcs_config_t *cfg, const lcs_vip_config_t *vip, const struct in6_addr *vip_ip)
 {
     lcs_if_info_t info;
     memset(&info, 0, sizeof(info));
     int if_rc = get_if_info(vip->interface, &info);
     if (if_rc != 0 || (info.flags & IFF_LOOPBACK))
         return 0;
+
     if (!(info.flags & IFF_UP))
         return -1;
+
     int fd = open_icmp6_socket((unsigned int)info.ifindex);
     if (fd < 0)
         return -1;
+
     uint32_t count = cfg->probe_count ? cfg->probe_count : 1;
     for (uint32_t i = 0; i < count; i++)
     {
-        if (send_neighbor_advertisement(fd, (unsigned int)info.ifindex,
-                                        vip_ip, info.mac) != 0)
-                                        {
+        if (send_neighbor_advertisement(fd, (unsigned int)info.ifindex, vip_ip, info.mac) != 0)
+        {
             close(fd);
             return -1;
         }
         usleep(50000);
     }
     close(fd);
-    lcs_log_info("sent unsolicited Neighbor Advertisement for VIP %s on %s",
-                 vip->address, vip->interface);
+    lcs_log_info("sent unsolicited Neighbor Advertisement for VIP %s on %s", vip->address, vip->interface);
     return 0;
 }
 
@@ -545,8 +533,7 @@ int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip)
 {
     if (getenv("LCS_VIP_CONFLICT"))
     {
-        lcs_log_warn("dry-run VIP conflict detected for %s on %s",
-                     vip->address, vip->interface);
+        lcs_log_warn("dry-run VIP conflict detected for %s on %s", vip->address, vip->interface);
         return 1;
     }
     if (getenv("LCS_VIP_DRY_RUN"))
@@ -561,6 +548,7 @@ int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip)
         struct in6_addr vip_ip6;
         if (parse_vip_ipv6(vip->address, &vip_ip6) == 0)
             return nd_conflict_check(cfg, vip, &vip_ip6);
+
         return -1;
     }
 
@@ -571,32 +559,27 @@ int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip)
     {
         if (if_rc > 0)
         {
-            lcs_log_debug("skipping ARP conflict check for %s on non-Ethernet interface %s",
-                          vip->address, vip->interface);
+            lcs_log_debug("skipping ARP conflict check for %s on non-Ethernet interface %s", vip->address, vip->interface);
             return 0;
         }
-        lcs_log_warn("failed to inspect interface %s for ARP probing: %s",
-                     vip->interface, strerror(errno));
+        lcs_log_warn("failed to inspect interface %s for ARP probing: %s", vip->interface, strerror(errno));
         return -1;
     }
     if (info.flags & IFF_LOOPBACK)
     {
-        lcs_log_debug("skipping ARP conflict check for %s on loopback interface %s",
-                      vip->address, vip->interface);
+        lcs_log_debug("skipping ARP conflict check for %s on loopback interface %s", vip->address, vip->interface);
         return 0;
     }
     if (!(info.flags & IFF_UP))
     {
-        lcs_log_warn("interface %s is down; cannot ARP-probe VIP %s",
-                     vip->interface, vip->address);
+        lcs_log_warn("interface %s is down; cannot ARP-probe VIP %s", vip->interface, vip->address);
         return -1;
     }
 
     int fd = open_arp_socket(info.ifindex);
     if (fd < 0)
     {
-        lcs_log_warn("failed to open ARP socket on %s: %s",
-                     vip->interface, strerror(errno));
+        lcs_log_warn("failed to open ARP socket on %s: %s", vip->interface, strerror(errno));
         return -1;
     }
 
@@ -611,8 +594,7 @@ int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip)
     {
         if (send_arp_packet(fd, info.ifindex, &probe) != 0)
         {
-            lcs_log_warn("failed to send ARP probe for %s on %s: %s",
-                         vip->address, vip->interface, strerror(errno));
+            lcs_log_warn("failed to send ARP probe for %s on %s: %s", vip->address, vip->interface, strerror(errno));
             close(fd);
             return -1;
         }
@@ -633,8 +615,7 @@ int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip)
             }
             if (arp_packet_claims_ip(buf, n, &vip_ip, info.mac))
             {
-                lcs_log_warn("ARP conflict detected for VIP %s on %s",
-                             vip->address, vip->interface);
+                lcs_log_warn("ARP conflict detected for VIP %s on %s", vip->address, vip->interface);
                 close(fd);
                 return 1;
             }

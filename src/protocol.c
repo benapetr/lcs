@@ -167,9 +167,7 @@ int lcs_encode_move_req(void *payload, size_t cap, size_t *len, const char *vip,
     return 0;
 }
 
-int lcs_decode_move_req(const void *payload, size_t len,
-                        char *vip, size_t vip_len,
-                        char *target_node, size_t target_node_len)
+int lcs_decode_move_req(const void *payload, size_t len, char *vip, size_t vip_len, char *target_node, size_t target_node_len)
 {
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, len);
@@ -247,8 +245,7 @@ int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
            lcs_buf_get_u8(r, has_quorum) ? -1 : 0;
 }
 
-int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role,
-                           uint8_t online, uint8_t self, const char *name)
+int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role, uint8_t online, uint8_t self, const char *name)
 {
     return lcs_buf_put_u16(w, id) ||
            lcs_buf_put_u16(w, role) ||
@@ -257,9 +254,7 @@ int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role,
            lcs_buf_put_fixed_string(w, name, LCS_NAME_MAX + 1) ? -1 : 0;
 }
 
-int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role,
-                           uint8_t *online, uint8_t *self,
-                           char *name, size_t name_len)
+int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role, uint8_t *online, uint8_t *self, char *name, size_t name_len)
 {
     return lcs_buf_get_u16(r, id) ||
            lcs_buf_get_u16(r, role) ||

@@ -141,8 +141,7 @@ static void resources_clear_local_lease(resource_runtime_t *res, uint64_t epoch)
     res->conflict_reason[0] = '\0';
 }
 
-static int resources_complete_local_activation(int vip_idx, uint64_t epoch,
-                                     uint64_t lease_id, int epoll_fd)
+static int resources_complete_local_activation(int vip_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     resource_runtime_t *res = &g_state.resources[vip_idx];
     uint64_t now = lcs_now_ms();
@@ -249,8 +248,7 @@ void resources_cleanup_local_vips_without_lease(void)
     }
 }
 
-void resources_enter_conflict_state(int vip_idx, uint64_t epoch,
-                          const char *reason)
+void resources_enter_conflict_state(int vip_idx, uint64_t epoch, const char *reason)
 {
     resource_runtime_t *res = &g_state.resources[vip_idx];
     lease_cancel_operations(vip_idx);
@@ -282,10 +280,8 @@ int resources_activate_acquired_local(int vip_idx, uint64_t epoch, uint64_t leas
         res->state = LCS_RES_STARTING;
         if (resources_start_hook(vip_idx, LCS_HOOK_PRE_START, epoch, lease_id) == 0)
             return 0;
-        lcs_log_warn("auto-place failed VIP %s: failed to start pre-start hook",
-                     g_state.cfg.vips[vip_idx].name);
-        lease_release_majority(vip_idx, g_state.self_index, epoch, lease_id,
-                               epoll_fd);
+        lcs_log_warn("auto-place failed VIP %s: failed to start pre-start hook", g_state.cfg.vips[vip_idx].name);
+        lease_release_majority(vip_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
         return -1;
@@ -459,28 +455,28 @@ void resources_maintain_owned_leases(int epoll_fd)
         }
         if (res->lease_deadline_ms && now >= res->lease_deadline_ms)
         {
-            lcs_log_warn("dropping VIP %s because local lease expired",
-                         g_state.cfg.vips[i].name);
+            lcs_log_warn("dropping VIP %s because local lease expired", g_state.cfg.vips[i].name);
             resources_release_local_internal((int)i, epoll_fd, false);
             continue;
         }
         if (res->renew_after_ms && now < res->renew_after_ms)
             continue;
+            
         if (lease_operation_active((int)i))
         {
-            lcs_log_debug3("renew VIP %s skipped: lease operation already pending",
-                           g_state.cfg.vips[i].name);
+            lcs_log_debug3("renew VIP %s skipped: lease operation already pending", g_state.cfg.vips[i].name);
             continue;
         }
         if (lease_start_renew((int)i, epoll_fd) != 0)
         {
             if (now + g_state.cfg.renew_ms >= res->lease_deadline_ms)
             {
-                lcs_log_warn("dropping VIP %s because lease renewal could not start",
-                             g_state.cfg.vips[i].name);
+                lcs_log_warn("dropping VIP %s because lease renewal could not start", g_state.cfg.vips[i].name);
                 resources_release_local_internal((int)i, epoll_fd, false);
             } else
+            {
                 res->renew_after_ms = now + g_state.cfg.renew_ms;
+            }
         }
     }
 }
