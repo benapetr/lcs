@@ -20,7 +20,7 @@ Quorum is calculated as `floor(voting_members / 2) + 1`. In a 3-node cluster any
 
 # Configuration
 
-Configuration uses an INI-style file. The same format is used on every node; only the `node` key in the `[cluster]` section differs per host.
+Configuration uses an INI-style file. The same format is used on every node; only the `node` key in the `[cluster]` section differs per host. Comments starting with `#` or `;` may be whole-line comments or inline comments after values.
 
 ## `[cluster]`
 

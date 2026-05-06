@@ -40,7 +40,7 @@ Copy resulting lcs and lcsd to /usr/local/bin or install precompiled package
 lcsd looks for config by default in /etc/lcs/lcs.conf, simple config looks like this (see examples/ for more complex setups)
 
 ```
-# Comments are supported, but only whole lines, no inline comments
+# Comments starting with # or ; are supported on whole lines and after values
 
 [cluster]
 name = demo

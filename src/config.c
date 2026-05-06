@@ -367,6 +367,18 @@ static void sort_config(lcs_config_t *cfg)
     qsort(cfg->vips, cfg->vip_count, sizeof(cfg->vips[0]), compare_vip_config);
 }
 
+static void strip_inline_comment(char *line)
+{
+    for (char *p = line; *p; p++)
+    {
+        if (*p == '#' || *p == ';')
+        {
+            *p = '\0';
+            return;
+        }
+    }
+}
+
 int lcs_config_load(const char *path, lcs_config_t *cfg, char *err, size_t err_len)
 {
     lcs_config_init_defaults(cfg);
@@ -382,6 +394,7 @@ int lcs_config_load(const char *path, lcs_config_t *cfg, char *err, size_t err_l
     while (fgets(line_buf, sizeof(line_buf), f))
     {
         line_no++;
+        strip_inline_comment(line_buf);
         char *line = lcs_trim(line_buf);
         if (*line == '\0' || *line == '#' || *line == ';')
             continue;
