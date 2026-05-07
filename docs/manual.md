@@ -97,7 +97,7 @@ A hook must exit with status `0` to be considered successful. If `pre_start` fai
 
 ## Systemd (recommended)
 
-The package installs a systemd unit that runs `lcsd --foreground --no-timestamp` as a simple service. No pidfile is required. Enable and start the service with:
+The package installs a systemd unit that runs `lcsd --foreground --no-syslog --no-timestamp` as a simple service. No pidfile is required. `--no-syslog` avoids duplicate journald entries because systemd already captures foreground stderr. Enable and start the service with:
 
 ```
 systemctl enable --now lcsd
@@ -131,7 +131,7 @@ A `pidfile` path must be set in the configuration when running in this mode.
 
 # Logging
 
-`lcsd` logs to syslog by default. Pass `--foreground` to write to stdout instead. Logged events include:
+`lcsd` logs to syslog by default. Pass `--foreground` to write to stderr as well, or `--no-syslog` to disable syslog. When running under systemd in foreground mode, use `--no-syslog` so journald does not receive duplicate copies of each message. Logged events include:
 
 - Daemon startup and shutdown
 - Quorum gained and lost

@@ -34,6 +34,7 @@ static int connect_socket(const char *path)
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0)
     {
         close(fd);
+        fprintf(stderr, "lcs: failed to connect to %s: %s\n", path, strerror(errno));
         return -1;
     }
     return fd;
@@ -67,10 +68,8 @@ static int cmd_status(const char *socket_path)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
-    {
-        fprintf(stderr, "lcs: failed to connect to %s: %s\n", socket_path, strerror(errno));
         return 1;
-    }
+
     uint32_t seq = lcs_next_seq();
     if (lcs_write_frame(fd, LCS_MSG_STATUS_REQ, seq, NULL, 0) != 0)
     {
@@ -169,10 +168,8 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
-    {
-        fprintf(stderr, "lcs: failed to connect to %s: %s\n", socket_path, strerror(errno));
         return 1;
-    }
+
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
     if (lcs_encode_clear_conflict_req(req, sizeof(req), &req_len, vip) != 0)
@@ -224,10 +221,8 @@ static int cmd_move(const char *socket_path, const char *vip, const char *node)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
-    {
-        fprintf(stderr, "lcs: failed to connect to %s: %s\n", socket_path, strerror(errno));
         return 1;
-    }
+
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
     if (lcs_encode_move_req(req, sizeof(req), &req_len, vip, node) != 0)
