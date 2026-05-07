@@ -136,12 +136,16 @@ static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
     unsigned char payload[LCS_MAX_FRAME];
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, sizeof(payload));
+    uint64_t now = lcs_now_ms();
+    uint64_t membership_seconds = g_state.membership_since_ms && now >= g_state.membership_since_ms ?
+                                  (now - g_state.membership_since_ms) / 1000u : 0;
     if (lcs_encode_status_header(&w, (uint16_t)g_state.cfg.node_count,
                                  (uint16_t)g_state.cfg.vip_count,
                                  (uint16_t)g_state.self_index,
                                  (uint16_t)g_state.quorum_needed,
                                  (uint16_t)g_state.votes_seen,
-                                 cluster_has_quorum() ? 1 : 0) != 0)
+                                 cluster_has_quorum() ? 1 : 0,
+                                 membership_seconds) != 0)
     {
         client_queue_error(epoll_fd, slot_idx, seq, "failed to encode status header");
         return;

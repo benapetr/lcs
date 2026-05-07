@@ -15,5 +15,6 @@ int lcs_valid_name(const char *s);
 int lcs_mkdir_parent(const char *path, mode_t mode);
 uint64_t lcs_random_u64(void);
 uint64_t lcs_now_ms(void);
+void lcs_format_duration(uint64_t seconds, char *buf, size_t len);
 
 #endif

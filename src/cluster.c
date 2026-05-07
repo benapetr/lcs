@@ -46,21 +46,34 @@ int cluster_has_quorum(void)
 
 void cluster_recompute_votes(void)
 {
-    uint32_t votes = 1;
+    uint32_t votes = 0;
+    uint64_t membership_mask = 0;
     uint64_t now = lcs_now_ms();
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
+        bool online = false;
         if ((int)i == g_state.self_index)
-            continue;
-        if (g_state.peers[i].online && now - g_state.peers[i].last_seen_ms <= g_state.cfg.peer_timeout_ms)
         {
-            votes++;
+            online = true;
+        } else if (g_state.peers[i].online && now - g_state.peers[i].last_seen_ms <= g_state.cfg.peer_timeout_ms)
+        {
+            online = true;
         } else
         {
             if (g_state.peers[i].online)
                 lcs_log_info("peer %s offline", g_state.cfg.nodes[i].name);
             g_state.peers[i].online = false;
         }
+        if (online)
+        {
+            votes++;
+            membership_mask |= 1ull << i;
+        }
+    }
+    if (!g_state.membership_since_ms || membership_mask != g_state.membership_mask)
+    {
+        g_state.membership_mask = membership_mask;
+        g_state.membership_since_ms = now;
     }
     g_state.votes_seen = votes;
 }
@@ -69,8 +82,7 @@ int cluster_encode_state(unsigned char *payload, size_t cap, size_t *len)
 {
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, cap);
-    if (lcs_buf_put_u64(&w, g_state.instance_id) != 0 ||
-        lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.vip_count) != 0)
+    if (lcs_buf_put_u64(&w, g_state.instance_id) != 0 || lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.vip_count) != 0)
         return -1;
 
     for (size_t i = 0; i < g_state.cfg.vip_count; i++)

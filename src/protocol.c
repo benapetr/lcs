@@ -222,27 +222,36 @@ int lcs_decode_simple_resp(const void *payload, size_t len, int32_t *status, cha
 int lcs_encode_status_header(lcs_buf_writer_t *w, uint16_t node_count,
                              uint16_t vip_count, uint16_t self_node,
                              uint16_t quorum_needed, uint16_t votes_seen,
-                             uint8_t has_quorum)
+                             uint8_t has_quorum,
+                             uint64_t membership_seconds)
 {
-    return lcs_buf_put_u16(w, node_count) ||
+    return lcs_buf_put_u16(w, LCS_LOCAL_PROTO_VERSION) ||
+           lcs_buf_put_u16(w, node_count) ||
            lcs_buf_put_u16(w, vip_count) ||
            lcs_buf_put_u16(w, self_node) ||
            lcs_buf_put_u16(w, quorum_needed) ||
            lcs_buf_put_u16(w, votes_seen) ||
-           lcs_buf_put_u8(w, has_quorum) ? -1 : 0;
+           lcs_buf_put_u8(w, has_quorum) ||
+           lcs_buf_put_u64(w, membership_seconds) ? -1 : 0;
 }
 
 int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
                              uint16_t *vip_count, uint16_t *self_node,
                              uint16_t *quorum_needed, uint16_t *votes_seen,
-                             uint8_t *has_quorum)
+                             uint8_t *has_quorum,
+                             uint64_t *membership_seconds)
 {
+    uint16_t local_version = 0;
+    if (lcs_buf_get_u16(r, &local_version) != 0 ||
+        local_version != LCS_LOCAL_PROTO_VERSION)
+        return -1;
     return lcs_buf_get_u16(r, node_count) ||
            lcs_buf_get_u16(r, vip_count) ||
            lcs_buf_get_u16(r, self_node) ||
            lcs_buf_get_u16(r, quorum_needed) ||
            lcs_buf_get_u16(r, votes_seen) ||
-           lcs_buf_get_u8(r, has_quorum) ? -1 : 0;
+           lcs_buf_get_u8(r, has_quorum) ||
+           lcs_buf_get_u64(r, membership_seconds) ? -1 : 0;
 }
 
 int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role, uint8_t online, uint8_t self, const char *name)

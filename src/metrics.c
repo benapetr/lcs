@@ -88,6 +88,12 @@ void lcs_metrics_handle_client(int fd)
     metrics_append(body, cap, &len, "lcs_cluster_votes_seen{cluster=\"%s\"} %u\n", cluster, g_state.votes_seen);
     metrics_append(body, cap, &len, "# TYPE lcs_cluster_votes_needed gauge\n");
     metrics_append(body, cap, &len, "lcs_cluster_votes_needed{cluster=\"%s\"} %u\n", cluster, g_state.quorum_needed);
+    uint64_t membership_seconds = g_state.membership_since_ms && now >= g_state.membership_since_ms ?
+                                  (now - g_state.membership_since_ms) / 1000u : 0;
+    metrics_append(body, cap, &len, "# HELP lcs_cluster_membership_seconds Seconds since this node's observed online/offline cluster membership last changed.\n");
+    metrics_append(body, cap, &len, "# TYPE lcs_cluster_membership_seconds gauge\n");
+    metrics_append(body, cap, &len, "lcs_cluster_membership_seconds{cluster=\"%s\"} %llu\n",
+                   cluster, (unsigned long long)membership_seconds);
 
     metrics_append(body, cap, &len, "# TYPE lcs_node_online gauge\n");
     for (size_t i = 0; i < g_state.cfg.node_count; i++)

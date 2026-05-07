@@ -10,7 +10,8 @@
 #include <stdint.h>
 
 #define LCS_PROTO_MAGIC 0x4c435331u
-#define LCS_PROTO_VERSION 2
+#define LCS_PEER_PROTO_VERSION 2
+#define LCS_LOCAL_PROTO_VERSION 1000
 #define LCS_MAX_FRAME (64u * 1024u)
 
 typedef enum
@@ -86,11 +87,13 @@ int lcs_decode_simple_resp(const void *payload, size_t len, int32_t *status, cha
 int lcs_encode_status_header(lcs_buf_writer_t *w, uint16_t node_count,
                              uint16_t vip_count, uint16_t self_node,
                              uint16_t quorum_needed, uint16_t votes_seen,
-                             uint8_t has_quorum);
+                             uint8_t has_quorum,
+                             uint64_t membership_seconds);
 int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
                              uint16_t *vip_count, uint16_t *self_node,
                              uint16_t *quorum_needed, uint16_t *votes_seen,
-                             uint8_t *has_quorum);
+                             uint8_t *has_quorum,
+                             uint64_t *membership_seconds);
 int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role,
                            uint8_t online, uint8_t self, const char *name);
 int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role,

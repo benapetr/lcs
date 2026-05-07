@@ -105,7 +105,7 @@ lcs tool can be used to display cluster status and to move VIPs from one node to
 ```
 # lcs status
 Cluster
-  quorum: yes (3 votes, need 2)
+  quorum: yes (3 votes, need 2, membership for 2h 13m 04s)
 Nodes
   node1 role=full-member online=yes (self)
   node2 role=full-member online=yes
@@ -125,6 +125,9 @@ lcs_cluster_quorum{cluster="ingress"} 1
 lcs_cluster_votes_seen{cluster="ingress"} 3
 # TYPE lcs_cluster_votes_needed gauge
 lcs_cluster_votes_needed{cluster="ingress"} 2
+# HELP lcs_cluster_membership_seconds Seconds since this node's observed online/offline cluster membership last changed.
+# TYPE lcs_cluster_membership_seconds gauge
+lcs_cluster_membership_seconds{cluster="ingress"} 7984
 # TYPE lcs_node_online gauge
 lcs_node_online{cluster="ingress",node="node1",role="full-member"} 1
 lcs_node_online{cluster="ingress",node="node2",role="full-member"} 1

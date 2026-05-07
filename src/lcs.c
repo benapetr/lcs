@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "protocol.h"
+#include "util.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -96,16 +97,21 @@ static int cmd_status(const char *socket_path)
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, hdr.length);
     uint16_t node_count, vip_count, self_node, quorum_needed, votes_seen;
+    uint64_t membership_seconds;
     uint8_t has_quorum;
     if (lcs_decode_status_header(&r, &node_count, &vip_count, &self_node,
-                                 &quorum_needed, &votes_seen, &has_quorum) != 0 ||
+                                 &quorum_needed, &votes_seen, &has_quorum,
+                                 &membership_seconds) != 0 ||
         node_count > LCS_MAX_NODES || vip_count > LCS_MAX_VIPS)
     {
         fprintf(stderr, "lcs: invalid status response header\n");
         return 1;
     }
+    char membership_for[64];
+    lcs_format_duration(membership_seconds, membership_for, sizeof(membership_for));
     printf("Cluster\n");
-    printf("  quorum: %s (%u votes, need %u)\n", has_quorum ? "yes" : "no", votes_seen, quorum_needed);
+    printf("  quorum: %s (%u votes, need %u, membership for %s)\n",
+           has_quorum ? "yes" : "no", votes_seen, quorum_needed, membership_for);
     printf("Nodes\n");
     char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1];
     memset(node_names, 0, sizeof(node_names));

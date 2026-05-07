@@ -92,3 +92,29 @@ uint64_t lcs_now_ms(void)
         return 0;
     return ((uint64_t)ts.tv_sec * 1000ull) + ((uint64_t)ts.tv_nsec / 1000000ull);
 }
+
+void lcs_format_duration(uint64_t seconds, char *buf, size_t len)
+{
+    uint64_t days = seconds / 86400u;
+    seconds %= 86400u;
+    uint64_t hours = seconds / 3600u;
+    seconds %= 3600u;
+    uint64_t minutes = seconds / 60u;
+    seconds %= 60u;
+
+    if (len == 0)
+        return;
+    if (days)
+        snprintf(buf, len, "%llud %02lluh %02llum %02llus",
+                 (unsigned long long)days, (unsigned long long)hours,
+                 (unsigned long long)minutes, (unsigned long long)seconds);
+    else if (hours)
+        snprintf(buf, len, "%lluh %02llum %02llus",
+                 (unsigned long long)hours, (unsigned long long)minutes,
+                 (unsigned long long)seconds);
+    else if (minutes)
+        snprintf(buf, len, "%llum %02llus",
+                 (unsigned long long)minutes, (unsigned long long)seconds);
+    else
+        snprintf(buf, len, "%llus", (unsigned long long)seconds);
+}

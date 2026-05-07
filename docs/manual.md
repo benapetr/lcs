@@ -127,6 +127,15 @@ A `pidfile` path must be set in the configuration when running in this mode.
 
 `lcs` communicates with the local `lcsd` through the configured Unix domain socket (default `/run/lcs/lcsd.sock`). All `lcs` commands target the local daemon and do not connect directly to cluster TCP ports on other nodes.
 
+`lcs status` shows how long the observed cluster membership has stayed in the current shape. This timer resets whenever any node changes between online and offline, including `3/3 -> 2/3`, `2/3 -> 3/3`, or `2/3` with one offline node changing to `2/3` with a different offline node.
+
+Example:
+
+```
+Cluster
+  quorum: yes (2 votes, need 2, membership for 4m 12s)
+```
+
 ---
 
 # Logging
@@ -140,6 +149,18 @@ A `pidfile` path must be set in the configuration when running in this mode.
 - Move requests
 - Conflict detection results
 - Peer connection state changes
+
+---
+
+# Metrics
+
+When `metrics = true`, the Prometheus endpoint includes cluster quorum, votes, node status, VIP status, and the local membership-shape timer:
+
+```
+lcs_cluster_membership_seconds{cluster="ingress"} 252
+```
+
+This value is the number of seconds since this daemon's observed online/offline membership last changed.
 
 ---
 

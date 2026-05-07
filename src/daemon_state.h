@@ -236,6 +236,8 @@ typedef struct
     uint64_t instance_id;
     uint32_t quorum_needed;
     uint32_t votes_seen;
+    uint64_t membership_mask;
+    uint64_t membership_since_ms;
     peer_runtime_t peers[LCS_MAX_NODES];
     inbound_handshake_t handshakes[LCS_HANDSHAKE_MAX];
     local_client_runtime_t local_clients[LCS_LOCAL_CLIENT_MAX];

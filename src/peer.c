@@ -156,7 +156,7 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
 {
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, cap);
-    if (lcs_buf_put_u16(&w, LCS_PROTO_VERSION) != 0 ||
+    if (lcs_buf_put_u16(&w, LCS_PEER_PROTO_VERSION) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.self_index) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.node_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.group_count) != 0 ||
@@ -193,9 +193,9 @@ static int peer_decode_hello(const void *payload, size_t len,
         lcs_buf_get_fixed_string(&r, cluster_name, sizeof(cluster_name), LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_get_fixed_string(&r, secret, sizeof(secret), LCS_NAME_MAX + 1) != 0)
         return -1;
-    if (proto_version != LCS_PROTO_VERSION)
+    if (proto_version != LCS_PEER_PROTO_VERSION)
     {
-        lcs_log_debug("rejecting HELLO with protocol version %u, expected %u", proto_version, LCS_PROTO_VERSION);
+        lcs_log_debug("rejecting HELLO with peer protocol version %u, expected %u", proto_version, LCS_PEER_PROTO_VERSION);
         return -1;
     }
     int idx = lcs_config_node_index(&g_state.cfg, name);
