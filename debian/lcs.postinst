@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+if [ -z "$DPKG_ROOT" ] && [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+	systemctl --system daemon-reload >/dev/null || true
+	if [ -e /run/lcs/restart-after-upgrade ]; then
+		rm -f /run/lcs/restart-after-upgrade
+		deb-systemd-invoke restart lcsd.service >/dev/null || true
+	fi
+fi
+
+#DEBHELPER#

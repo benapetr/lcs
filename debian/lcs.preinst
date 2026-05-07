@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+if [ -z "$DPKG_ROOT" ] && [ "$1" = upgrade ] && [ -d /run/systemd/system ]; then
+	if systemctl --quiet is-active lcsd.service; then
+		mkdir -p /run/lcs
+		touch /run/lcs/restart-after-upgrade
+	fi
+fi
+
+#DEBHELPER#
