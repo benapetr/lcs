@@ -104,17 +104,22 @@ void lcs_format_duration(uint64_t seconds, char *buf, size_t len)
 
     if (len == 0)
         return;
+
     if (days)
+    {
         snprintf(buf, len, "%llud %02lluh %02llum %02llus",
                  (unsigned long long)days, (unsigned long long)hours,
                  (unsigned long long)minutes, (unsigned long long)seconds);
-    else if (hours)
+    } else if (hours)
+    {
         snprintf(buf, len, "%lluh %02llum %02llus",
                  (unsigned long long)hours, (unsigned long long)minutes,
                  (unsigned long long)seconds);
-    else if (minutes)
-        snprintf(buf, len, "%llum %02llus",
-                 (unsigned long long)minutes, (unsigned long long)seconds);
-    else
+    } else if (minutes)
+    {
+        snprintf(buf, len, "%llum %02llus", (unsigned long long)minutes, (unsigned long long)seconds);
+    } else
+    {
         snprintf(buf, len, "%llus", (unsigned long long)seconds);
+    }
 }

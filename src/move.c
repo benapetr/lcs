@@ -104,14 +104,17 @@ static void move_rpc_callback(void *ctx, int status, const unsigned char *payloa
     int node_idx = rpc_ctx->node_idx;
     if (!move || !move->active || move->id != rpc_ctx->move_id || node_idx < 0 || node_idx >= LCS_MAX_NODES)
         return;
+
     move->rpc_done[node_idx] = true;
     move->rpc_status[node_idx] = status;
     move->rpc_resp_len[node_idx] = 0;
+
     if (status == 0 && payload && len <= sizeof(move->rpc_resp[node_idx]))
     {
         memcpy(move->rpc_resp[node_idx], payload, len);
         move->rpc_resp_len[node_idx] = len;
     }
+
     if (move->pending_rpcs > 0)
         move->pending_rpcs--;
 }

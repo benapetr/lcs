@@ -63,6 +63,7 @@ static void write_best_effort(int fd, const void *buf, size_t len)
         }
         if (n < 0 && errno == EINTR)
             continue;
+
         break;
     }
 }

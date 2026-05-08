@@ -172,8 +172,7 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
     return 0;
 }
 
-static int peer_decode_hello(const void *payload, size_t len,
-                        int *node_idx, uint64_t *instance_id, uint8_t *mode)
+static int peer_decode_hello(const void *payload, size_t len, int *node_idx, uint64_t *instance_id, uint8_t *mode)
 {
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, len);
@@ -193,11 +192,13 @@ static int peer_decode_hello(const void *payload, size_t len,
         lcs_buf_get_fixed_string(&r, cluster_name, sizeof(cluster_name), LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_get_fixed_string(&r, secret, sizeof(secret), LCS_NAME_MAX + 1) != 0)
         return -1;
+
     if (proto_version != LCS_PEER_PROTO_VERSION)
     {
         lcs_log_debug("rejecting HELLO with peer protocol version %u, expected %u", proto_version, LCS_PEER_PROTO_VERSION);
         return -1;
     }
+
     int idx = lcs_config_node_index(&g_state.cfg, name);
     if (idx < 0 || idx != (int)remote_idx ||
         node_count != g_state.cfg.node_count ||
@@ -205,12 +206,16 @@ static int peer_decode_hello(const void *payload, size_t len,
         vip_count != g_state.cfg.vip_count ||
         role != (uint16_t)g_state.cfg.nodes[idx].role)
         return -1;
+
     if (strcmp(cluster_name, g_state.cfg.cluster_name) != 0)
         return -1;
+
     if (*g_state.cfg.secret && strcmp(secret, g_state.cfg.secret) != 0)
         return -1;
+
     if (*mode != LCS_HELLO_MODE_PERSISTENT)
         return -1;
+        
     *node_idx = idx;
     return 0;
 }
@@ -246,9 +251,7 @@ static int peer_queue_raw_frame(unsigned char *outbuf, size_t outbuf_cap,
     return 0;
 }
 
-static int peer_queue_frame(int epoll_fd, int node_idx,
-                            uint16_t type, uint32_t seq, const void *payload,
-                            uint32_t length)
+static int peer_queue_frame(int epoll_fd, int node_idx, uint16_t type, uint32_t seq, const void *payload, uint32_t length)
 {
     if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count || length > LCS_MAX_FRAME)
         return -1;
@@ -286,9 +289,7 @@ static int peer_queue_frame(int epoll_fd, int node_idx,
     return peer_update_epoll(epoll_fd, node_idx);
 }
 
-int peer_queue_simple_resp(int epoll_fd, int node_idx,
-                           uint32_t seq, uint16_t type, int32_t status,
-                           const char *msg)
+int peer_queue_simple_resp(int epoll_fd, int node_idx, uint32_t seq, uint16_t type, int32_t status, const char *msg)
 {
     unsigned char payload[256];
     size_t len = 0;
@@ -454,8 +455,7 @@ static int handshake_process_frame(int epoll_fd, int slot_idx, const lcs_frame_h
         return -1;
     hs->node_idx = node_idx;
     hs->instance_id = instance_id;
-    lcs_log_debug3("inbound HELLO accepted from %s slot=%d seq=%u",
-                   g_state.cfg.nodes[node_idx].name, slot_idx, hdr->seq);
+    lcs_log_debug3("inbound HELLO accepted from %s slot=%d seq=%u", g_state.cfg.nodes[node_idx].name, slot_idx, hdr->seq);
     return handshake_flush_output(epoll_fd, slot_idx);
 }
 

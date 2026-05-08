@@ -57,8 +57,7 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
     uint16_t resource_id, owner_node;
     uint64_t epoch, lease_id, sender_instance_id;
     uint32_t lease_ms;
-    if (lease_decode_msg(payload, len, &resource_id, &owner_node, &epoch,
-                         &lease_id, &lease_ms, &sender_instance_id) != 0)
+    if (lease_decode_msg(payload, len, &resource_id, &owner_node, &epoch, &lease_id, &lease_ms, &sender_instance_id) != 0)
     {
         lcs_log_debug("rejecting lease message type=%u from %s: invalid payload length=%zu",
                       type, cluster_node_name_or_none(source_node_idx), len);
@@ -162,7 +161,9 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
             return -1;
         }
     } else
+    {
         return -1;
+    }
     if (res->owner_node == g_state.self_index &&
         res->owner_instance_id == g_state.instance_id &&
         owner_node != (uint16_t)g_state.self_index &&
@@ -173,8 +174,7 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
     res->lease_id = lease_id;
     res->owner_node = owner_node;
     res->owner_instance_id = sender_instance_id;
-    if (type != LCS_MSG_LEASE_RENEW ||
-        (res->state != LCS_RES_STARTING && res->state != LCS_RES_STOPPING))
+    if (type != LCS_MSG_LEASE_RENEW || (res->state != LCS_RES_STARTING && res->state != LCS_RES_STOPPING))
         res->state = LCS_RES_ACTIVE;
     res->lease_deadline_ms = now + lease_ms;
     res->renew_after_ms = now + (lease_ms / 2u);
@@ -237,14 +237,17 @@ static void lease_rpc_callback(void *ctx, int status, const unsigned char *paylo
     int node_idx = rpc_ctx->node_idx;
     if (!op || !op->active || op->id != rpc_ctx->op_id || node_idx < 0 || node_idx >= LCS_MAX_NODES)
         return;
+
     op->rpc_done[node_idx] = true;
     op->rpc_status[node_idx] = status;
     op->rpc_resp_len[node_idx] = 0;
+
     if (status == 0 && payload && len <= sizeof(op->rpc_resp[node_idx]))
     {
         memcpy(op->rpc_resp[node_idx], payload, len);
         op->rpc_resp_len[node_idx] = len;
     }
+
     if (op->pending_rpcs > 0)
         op->pending_rpcs--;
 }
@@ -306,8 +309,10 @@ static void lease_op_send_release_to_acked(int epoll_fd, lease_runtime_t *op)
 static int lease_start_operation(int epoll_fd, lease_op_type_t type, int vip_idx, int owner_idx, uint64_t epoch, uint64_t lease_id)
 {
     lease_runtime_t *op = lease_op_alloc(vip_idx, type);
+    
     if (!op)
         return -1;
+
     op->owner_idx = owner_idx;
     op->epoch = epoch;
     op->lease_id = lease_id;

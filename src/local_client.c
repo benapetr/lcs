@@ -91,9 +91,7 @@ static void client_close_slot(int epoll_fd, int slot_idx, const char *reason)
     move_cancel_local_client(slot_idx, client_id);
 }
 
-static int client_queue_frame(int epoll_fd, int slot_idx,
-                              uint16_t type, uint32_t seq, const void *payload,
-                              uint32_t length)
+static int client_queue_frame(int epoll_fd, int slot_idx, uint16_t type, uint32_t seq, const void *payload, uint32_t length)
 {
     local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     if (!client->active || !client->outbuf || length > LCS_MAX_FRAME)
