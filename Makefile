@@ -4,6 +4,10 @@ CFLAGS += -std=c11 -Wall -Wextra -Wpedantic
 CPPFLAGS += -D_GNU_SOURCE -Isrc
 CFLAGS += -MMD -MP
 LDFLAGS ?=
+prefix ?= /usr
+exec_prefix ?= $(prefix)
+bindir ?= $(exec_prefix)/bin
+sbindir ?= $(exec_prefix)/sbin
 
 COMMON_OBJS = src/config.o src/log.o src/protocol.o src/util.o
 LCSD_OBJS = src/lcsd.o src/vip.o src/cluster.o src/peer.o src/lease.o \
@@ -29,9 +33,9 @@ clean:
 	rm -f lcs lcsd src/*.o src/*.d
 
 install: all
-	install -d $(DESTDIR)/usr/sbin
-	install -d $(DESTDIR)/usr/bin
-	install -m 0755 lcsd $(DESTDIR)/usr/sbin/lcsd
-	install -m 0755 lcs $(DESTDIR)/usr/bin/lcs
+	install -d $(DESTDIR)$(sbindir)
+	install -d $(DESTDIR)$(bindir)
+	install -m 0755 lcsd $(DESTDIR)$(sbindir)/lcsd
+	install -m 0755 lcs $(DESTDIR)$(bindir)/lcs
 
 -include src/*.d
