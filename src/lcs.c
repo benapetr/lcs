@@ -18,6 +18,7 @@ static void usage(FILE *out)
 {
     fprintf(out, "usage: lcs [--version]\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] status\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] nrpe\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] move VIP NODE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] clear-conflict VIP\n");
 }
@@ -65,7 +66,44 @@ static const char *state_name(uint8_t state)
     }
 }
 
-static int cmd_status(const char *socket_path)
+typedef struct
+{
+    uint16_t id;
+    uint16_t role;
+    uint8_t online;
+    uint8_t self;
+    char name[LCS_NAME_MAX + 1];
+} status_node_t;
+
+typedef struct
+{
+    uint16_t id;
+    uint16_t owner_node;
+    uint64_t epoch;
+    uint64_t lease_id;
+    uint8_t state;
+    char name[LCS_NAME_MAX + 1];
+    char address[LCS_ADDR_MAX + 1];
+    char interface[LCS_NAME_MAX + 1];
+    char group[LCS_NAME_MAX + 1];
+    char reason[LCS_REASON_MAX + 1];
+    uint32_t priority;
+} status_vip_t;
+
+typedef struct
+{
+    uint16_t node_count;
+    uint16_t vip_count;
+    uint16_t self_node;
+    uint16_t quorum_needed;
+    uint16_t votes_seen;
+    uint64_t membership_seconds;
+    uint8_t has_quorum;
+    status_node_t nodes[LCS_MAX_NODES];
+    status_vip_t vips[LCS_MAX_VIPS];
+} status_snapshot_t;
+
+static int fetch_status(const char *socket_path, status_snapshot_t *status)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
@@ -96,71 +134,44 @@ static int cmd_status(const char *socket_path)
     close(fd);
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, hdr.length);
-    uint16_t node_count, vip_count, self_node, quorum_needed, votes_seen;
-    uint64_t membership_seconds;
-    uint8_t has_quorum;
-    if (lcs_decode_status_header(&r, &node_count, &vip_count, &self_node,
-                                 &quorum_needed, &votes_seen, &has_quorum,
-                                 &membership_seconds) != 0 ||
-        node_count > LCS_MAX_NODES || vip_count > LCS_MAX_VIPS)
+    memset(status, 0, sizeof(*status));
+    if (lcs_decode_status_header(&r, &status->node_count, &status->vip_count,
+                                 &status->self_node, &status->quorum_needed,
+                                 &status->votes_seen, &status->has_quorum,
+                                 &status->membership_seconds) != 0 ||
+        status->node_count > LCS_MAX_NODES ||
+        status->vip_count > LCS_MAX_VIPS)
     {
         fprintf(stderr, "lcs: invalid status response header\n");
         return 1;
     }
-    char membership_for[64];
-    lcs_format_duration(membership_seconds, membership_for, sizeof(membership_for));
-    printf("Cluster\n");
-    printf("  quorum: %s (%u votes, need %u, membership for %s)\n",
-           has_quorum ? "yes" : "no", votes_seen, quorum_needed, membership_for);
-    printf("Nodes\n");
-    char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1];
-    memset(node_names, 0, sizeof(node_names));
-    for (uint16_t i = 0; i < node_count; i++)
+    for (uint16_t i = 0; i < status->node_count; i++)
     {
-        uint16_t id, role;
-        uint8_t online, self;
-        char name[LCS_NAME_MAX + 1];
-        if (lcs_decode_status_node(&r, &id, &role, &online, &self, name, sizeof(name)) != 0 || id >= node_count)
+        status_node_t *node = &status->nodes[i];
+        if (lcs_decode_status_node(&r, &node->id, &node->role,
+                                   &node->online, &node->self,
+                                   node->name, sizeof(node->name)) != 0 ||
+            node->id >= status->node_count)
         {
             fprintf(stderr, "lcs: invalid status node entry\n");
             return 1;
         }
-        snprintf(node_names[id], sizeof(node_names[id]), "%s", name);
-        printf("  %s role=%s online=%s%s\n", name, role_name(role), online ? "yes" : "no", self ? " (self)" : "");
     }
-    printf("VIPs\n");
-    for (uint16_t i = 0; i < vip_count; i++)
+    for (uint16_t i = 0; i < status->vip_count; i++)
     {
-        uint16_t id, owner_node;
-        uint64_t epoch, lease_id;
-        uint8_t state;
-        char name[LCS_NAME_MAX + 1];
-        char address[LCS_ADDR_MAX + 1];
-        char interface[LCS_NAME_MAX + 1];
-        char group[LCS_NAME_MAX + 1];
-        char reason[LCS_REASON_MAX + 1];
-        uint32_t priority;
-        if (lcs_decode_status_vip(&r, &id, &owner_node, &epoch, &lease_id, &state,
-                                  name, sizeof(name), address, sizeof(address),
-                                  interface, sizeof(interface), group, sizeof(group),
-                                  &priority, reason, sizeof(reason)) != 0 ||
-            id >= vip_count)
+        status_vip_t *vip = &status->vips[i];
+        if (lcs_decode_status_vip(&r, &vip->id, &vip->owner_node,
+                                  &vip->epoch, &vip->lease_id, &vip->state,
+                                  vip->name, sizeof(vip->name),
+                                  vip->address, sizeof(vip->address),
+                                  vip->interface, sizeof(vip->interface),
+                                  vip->group, sizeof(vip->group),
+                                  &vip->priority, vip->reason,
+                                  sizeof(vip->reason)) != 0 ||
+            vip->id >= status->vip_count)
         {
             fprintf(stderr, "lcs: invalid status VIP entry\n");
             return 1;
-        }
-        const char *owner = "-";
-        if (owner_node != UINT16_MAX && owner_node < node_count)
-            owner = node_names[owner_node];
-
-        printf("  %s %s dev=%s state=%s owner=%s epoch=%llu",
-               name, address, interface, state_name(state), owner,
-               (unsigned long long)epoch);
-        if (*group)
-            printf(" group=%s priority=%u", group, priority);
-        printf("\n");
-        if (state == LCS_RES_CONFLICT && *reason) {
-            printf("    conflict: %s\n", reason);
         }
     }
     if (r.off != r.len) {
@@ -168,6 +179,107 @@ static int cmd_status(const char *socket_path)
         return 1;
     }
     return 0;
+}
+
+static int cmd_status(const char *socket_path)
+{
+    status_snapshot_t status;
+    if (fetch_status(socket_path, &status) != 0)
+        return 1;
+
+    char membership_for[64];
+    lcs_format_duration(status.membership_seconds, membership_for,
+                        sizeof(membership_for));
+    printf("Cluster\n");
+    printf("  quorum: %s (%u votes, need %u, membership for %s)\n",
+           status.has_quorum ? "yes" : "no", status.votes_seen,
+           status.quorum_needed, membership_for);
+    printf("Nodes\n");
+    char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1];
+    memset(node_names, 0, sizeof(node_names));
+    for (uint16_t i = 0; i < status.node_count; i++)
+    {
+        status_node_t *node = &status.nodes[i];
+        snprintf(node_names[node->id], sizeof(node_names[node->id]), "%s", node->name);
+        printf("  %s role=%s online=%s%s\n", node->name, role_name(node->role),
+               node->online ? "yes" : "no", node->self ? " (self)" : "");
+    }
+    printf("VIPs\n");
+    for (uint16_t i = 0; i < status.vip_count; i++)
+    {
+        status_vip_t *vip = &status.vips[i];
+        const char *owner = "-";
+        if (vip->owner_node != UINT16_MAX && vip->owner_node < status.node_count)
+            owner = node_names[vip->owner_node];
+
+        printf("  %s %s dev=%s state=%s owner=%s epoch=%llu",
+               vip->name, vip->address, vip->interface, state_name(vip->state),
+               owner, (unsigned long long)vip->epoch);
+        if (*vip->group)
+            printf(" group=%s priority=%u", vip->group, vip->priority);
+        printf("\n");
+        if (vip->state == LCS_RES_CONFLICT && *vip->reason) {
+            printf("    conflict: %s\n", vip->reason);
+        }
+    }
+    return 0;
+}
+
+static int cmd_nrpe(const char *socket_path)
+{
+    status_snapshot_t status;
+    if (fetch_status(socket_path, &status) != 0)
+    {
+        printf("UNKNOWN - failed to read local lcsd status\n");
+        return 3;
+    }
+
+    uint16_t online_nodes = 0;
+    uint16_t down_resources = 0;
+    char down_detail[512] = "";
+    size_t down_len = 0;
+    for (uint16_t i = 0; i < status.node_count; i++)
+    {
+        if (status.nodes[i].online)
+            online_nodes++;
+    }
+    for (uint16_t i = 0; i < status.vip_count; i++)
+    {
+        status_vip_t *vip = &status.vips[i];
+        if (vip->state == LCS_RES_ACTIVE)
+            continue;
+        down_resources++;
+        int n = snprintf(down_detail + down_len, sizeof(down_detail) - down_len,
+                         "%s%s=%s", down_len ? "," : "", vip->name,
+                         state_name(vip->state));
+        if (n > 0 && (size_t)n < sizeof(down_detail) - down_len)
+            down_len += (size_t)n;
+    }
+
+    char membership_for[64];
+    lcs_format_duration(status.membership_seconds, membership_for,
+                        sizeof(membership_for));
+    const char *state = "OK";
+    int rc = 0;
+    if (!status.has_quorum || down_resources > 0)
+    {
+        state = "CRITICAL";
+        rc = 2;
+    } else if (online_nodes < status.node_count)
+    {
+        state = "WARNING";
+        rc = 1;
+    }
+
+    printf("%s - quorum=%s votes=%u/%u need=%u membership_for=%s nodes=%u/%u resources=%u/%u active",
+           state, status.has_quorum ? "yes" : "no", status.votes_seen,
+           status.node_count, status.quorum_needed, membership_for,
+           online_nodes, status.node_count,
+           (uint16_t)(status.vip_count - down_resources), status.vip_count);
+    if (down_resources > 0)
+        printf(" down=%s", down_detail);
+    printf("\n");
+    return rc;
 }
 
 static int cmd_clear_conflict(const char *socket_path, const char *vip)
@@ -318,6 +430,15 @@ int main(int argc, char **argv)
             return 2;
         }
         return cmd_status(socket_path);
+    }
+    if (strcmp(cmd, "nrpe") == 0)
+    {
+        if (optind != argc)
+        {
+            usage(stderr);
+            return 2;
+        }
+        return cmd_nrpe(socket_path);
     }
     if (strcmp(cmd, "move") == 0)
     {

@@ -136,6 +136,19 @@ Cluster
   quorum: yes (2 votes, need 2, membership for 4m 12s)
 ```
 
+`lcs nrpe` prints a single monitoring-plugin style line and exits with Nagios-compatible status codes:
+
+- `0` OK: quorum is available, all nodes are online, and all VIPs are active.
+- `1` WARNING: quorum is available and VIPs are active, but at least one node is offline.
+- `2` CRITICAL: quorum is unavailable or at least one VIP is not active.
+- `3` UNKNOWN: local status could not be read.
+
+Example:
+
+```
+OK - quorum=yes votes=3/3 need=2 membership_for=2h 13m 04s nodes=3/3 resources=1/1 active
+```
+
 ---
 
 # Logging

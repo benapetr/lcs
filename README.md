@@ -101,7 +101,7 @@ For `keep-together` groups, moving any member through `lcs move` moves the highe
 
 # Observability
 
-lcs tool can be used to display cluster status and to move VIPs from one node to another one, or acknowledge conflicting states
+lcs tool can be used to display cluster status, run simple monitoring checks, move VIPs from one node to another one, or acknowledge conflicting states
 ```
 # lcs status
 Cluster
@@ -112,7 +112,16 @@ Nodes
   node3 role=quorum-only online=yes
 VIPs
   vip1 192.168.6.70/24 dev=enX0 state=active owner=node1 epoch=11 group=service priority=1
-  ```
+```
+
+For NRPE / Nagios-style monitoring:
+
+```
+# lcs nrpe
+OK - quorum=yes votes=3/3 need=2 membership_for=2h 13m 04s nodes=3/3 resources=1/1 active
+```
+
+Exit codes are `0` for OK, `1` for WARNING when any node is offline, `2` for CRITICAL when quorum is lost or any VIP resource is not active, and `3` if local status cannot be read.
 
 Prometheus can be used to monitor cluster state
 
