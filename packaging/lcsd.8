@@ -1,0 +1,203 @@
+.TH LCSD 8 "2026-05-11" "lcsd 1.0.4" "System Administration"
+.SH NAME
+lcsd \- Lightweight Cluster Service daemon
+.SH SYNOPSIS
+.B lcsd
+.B \-c
+.I CONFIG
+.RB [ \-\-daemonize ]
+.RB [ \-\-no\-syslog ]
+.RB [ \-\-no\-timestamp ]
+.RB [ \-v | \-vv | \-vvv | \-vvvv | \-\-verbose ]
+.br
+.B lcsd
+.B \-\-version
+.SH DESCRIPTION
+.B lcsd
+is a small Linux high-availability daemon that manages virtual IP addresses
+(VIPs) across a cluster. VIP ownership is protected by short-lived majority
+leases. A node may activate a VIP only after quorum grants the lease, and it
+must renew that lease continuously to keep the VIP active.
+.PP
+All configured nodes are voting members for quorum and lease decisions.
+Nodes with role
+.B full-member
+may run VIP resources. Nodes with role
+.B quorum-only
+vote and participate in leases but never manipulate VIP addresses.
+.PP
+Peer communication uses persistent TCP connections. Idle liveness is maintained
+with lightweight heartbeat frames. Full cluster state is exchanged when peers
+join and when ownership or resource state changes.
+.SH OPTIONS
+.TP
+.BI \-c " CONFIG" "\fR, \fB\-\-config " CONFIG
+Read configuration from
+.IR CONFIG .
+The default path is
+.IR /etc/lcs/lcs.conf .
+.TP
+.B \-\-daemonize
+Fork into the background. Foreground mode is the default and is recommended
+when running under systemd.
+.TP
+.B \-\-no\-syslog
+Disable syslog output. This is useful under systemd because journald already
+captures foreground stderr.
+.TP
+.B \-\-no\-timestamp
+Disable timestamps in foreground stderr output. This is useful under systemd
+because journald adds its own timestamps.
+.TP
+.BR \-v ", " \-\-verbose
+Increase log verbosity. The flag may be repeated as
+.BR \-vv ,
+.BR \-vvv ,
+or
+.BR \-vvvv .
+.TP
+.B \-\-version
+Print the daemon version and exit.
+.TP
+.BR \-h ", " \-\-help
+Print usage information and exit.
+.SH CONFIGURATION
+The configuration file uses an INI-style format. The same cluster definition
+should be present on all nodes; only the local
+.B node
+key in the
+.B [cluster]
+section changes per host.
+.SS Cluster Section
+.TP
+.B name
+Cluster name. Must match on all nodes.
+.TP
+.B node
+Local node name. Must match one configured
+.B [node NAME]
+section.
+.TP
+.B bind
+Local address for daemon-to-daemon TCP. If omitted, the daemon binds all
+addresses.
+.TP
+.B port
+Default peer TCP port. The default is 3322. Individual nodes may override it.
+.TP
+.B socket
+Local Unix control socket path for
+.BR lcs (8).
+The default is
+.IR /run/lcs/lcsd.sock .
+.TP
+.B lease_ms
+Lease lifetime in milliseconds. The default is 5000.
+.TP
+.B renew_ms
+Lease renewal interval in milliseconds. The default is 1000.
+.TP
+.B peer_timeout_ms
+Peer liveness timeout in milliseconds. The default is 5000.
+.TP
+.B secret
+Optional shared cluster secret checked during peer handshake.
+.TP
+.B syslog
+Whether syslog logging is enabled by default. The default is true.
+.TP
+.B vip_backend
+VIP address-management backend:
+.B ip
+or
+.BR netlink .
+.TP
+.B metrics
+Enable the Prometheus metrics endpoint. The default is true.
+.TP
+.B metrics_bind
+Metrics bind address. The default is 127.0.0.1.
+.TP
+.B metrics_port
+Metrics TCP port. The default is 9120.
+.SS Node Sections
+Each
+.B [node NAME]
+section defines a voting cluster node.
+.TP
+.B role
+Either
+.B full-member
+or
+.BR quorum-only .
+.TP
+.B address
+Peer address, either IPv4, IPv6, or a hostname.
+.TP
+.B port
+Optional per-node peer TCP port override.
+.SS Group Sections
+.B [group NAME]
+sections define placement rules for VIPs.
+.TP
+.B type
+Either
+.B keep-together
+or
+.BR anti-affinity .
+.TP
+.B mode
+Either
+.B strict
+or
+.BR best-effort .
+.SS VIP Sections
+Each
+.B [vip NAME]
+section defines one managed VIP resource.
+.TP
+.B address
+VIP address in CIDR notation.
+.TP
+.B interface
+Linux interface on which the VIP is configured.
+.TP
+.B group
+Optional placement group name.
+.TP
+.B priority
+Positive integer priority inside the group. Higher numbers are higher priority.
+If omitted, priority is derived so earlier sorted VIPs have higher priority.
+.TP
+.BR pre_start ", " post_start ", " pre_stop ", " post_stop
+Optional absolute paths to hook programs executed around VIP activation and
+removal. Hooks receive environment variables such as
+.BR LCS_CLUSTER ,
+.BR LCS_NODE ,
+.BR LCS_VIP ,
+.BR LCS_ADDRESS ,
+.BR LCS_INTERFACE ,
+.BR LCS_EVENT ,
+.BR LCS_EPOCH ,
+and
+.BR LCS_LEASE_ID .
+.SH FILES
+.TP
+.I /etc/lcs/lcs.conf
+Default daemon configuration.
+.TP
+.I /run/lcs/lcsd.sock
+Default local control socket.
+.TP
+.I /usr/lib/systemd/system/lcsd.service
+Packaged systemd unit on many distributions.
+.SH SIGNALS
+.TP
+.B SIGTERM
+Gracefully shut down. Locally owned VIPs are released before exit.
+.TP
+.B SIGINT
+Same as SIGTERM, typically used when running in the foreground.
+.SH SEE ALSO
+.BR lcs (8),
+.BR ip (8)

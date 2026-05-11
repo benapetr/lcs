@@ -1,0 +1,106 @@
+.TH LCS 8 "2026-05-11" "lcs 1.0.4" "System Administration"
+.SH NAME
+lcs \- command line client for the Lightweight Cluster Service daemon
+.SH SYNOPSIS
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.B status
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.B nrpe
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.B move
+.I VIP
+.I NODE
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.B clear-conflict
+.I VIP
+.br
+.B lcs
+.B \-\-version
+.SH DESCRIPTION
+.B lcs
+talks to the local
+.BR lcsd (8)
+daemon over its Unix domain socket. It does not connect directly to remote
+cluster nodes.
+.PP
+The tool is intended for querying cluster state, performing controlled VIP
+handoffs, clearing inspected conflict states, and producing simple monitoring
+output.
+.SH OPTIONS
+.TP
+.BI \-s " SOCKET" "\fR, \fB\-\-socket " SOCKET
+Connect to the given local daemon socket instead of the default
+.IR /run/lcs/lcsd.sock .
+.TP
+.B \-\-version
+Print the program version and exit.
+.TP
+.BR \-h ", " \-\-help
+Print usage information and exit.
+.SH COMMANDS
+.TP
+.B status
+Print cluster quorum, node, and VIP state as seen by the local daemon. The
+cluster section includes the current membership shape duration.
+.TP
+.B nrpe
+Print a single monitoring-plugin style status line and exit with Nagios
+compatible status codes. Exit status is 0 for OK, 1 for WARNING, 2 for
+CRITICAL, and 3 for UNKNOWN.
+.TP
+.BI move " VIP NODE"
+Request a controlled cluster-level move of
+.I VIP
+to
+.IR NODE .
+The old owner is asked to release the VIP, the cluster records a newer lease
+epoch, and the target activates the VIP only after it obtains a majority lease.
+For keep-together groups, moving a lower-priority member may be redirected to
+the highest-priority group member so the whole group moves consistently.
+.TP
+.BI clear-conflict " VIP"
+Clear the conflict state for
+.I VIP
+after an administrator has inspected and resolved the underlying IP conflict.
+.SH EXAMPLES
+.TP
+Show local cluster status:
+.EX
+lcs status
+.EE
+.TP
+Query a non-default daemon socket:
+.EX
+lcs -s /tmp/lcs-node1.sock status
+.EE
+.TP
+Move a VIP to another full-member node:
+.EX
+lcs move vip1 node2
+.EE
+.TP
+Run a monitoring check:
+.EX
+lcs nrpe
+.EE
+.SH FILES
+.TP
+.I /run/lcs/lcsd.sock
+Default local daemon control socket.
+.SH SEE ALSO
+.BR lcsd (8)
