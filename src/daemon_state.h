@@ -89,6 +89,7 @@ typedef struct
     uint64_t instance_id;
     uint64_t last_seen_ms;
     uint64_t next_sync_ms;
+    uint64_t next_heartbeat_ms;
     uint64_t connect_deadline_ms;
     uint32_t hello_seq;
     uint32_t backoff_ms;

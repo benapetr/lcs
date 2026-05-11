@@ -12,7 +12,7 @@ run_bad_config()
     shift 2
     cat >"$cfg"
     local out="$TEST_TMP/$name.out"
-    if "$LCSD" -c "$cfg" -f --no-syslog --no-timestamp >"$out" 2>&1; then
+    if "$LCSD" -c "$cfg" --no-syslog --no-timestamp >"$out" 2>&1; then
         cat "$out" >&2
         die "$name unexpectedly passed validation"
     fi

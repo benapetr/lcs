@@ -135,7 +135,7 @@ start_node()
 {
     local node="$1"
     log "starting $node"
-    LCS_VIP_DRY_RUN=1 "$LCSD" -c "$(node_config "$node")" -f --no-syslog --no-timestamp -vv \
+    LCS_VIP_DRY_RUN=1 "$LCSD" -c "$(node_config "$node")" --no-syslog --no-timestamp -vv \
         >"$TEST_TMP/logs/$node.log" 2>&1 &
     LCS_PIDS+=("$!")
 }

@@ -44,6 +44,7 @@ typedef struct
     bool daemonize;
     bool no_syslog;
     bool no_timestamp;
+    bool deprecated_foreground;
     int verbosity;
     bool exit_now;
     int exit_code;
@@ -104,7 +105,7 @@ static int install_signal_handlers(void)
 static void usage(FILE *out)
 {
     fprintf(out, "usage: lcsd [--version]\n");
-    fprintf(out, "       lcsd -c CONFIG [-f|--foreground] [--daemonize] [--no-syslog] [--no-timestamp] [-v|--verbose] [-vv] [-vvv]\n");
+    fprintf(out, "       lcsd -c CONFIG [--daemonize] [--no-syslog] [--no-timestamp] [-v|--verbose] [-vv] [-vvv]\n");
 }
 
 static int daemonize_process(void)
@@ -286,6 +287,7 @@ static void daemon_options_init(daemon_options_t *opts)
 {
     memset(opts, 0, sizeof(*opts));
     opts->config_path = LCS_DEFAULT_CONFIG_PATH;
+    opts->foreground = true;
 }
 
 static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
@@ -293,6 +295,7 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
     static const struct option long_opts[] = {
         { "config",       required_argument, NULL, 'c' },
         { "daemonize",    no_argument,       NULL, 'd' },
+        // Deprecated compatibility aliases. Foreground mode is now the default.
         { "foreground",   no_argument,       NULL, 'f' },
         { "stdout",       no_argument,       NULL, 'f' },
         { "no-syslog",    no_argument,       NULL, 'S' },
@@ -312,9 +315,10 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
                 break;
             case 'd':
                 opts->daemonize = true;
+                opts->foreground = false;
                 break;
             case 'f':
-                opts->foreground = true;
+                opts->deprecated_foreground = true;
                 break;
             case 'S':
                 opts->no_syslog = true;
@@ -341,11 +345,9 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
         }
     }
 
-    if (opts->daemonize && opts->foreground)
-    {
-        fprintf(stderr, "lcsd: --daemonize cannot be combined with --foreground/--stdout\n");
-        return 2;
-    }
+    if (opts->deprecated_foreground)
+        fprintf(stderr, "lcsd: --foreground/-f is deprecated; foreground is the default\n");
+
     return 0;
 }
 

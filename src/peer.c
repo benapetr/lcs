@@ -96,6 +96,7 @@ static bool peer_is_request_type(uint16_t type)
 {
     switch (type)
     {
+        case LCS_MSG_HEARTBEAT_REQ:
         case LCS_MSG_STATE_SYNC_REQ:
         case LCS_MSG_LEASE_REQ:
         case LCS_MSG_LEASE_RENEW:
@@ -106,6 +107,16 @@ static bool peer_is_request_type(uint16_t type)
         default:
             return false;
     }
+}
+
+static uint64_t peer_heartbeat_interval_ms(void)
+{
+    uint64_t interval = g_state.cfg.peer_timeout_ms / 3u;
+    if (interval < 1000u)
+        interval = 1000u;
+    if (interval >= g_state.cfg.peer_timeout_ms)
+        interval = g_state.cfg.peer_timeout_ms > 1u ? g_state.cfg.peer_timeout_ms / 2u : 1u;
+    return interval;
 }
 
 static uint32_t peer_epoll_id(int node_idx)
@@ -675,6 +686,8 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx,
     }
     switch (hdr->type)
     {
+        case LCS_MSG_HEARTBEAT_REQ:
+            return peer_queue_frame(epoll_fd, source_node_idx, LCS_MSG_HEARTBEAT_RESP, hdr->seq, NULL, 0);
         case LCS_MSG_STATE_SYNC_REQ:
             if (hdr->length && cluster_apply_state(payload, hdr->length, source_node_idx) != 0)
             {
@@ -720,7 +733,6 @@ static void peer_mark_seen(int node_idx, uint64_t instance_id)
     g_state.peers[node_idx].online = true;
     g_state.peers[node_idx].instance_id = instance_id;
     g_state.peers[node_idx].last_seen_ms = lcs_now_ms();
-    g_state.peers[node_idx].next_sync_ms = g_state.peers[node_idx].last_seen_ms + 1000;
     g_state.peers[node_idx].backoff_ms = 0;
     if (!was_online)
         lcs_log_info("peer %s online instance=%llu", g_state.cfg.nodes[node_idx].name, (unsigned long long)instance_id);
@@ -782,6 +794,7 @@ void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const 
     peer->in_len = 0;
     peer->out_off = 0;
     peer->out_len = 0;
+    peer->next_heartbeat_ms = 0;
     if (mark_offline && peer->online)
     {
         peer->online = false;
@@ -811,6 +824,7 @@ static int peer_register_connection(int epoll_fd, int node_idx, int fd, bool out
     peer->connect_deadline_ms = 0;
     peer->hello_seq = 0;
     peer->next_sync_ms = lcs_now_ms();
+    peer->next_heartbeat_ms = lcs_now_ms() + peer_heartbeat_interval_ms();
     lcs_log_debug("peer %s persistent connection established direction=%s", g_state.cfg.nodes[node_idx].name, outbound ? "outbound" : "inbound");
     return 0;
 }
@@ -919,6 +933,11 @@ static int peer_send_state_sync(int epoll_fd, int node_idx)
     return peer_queue_frame(epoll_fd, node_idx, LCS_MSG_STATE_SYNC_REQ, lcs_next_seq(), payload, (uint32_t)len);
 }
 
+static int peer_send_heartbeat(int epoll_fd, int node_idx)
+{
+    return peer_queue_frame(epoll_fd, node_idx, LCS_MSG_HEARTBEAT_REQ, lcs_next_seq(), NULL, 0);
+}
+
 static int peer_process_frame(int epoll_fd, int node_idx, const lcs_frame_header_t *hdr, unsigned char *payload)
 {
     if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count || g_state.peers[node_idx].fd < 0)
@@ -969,6 +988,8 @@ static int peer_process_frame(int epoll_fd, int node_idx, const lcs_frame_header
                      expected_type);
         return -1;
     }
+    if (hdr->type == LCS_MSG_HEARTBEAT_RESP)
+        return 0;
     if (hdr->type == LCS_MSG_STATE_SYNC_RESP)
         return cluster_apply_state(payload, hdr->length, node_idx);
 
@@ -1234,6 +1255,8 @@ void peer_broadcast_state_sync(int epoll_fd)
 
         if (peer_send_state_sync(epoll_fd, (int)i) != 0)
             lcs_log_debug("state sync broadcast to %s failed", g_state.cfg.nodes[i].name);
+        else
+            g_state.peers[i].next_sync_ms = 0;
     }
 }
 
@@ -1286,14 +1309,34 @@ void peer_poll(int epoll_fd)
             }
         }
 
-        // Periodic state sync frames
-        if (g_state.peers[i].next_sync_ms && now < g_state.peers[i].next_sync_ms)
+        if (g_state.peers[i].last_seen_ms &&
+            now - g_state.peers[i].last_seen_ms > g_state.cfg.peer_timeout_ms)
+        {
+            peer_close_connection(epoll_fd, (int)i, true, "peer timeout");
             continue;
+        }
 
-        if (peer_send_state_sync(epoll_fd, (int)i) != 0)
-            peer_close_connection(epoll_fd, (int)i, true, "state sync failed");
-        else
-            g_state.peers[i].next_sync_ms = now + 1000;
+        // Full state sync is sent on join and explicit broadcasts. Heartbeat
+        // frames carry liveness when no state has changed.
+        if (g_state.peers[i].next_sync_ms && now >= g_state.peers[i].next_sync_ms)
+        {
+            if (peer_send_state_sync(epoll_fd, (int)i) != 0)
+            {
+                peer_close_connection(epoll_fd, (int)i, true, "state sync failed");
+                continue;
+            }
+            g_state.peers[i].next_sync_ms = 0;
+        }
+
+        if (!g_state.peers[i].next_heartbeat_ms || now >= g_state.peers[i].next_heartbeat_ms)
+        {
+            if (peer_send_heartbeat(epoll_fd, (int)i) != 0)
+            {
+                peer_close_connection(epoll_fd, (int)i, true, "heartbeat failed");
+                continue;
+            }
+            g_state.peers[i].next_heartbeat_ms = now + peer_heartbeat_interval_ms();
+        }
     }
     cluster_recompute_votes();
 }

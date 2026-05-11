@@ -97,7 +97,7 @@ A hook must exit with status `0` to be considered successful. If `pre_start` fai
 
 ## Systemd (recommended)
 
-The package installs a systemd unit that runs `lcsd --foreground --no-syslog --no-timestamp` as a simple service. No pidfile is required. `--no-syslog` avoids duplicate journald entries because systemd already captures foreground stderr. Enable and start the service with:
+The package installs a systemd unit that runs `lcsd --no-syslog --no-timestamp` as a simple service. No pidfile is required. `--no-syslog` avoids duplicate journald entries because systemd already captures foreground stderr. Enable and start the service with:
 
 ```
 systemctl enable --now lcsd
@@ -108,7 +108,7 @@ systemctl enable --now lcsd
 Running `lcsd` without `--daemonize` keeps the process in the foreground and writes logs to stdout:
 
 ```
-lcsd --foreground --config /etc/lcs/lcs.conf
+lcsd --config /etc/lcs/lcs.conf
 ```
 
 Use `--verbose` for detailed debug output covering state changes, quorum events, lease decisions, VIP operations, and conflict detection.
@@ -153,7 +153,7 @@ OK - quorum=yes votes=3/3 need=2 membership_for=2h 13m 04s nodes=3/3 resources=1
 
 # Logging
 
-`lcsd` logs to syslog by default. Pass `--foreground` to write to stderr as well, or `--no-syslog` to disable syslog. When running under systemd in foreground mode, use `--no-syslog` so journald does not receive duplicate copies of each message. Logged events include:
+`lcsd` runs in the foreground by default and logs to stderr and syslog. Pass `--daemonize` to fork into the background, or `--no-syslog` to disable syslog. When running under systemd, use `--no-syslog` so journald does not receive duplicate copies of each message. Logged events include:
 
 - Daemon startup and shutdown
 - Quorum gained and lost

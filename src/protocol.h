@@ -10,7 +10,7 @@
 #include <stdint.h>
 
 #define LCS_PROTO_MAGIC 0x4c435331u
-#define LCS_PEER_PROTO_VERSION 2
+#define LCS_PEER_PROTO_VERSION 3
 #define LCS_LOCAL_PROTO_VERSION 1000
 #define LCS_MAX_FRAME (64u * 1024u)
 
@@ -33,6 +33,8 @@ typedef enum
     LCS_MSG_LEASE_RELEASE = 23,
     LCS_MSG_OWNER_RELEASE_REQ = 24,
     LCS_MSG_OWNER_RELEASE_RESP = 25,
+    LCS_MSG_HEARTBEAT_REQ = 26,
+    LCS_MSG_HEARTBEAT_RESP = 27,
 } lcs_msg_type_t;
 
 typedef struct

@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define LCS_VERSION "1.0.3"
+#define LCS_VERSION "1.0.4"
 
 #define LCS_MAX_NODES 32
 #define LCS_MAX_VIPS 32
