@@ -71,7 +71,20 @@ static void close_listener_fds(void)
 
 static void on_signal(int signo)
 {
-    (void)signo;
+    static const char msg[] = "received signal - shutting down\n";
+    ssize_t written;
+
+    if (g_stop)
+        return;
+
+    if (signo != SIGTERM && signo != SIGINT)
+        return;
+
+    // we need to store the result here to suppress compiler warning
+    // other solution would be disabling the warn_unused_result flag
+    written = write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    (void)written;
+
     g_stop = 1;
 }
 
