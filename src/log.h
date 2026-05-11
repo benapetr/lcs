@@ -14,5 +14,6 @@ void lcs_log_error(const char *fmt, ...);
 void lcs_log_debug(const char *fmt, ...);
 void lcs_log_debug2(const char *fmt, ...);
 void lcs_log_debug3(const char *fmt, ...);
+void lcs_log_debug4(const char *fmt, ...);
 
 #endif

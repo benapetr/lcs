@@ -88,8 +88,9 @@ typedef struct
     peer_rpc_runtime_t in_flight[LCS_MAX_PEER_RPC_INFLIGHT];
     uint64_t instance_id;
     uint64_t last_seen_ms;
-    uint64_t next_sync_ms;
+    uint64_t next_connect_attempt_ms;
     uint64_t next_heartbeat_ms;
+    bool state_sync_pending;
     uint64_t connect_deadline_ms;
     uint32_t hello_seq;
     uint32_t backoff_ms;
@@ -237,6 +238,8 @@ typedef struct
     uint64_t instance_id;
     uint32_t quorum_needed;
     uint32_t votes_seen;
+    uint64_t started_ms;
+    uint64_t next_placement_ms;
     uint64_t membership_mask;
     uint64_t membership_since_ms;
     peer_runtime_t peers[LCS_MAX_NODES];

@@ -96,7 +96,7 @@ static bool peer_is_request_type(uint16_t type)
 {
     switch (type)
     {
-        case LCS_MSG_HEARTBEAT_REQ:
+        case LCS_MSG_HEARTBEAT:
         case LCS_MSG_STATE_SYNC_REQ:
         case LCS_MSG_LEASE_REQ:
         case LCS_MSG_LEASE_RENEW:
@@ -686,8 +686,8 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx,
     }
     switch (hdr->type)
     {
-        case LCS_MSG_HEARTBEAT_REQ:
-            return peer_queue_frame(epoll_fd, source_node_idx, LCS_MSG_HEARTBEAT_RESP, hdr->seq, NULL, 0);
+        case LCS_MSG_HEARTBEAT:
+            return 0;
         case LCS_MSG_STATE_SYNC_REQ:
             if (hdr->length && cluster_apply_state(payload, hdr->length, source_node_idx) != 0)
             {
@@ -765,7 +765,7 @@ static void peer_mark_sync_failed(int node_idx)
     if (next_backoff > g_state.cfg.peer_timeout_ms)
         next_backoff = g_state.cfg.peer_timeout_ms;
     peer->backoff_ms = next_backoff;
-    peer->next_sync_ms = now + next_backoff;
+    peer->next_connect_attempt_ms = now + next_backoff;
 }
 
 void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const char *reason)
@@ -795,6 +795,7 @@ void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const 
     peer->out_off = 0;
     peer->out_len = 0;
     peer->next_heartbeat_ms = 0;
+    peer->state_sync_pending = false;
     if (mark_offline && peer->online)
     {
         peer->online = false;
@@ -823,7 +824,7 @@ static int peer_register_connection(int epoll_fd, int node_idx, int fd, bool out
     peer->out_len = 0;
     peer->connect_deadline_ms = 0;
     peer->hello_seq = 0;
-    peer->next_sync_ms = lcs_now_ms();
+    peer->state_sync_pending = true;
     peer->next_heartbeat_ms = lcs_now_ms() + peer_heartbeat_interval_ms();
     lcs_log_debug("peer %s persistent connection established direction=%s", g_state.cfg.nodes[node_idx].name, outbound ? "outbound" : "inbound");
     return 0;
@@ -935,7 +936,7 @@ static int peer_send_state_sync(int epoll_fd, int node_idx)
 
 static int peer_send_heartbeat(int epoll_fd, int node_idx)
 {
-    return peer_queue_frame(epoll_fd, node_idx, LCS_MSG_HEARTBEAT_REQ, lcs_next_seq(), NULL, 0);
+    return peer_queue_frame(epoll_fd, node_idx, LCS_MSG_HEARTBEAT, lcs_next_seq(), NULL, 0);
 }
 
 static int peer_process_frame(int epoll_fd, int node_idx, const lcs_frame_header_t *hdr, unsigned char *payload)
@@ -988,8 +989,6 @@ static int peer_process_frame(int epoll_fd, int node_idx, const lcs_frame_header
                      expected_type);
         return -1;
     }
-    if (hdr->type == LCS_MSG_HEARTBEAT_RESP)
-        return 0;
     if (hdr->type == LCS_MSG_STATE_SYNC_RESP)
         return cluster_apply_state(payload, hdr->length, node_idx);
 
@@ -1256,7 +1255,7 @@ void peer_broadcast_state_sync(int epoll_fd)
         if (peer_send_state_sync(epoll_fd, (int)i) != 0)
             lcs_log_debug("state sync broadcast to %s failed", g_state.cfg.nodes[i].name);
         else
-            g_state.peers[i].next_sync_ms = 0;
+            g_state.peers[i].state_sync_pending = false;
     }
 }
 
@@ -1272,7 +1271,8 @@ void peer_poll(int epoll_fd)
 
         // If the peer is disconnected, try to reconnect, but only if we are supposed to initiate the connection
         // to prevent double sided connections, only peer with index < target starts it
-        if (g_state.peers[i].fd < 0 && g_state.self_index < (int)i && (!g_state.peers[i].next_sync_ms || now >= g_state.peers[i].next_sync_ms))
+        if (g_state.peers[i].fd < 0 && g_state.self_index < (int)i &&
+            (!g_state.peers[i].next_connect_attempt_ms || now >= g_state.peers[i].next_connect_attempt_ms))
         {
             if (peer_connect(epoll_fd, (int)i) != 0)
             {
@@ -1318,14 +1318,14 @@ void peer_poll(int epoll_fd)
 
         // Full state sync is sent on join and explicit broadcasts. Heartbeat
         // frames carry liveness when no state has changed.
-        if (g_state.peers[i].next_sync_ms && now >= g_state.peers[i].next_sync_ms)
+        if (g_state.peers[i].state_sync_pending)
         {
             if (peer_send_state_sync(epoll_fd, (int)i) != 0)
             {
                 peer_close_connection(epoll_fd, (int)i, true, "state sync failed");
                 continue;
             }
-            g_state.peers[i].next_sync_ms = 0;
+            g_state.peers[i].state_sync_pending = false;
         }
 
         if (!g_state.peers[i].next_heartbeat_ms || now >= g_state.peers[i].next_heartbeat_ms)

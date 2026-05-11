@@ -194,6 +194,7 @@ static int resources_complete_local_activation(int vip_idx, uint64_t epoch, uint
     lcs_log_info("activated VIP %s on %s epoch=%llu",
                  g_state.cfg.vips[vip_idx].name, g_state.cfg.nodes[g_state.self_index].name,
                  (unsigned long long)epoch);
+    peer_broadcast_state_sync(epoll_fd);
     resources_start_hook(vip_idx, LCS_HOOK_POST_START, epoch, lease_id);
     return 0;
 }
@@ -384,9 +385,15 @@ void resources_graceful_shutdown(int epoll_fd)
 
 void resources_auto_place(int epoll_fd)
 {
+    uint64_t now = lcs_now_ms();
+    if (g_state.started_ms && now - g_state.started_ms < LCS_STARTUP_AUTOPLACE_DELAY_MS)
+    {
+        lcs_log_debug4("auto-place skip: startup settle delay");
+        return;
+    }
     if (!cluster_has_quorum())
     {
-        lcs_log_debug2("auto-place skip: quorum is not available (%u votes, need %u)", g_state.votes_seen, g_state.quorum_needed);
+        lcs_log_debug4("auto-place skip: quorum is not available (%u votes, need %u)", g_state.votes_seen, g_state.quorum_needed);
         return;
     }
     for (size_t i = 0; i < g_state.cfg.vip_count; i++)
@@ -394,7 +401,7 @@ void resources_auto_place(int epoll_fd)
         resource_runtime_t *res = &g_state.resources[i];
         if (res->owner_node >= 0)
         {
-            lcs_log_debug2("auto-place skip VIP %s: owner is %s state=%u epoch=%llu",
+            lcs_log_debug4("auto-place skip VIP %s: owner is %s state=%u epoch=%llu",
                            g_state.cfg.vips[i].name,
                            cluster_node_name_or_none(res->owner_node),
                            (unsigned)res->state,
@@ -403,24 +410,24 @@ void resources_auto_place(int epoll_fd)
         }
         if (res->state == LCS_RES_CONFLICT)
         {
-            lcs_log_debug2("auto-place skip VIP %s: resource is in conflict state epoch=%llu",
+            lcs_log_debug4("auto-place skip VIP %s: resource is in conflict state epoch=%llu",
                            g_state.cfg.vips[i].name, (unsigned long long)res->epoch);
             continue;
         }
         if (lease_operation_active((int)i))
         {
-            lcs_log_debug2("auto-place skip VIP %s: lease operation already pending", g_state.cfg.vips[i].name);
+            lcs_log_debug4("auto-place skip VIP %s: lease operation already pending", g_state.cfg.vips[i].name);
             continue;
         }
         int target = group_auto_place_target((int)i);
         if (target < 0)
         {
-            lcs_log_debug2("auto-place skip VIP %s: group policy has no valid target", g_state.cfg.vips[i].name);
+            lcs_log_debug4("auto-place skip VIP %s: group policy has no valid target", g_state.cfg.vips[i].name);
             continue;
         }
         if (target != g_state.self_index)
         {
-            lcs_log_debug2("auto-place skip VIP %s: selected full-member is %s, self is %s",
+            lcs_log_debug4("auto-place skip VIP %s: selected full-member is %s, self is %s",
                            g_state.cfg.vips[i].name,
                            cluster_node_name_or_none(target),
                            g_state.cfg.nodes[g_state.self_index].name);

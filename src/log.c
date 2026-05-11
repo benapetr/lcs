@@ -108,3 +108,13 @@ void lcs_log_debug3(const char *fmt, ...)
     log_v(LOG_DEBUG, "debug3", fmt, ap);
     va_end(ap);
 }
+
+void lcs_log_debug4(const char *fmt, ...)
+{
+    if (g_verbosity < 4)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    log_v(LOG_DEBUG, "debug4", fmt, ap);
+    va_end(ap);
+}

@@ -40,11 +40,9 @@ int g_metrics_fd = -1;
 typedef struct
 {
     const char *config_path;
-    bool foreground;
     bool daemonize;
     bool no_syslog;
     bool no_timestamp;
-    bool deprecated_foreground;
     int verbosity;
     bool exit_now;
     int exit_code;
@@ -105,7 +103,7 @@ static int install_signal_handlers(void)
 static void usage(FILE *out)
 {
     fprintf(out, "usage: lcsd [--version]\n");
-    fprintf(out, "       lcsd -c CONFIG [--daemonize] [--no-syslog] [--no-timestamp] [-v|--verbose] [-vv] [-vvv]\n");
+    fprintf(out, "       lcsd -c CONFIG [--daemonize] [--no-syslog] [--no-timestamp] [-v|--verbose] [-vv] [-vvv] [-vvvv]\n");
 }
 
 static int daemonize_process(void)
@@ -287,7 +285,6 @@ static void daemon_options_init(daemon_options_t *opts)
 {
     memset(opts, 0, sizeof(*opts));
     opts->config_path = LCS_DEFAULT_CONFIG_PATH;
-    opts->foreground = true;
 }
 
 static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
@@ -295,9 +292,6 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
     static const struct option long_opts[] = {
         { "config",       required_argument, NULL, 'c' },
         { "daemonize",    no_argument,       NULL, 'd' },
-        // Deprecated compatibility aliases. Foreground mode is now the default.
-        { "foreground",   no_argument,       NULL, 'f' },
-        { "stdout",       no_argument,       NULL, 'f' },
         { "no-syslog",    no_argument,       NULL, 'S' },
         { "no-timestamp", no_argument,       NULL, 'T' },
         { "verbose",      no_argument,       NULL, 'v' },
@@ -306,7 +300,7 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
         { NULL, 0, NULL, 0 },
     };
     int opt;
-    while ((opt = getopt_long(argc, argv, "c:dfvhV", long_opts, NULL)) != -1)
+    while ((opt = getopt_long(argc, argv, "c:dvhV", long_opts, NULL)) != -1)
     {
         switch (opt)
         {
@@ -315,10 +309,6 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
                 break;
             case 'd':
                 opts->daemonize = true;
-                opts->foreground = false;
-                break;
-            case 'f':
-                opts->deprecated_foreground = true;
                 break;
             case 'S':
                 opts->no_syslog = true;
@@ -345,9 +335,6 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
         }
     }
 
-    if (opts->deprecated_foreground)
-        fprintf(stderr, "lcsd: --foreground/-f is deprecated; foreground is the default\n");
-
     return 0;
 }
 
@@ -357,7 +344,7 @@ static int load_daemon_config(const daemon_options_t *opts)
     char err[256] = {0};
     if (lcs_config_load(opts->config_path, &g_state.cfg, err, sizeof(err)) != 0)
     {
-        lcs_log_open("lcsd", opts->foreground, opts->verbosity, !opts->no_syslog, !opts->no_timestamp);
+        lcs_log_open("lcsd", !opts->daemonize, opts->verbosity, !opts->no_syslog, !opts->no_timestamp);
         lcs_log_error("config error: %s", err);
         lcs_log_close();
         return -1;
@@ -378,7 +365,7 @@ static int enter_runtime_mode(const daemon_options_t *opts)
 static bool open_daemon_log(const daemon_options_t *opts)
 {
     bool syslog_enabled = g_state.cfg.syslog_enabled && !opts->no_syslog;
-    lcs_log_open("lcsd", opts->foreground, opts->verbosity, syslog_enabled,
+    lcs_log_open("lcsd", !opts->daemonize, opts->verbosity, syslog_enabled,
                  !opts->no_timestamp);
     return syslog_enabled;
 }
@@ -390,6 +377,7 @@ static void initialize_daemon_state(void)
     g_state.instance_id = lcs_random_u64();
     g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
     g_state.votes_seen = 1;
+    g_state.started_ms = lcs_now_ms();
 
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
         g_state.peers[i].fd = -1;
@@ -404,9 +392,8 @@ static void initialize_daemon_state(void)
 
 static void log_startup_config(const daemon_options_t *opts, bool syslog_enabled)
 {
-    lcs_log_info("startup config: config=%s foreground=%s daemonize=%s syslog=%s stdout_timestamp=%s vip_backend=%s verbosity=%d node=%s self_index=%d cluster=%s",
+    lcs_log_info("startup config: config=%s daemonize=%s syslog=%s stdout_timestamp=%s vip_backend=%s verbosity=%d node=%s self_index=%d cluster=%s",
                  opts->config_path,
-                 opts->foreground ? "true" : "false",
                  opts->daemonize ? "true" : "false",
                  syslog_enabled ? "true" : "false",
                  opts->no_timestamp ? "false" : "true",

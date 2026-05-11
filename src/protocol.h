@@ -33,8 +33,7 @@ typedef enum
     LCS_MSG_LEASE_RELEASE = 23,
     LCS_MSG_OWNER_RELEASE_REQ = 24,
     LCS_MSG_OWNER_RELEASE_RESP = 25,
-    LCS_MSG_HEARTBEAT_REQ = 26,
-    LCS_MSG_HEARTBEAT_RESP = 27,
+    LCS_MSG_HEARTBEAT = 26,
 } lcs_msg_type_t;
 
 typedef struct

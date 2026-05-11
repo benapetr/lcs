@@ -18,6 +18,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "util.h"
+
 static int scheduler_is_peer_event(uint32_t event_id)
 {
     return event_id == LCS_EPOLL_PEER || (event_id >= LCS_EPOLL_PEER_CONN_BASE && event_id < LCS_EPOLL_HANDSHAKE_BASE + LCS_HANDSHAKE_MAX);
@@ -66,6 +68,9 @@ static void scheduler_dispatch_event(const scheduler_t *sched, const struct epol
 
 void scheduler_exec_subsystems(const scheduler_t *sched)
 {
+    uint64_t now = lcs_now_ms();
+    bool run_placement = !g_state.next_placement_ms || now >= g_state.next_placement_ms;
+
     peer_poll(sched->epoll_fd);
     handshake_expire(sched->epoll_fd);
     client_expire(sched->epoll_fd);
@@ -74,8 +79,12 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     lease_expire_remote();
     resources_process_hooks(sched->epoll_fd);
     resources_maintain_owned_leases(sched->epoll_fd);
-    resources_auto_place(sched->epoll_fd);
-    group_rebalance(sched->epoll_fd);
+    if (run_placement)
+    {
+        g_state.next_placement_ms = now + LCS_PLACEMENT_INTERVAL_MS;
+        resources_auto_place(sched->epoll_fd);
+        group_rebalance(sched->epoll_fd);
+    }
 }
 
 int scheduler_run_once(const scheduler_t *sched)
