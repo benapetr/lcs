@@ -60,12 +60,11 @@ require_binaries()
 
 node_port()
 {
-    case "$1" in
-        node1) printf '%s\n' "$((PORT_BASE + 1))" ;;
-        node2) printf '%s\n' "$((PORT_BASE + 2))" ;;
-        node3) printf '%s\n' "$((PORT_BASE + 3))" ;;
-        *) die "unknown node $1" ;;
-    esac
+    if [[ "$1" =~ ^node([0-9]+)$ ]]; then
+        printf '%s\n' "$((PORT_BASE + BASH_REMATCH[1]))"
+        return 0
+    fi
+    die "unknown node $1"
 }
 
 node_socket()
@@ -222,4 +221,3 @@ assert_no_vip_ops_in_log()
         die "$node performed VIP manipulation"
     fi
 }
-

@@ -182,6 +182,8 @@ fi
 %{_bindir}/lcs
 %{_sbindir}/lcsd
 %{_unitdir}/lcsd.service
+%{_mandir}/man8/lcs.8*
+%{_mandir}/man8/lcsd.8*
 
 %changelog
 * $(date '+%a %b %d %Y') $MAINTAINER - $APP_VERSION-$RELEASE

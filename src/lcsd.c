@@ -287,7 +287,7 @@ static void daemon_options_init(daemon_options_t *opts)
     opts->config_path = LCS_DEFAULT_CONFIG_PATH;
 }
 
-static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
+static void parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
 {
     static const struct option long_opts[] = {
         { "config",       required_argument, NULL, 'c' },
@@ -323,19 +323,19 @@ static int parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
                 printf("lcsd %s\n", LCS_VERSION);
                 opts->exit_now = true;
                 opts->exit_code = 0;
-                return 0;
+                return;
             case 'h':
                 usage(stdout);
                 opts->exit_now = true;
                 opts->exit_code = 0;
-                return 0;
+                return;
             default:
                 usage(stderr);
-                return 2;
+                opts->exit_now = true;
+                opts->exit_code = 2;
+                return;
         }
     }
-
-    return 0;
 }
 
 static int load_daemon_config(const daemon_options_t *opts)
@@ -526,9 +526,8 @@ int main(int argc, char **argv)
 {
     daemon_options_t opts;
     daemon_options_init(&opts);
-    int arg_rc = parse_daemon_args(argc, argv, &opts);
-    if (arg_rc != 0)
-        return arg_rc;
+    parse_daemon_args(argc, argv, &opts);
+    
     if (opts.exit_now)
         return opts.exit_code;
 

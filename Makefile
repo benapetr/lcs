@@ -8,6 +8,7 @@ prefix ?= /usr
 exec_prefix ?= $(prefix)
 bindir ?= $(exec_prefix)/bin
 sbindir ?= $(exec_prefix)/sbin
+mandir ?= $(prefix)/share/man
 
 COMMON_OBJS = src/config.o src/log.o src/protocol.o src/util.o
 LCSD_OBJS = src/lcsd.o src/vip.o src/cluster.o src/peer.o src/lease.o \
@@ -35,7 +36,10 @@ clean:
 install: all
 	install -d $(DESTDIR)$(sbindir)
 	install -d $(DESTDIR)$(bindir)
+	install -d $(DESTDIR)$(mandir)/man8
 	install -m 0755 lcsd $(DESTDIR)$(sbindir)/lcsd
 	install -m 0755 lcs $(DESTDIR)$(bindir)/lcs
+	install -m 0644 packaging/lcs.8 $(DESTDIR)$(mandir)/man8/lcs.8
+	install -m 0644 packaging/lcsd.8 $(DESTDIR)$(mandir)/man8/lcsd.8
 
 -include src/*.d
