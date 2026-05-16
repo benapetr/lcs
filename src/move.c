@@ -714,3 +714,17 @@ void move_cancel_local_client(int local_slot, uint64_t local_client_id)
         }
     }
 }
+
+void move_cancel_all(int epoll_fd, const char *reason)
+{
+    for (size_t i = 0; i < LCS_MOVE_OP_MAX; i++)
+    {
+        move_runtime_t *move = &g_state.moves[i];
+        if (!move->active)
+            continue;
+        move->final_status = -1;
+        snprintf(move->final_message, sizeof(move->final_message), "%s",
+                 reason ? reason : "operation cancelled");
+        move_complete(epoll_fd, move);
+    }
+}

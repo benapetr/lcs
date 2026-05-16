@@ -17,5 +17,6 @@ bool move_any_active(void);
 bool move_active_for_vip(int vip_idx);
 void move_process(int epoll_fd);
 void move_cancel_local_client(int local_slot, uint64_t local_client_id);
+void move_cancel_all(int epoll_fd, const char *reason);
 
 #endif

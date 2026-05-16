@@ -242,6 +242,8 @@ typedef struct
     uint64_t next_placement_ms;
     uint64_t membership_mask;
     uint64_t membership_since_ms;
+    bool had_quorum;
+    bool no_quorum_state_cleared;
     peer_runtime_t peers[LCS_MAX_NODES];
     inbound_handshake_t handshakes[LCS_HANDSHAKE_MAX];
     local_client_runtime_t local_clients[LCS_LOCAL_CLIENT_MAX];

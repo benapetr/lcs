@@ -230,6 +230,15 @@ void lease_cancel_operations(int vip_idx)
     }
 }
 
+void lease_cancel_all_operations(void)
+{
+    for (size_t i = 0; i < LCS_LEASE_OP_MAX; i++)
+    {
+        if (g_state.lease_ops[i].active)
+            lease_op_clear(&g_state.lease_ops[i]);
+    }
+}
+
 static void lease_rpc_callback(void *ctx, int status, const unsigned char *payload, uint32_t len)
 {
     lease_rpc_context_t *rpc_ctx = ctx;
@@ -477,8 +486,12 @@ void lease_process_operations(int epoll_fd)
         if (!op->active)
             continue;
         lease_process_result(op);
+
+        // if there are still waiting for RPC results from other cluster members and we haven't reached the deadline, wait longer
         if (op->pending_rpcs > 0 && op->deadline_ms && now < op->deadline_ms)
             continue;
+        
+        // if we have reached the deadline or got all RPC results, process the result
         if (op->type == LCS_LEASE_OP_ACQUIRE)
             lease_finish_acquire(epoll_fd, op);
         else if (op->type == LCS_LEASE_OP_RENEW)

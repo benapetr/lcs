@@ -7,6 +7,7 @@
 #include "group.h"
 #include "lease.h"
 #include "log.h"
+#include "move.h"
 #include "peer.h"
 #include "util.h"
 #include "vip.h"
@@ -233,6 +234,29 @@ static void resources_release_local_internal(int vip_idx, int epoll_fd, bool all
         resources_start_hook(vip_idx, LCS_HOOK_POST_STOP, release_epoch, old_lease_id);
 }
 
+static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
+{
+    lcs_log_warn("quorum lost; dropping local VIPs and clearing volatile cluster state");
+
+    move_cancel_all(epoll_fd, "majority quorum is not available");
+
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    {
+        uint64_t failover_count = g_state.resources[i].failover_count;
+        if (g_state.resources[i].owner_node == g_state.self_index &&
+            g_state.resources[i].owner_instance_id == g_state.instance_id)
+            resources_release_local_internal((int)i, epoll_fd, false);
+        resources_cancel_hook((int)i);
+        memset(&g_state.resources[i], 0, sizeof(g_state.resources[i]));
+        g_state.resources[i].owner_node = -1;
+        g_state.resources[i].state = LCS_RES_STOPPED;
+        g_state.resources[i].failover_count = failover_count;
+    }
+
+    lease_cancel_all_operations();
+    g_state.no_quorum_state_cleared = true;
+}
+
 void resources_cleanup_local_vips_without_lease(void)
 {
     if (g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL)
@@ -445,6 +469,16 @@ void resources_auto_place(int epoll_fd)
 void resources_maintain_owned_leases(int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
+    if (!cluster_has_quorum())
+    {
+        if (g_state.had_quorum && !g_state.no_quorum_state_cleared)
+            resources_clear_volatile_state_after_quorum_loss(epoll_fd);
+        return;
+    }
+
+    g_state.had_quorum = true;
+    g_state.no_quorum_state_cleared = false;
+
     for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
         resource_runtime_t *res = &g_state.resources[i];
@@ -454,12 +488,6 @@ void resources_maintain_owned_leases(int epoll_fd)
              res->state != LCS_RES_STARTING &&
              res->state != LCS_RES_STOPPING))
             continue;
-        if (!cluster_has_quorum())
-        {
-            lcs_log_warn("dropping VIP %s because quorum is lost", g_state.cfg.vips[i].name);
-            resources_release_local_internal((int)i, epoll_fd, false);
-            continue;
-        }
         if (res->lease_deadline_ms && now >= res->lease_deadline_ms)
         {
             lcs_log_warn("dropping VIP %s because local lease expired", g_state.cfg.vips[i].name);

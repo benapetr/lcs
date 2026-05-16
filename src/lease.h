@@ -36,6 +36,7 @@ bool lease_operation_active(int vip_idx);
 // Drop any in-flight acquire, renew, or release operation for the VIP. Used
 // when higher-level resource state changes make the outstanding operation stale.
 void lease_cancel_operations(int vip_idx);
+void lease_cancel_all_operations(void);
 
 void lease_process_operations(int epoll_fd);
 
