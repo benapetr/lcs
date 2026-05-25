@@ -95,6 +95,45 @@ A hook must exit with status `0` to be considered successful. If `pre_start` fai
 
 # Running the daemon
 
+## `lcsd` command line
+
+Usage:
+
+```
+lcsd [--version]
+lcsd [-c CONFIG|--config CONFIG] [--daemonize] [--no-syslog] [--no-timestamp] [-v|--verbose] [-vv] [-vvv] [-vvvv]
+```
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `-c CONFIG`, `--config CONFIG` | Read daemon configuration from `CONFIG`. If omitted, the compiled default is `/etc/lcs/lcs.conf`, but production units should pass this explicitly. |
+| `--daemonize` | Fork into the background. Foreground mode is the default and is recommended under systemd. |
+| `--no-syslog` | Disable syslog output. Use this under systemd to avoid duplicate log lines because journald already captures foreground stderr. |
+| `--no-timestamp` | Disable timestamps in foreground stderr output. Use this under systemd because journald already adds timestamps. |
+| `-v`, `--verbose` | Increase log verbosity by one level. Can be repeated as `-vv`, `-vvv`, or `-vvvv`. |
+| `--version`, `-V` | Print the daemon version and exit. |
+| `--help`, `-h` | Print usage information and exit. |
+
+Verbosity levels are cumulative:
+
+| Level | Example | Typical use |
+|-------|---------|-------------|
+| `0` | *(no flag)* | Normal operational logs. |
+| `1` | `-v` | Lease decisions, peer state, and useful debug messages. |
+| `2` | `-vv` | Placement decisions and more detailed state-machine messages. |
+| `3` | `-vvv` | Lower-level peer/RPC debugging. |
+| `4` | `-vvvv` | Very noisy scheduler and placement skip details. |
+
+Exit status:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Clean exit, `--help`, or `--version`. |
+| `1` | Runtime startup failure, such as invalid config, bind failure, daemonization failure, or setup failure. |
+| `2` | Invalid command-line arguments. |
+
 ## Systemd (recommended)
 
 The package installs a systemd unit that runs `lcsd --no-syslog --no-timestamp` as a simple service. No pidfile is required. `--no-syslog` avoids duplicate journald entries because systemd already captures foreground stderr. Enable and start the service with:
@@ -105,7 +144,7 @@ systemctl enable --now lcsd
 
 ## Foreground / debugging
 
-Running `lcsd` without `--daemonize` keeps the process in the foreground and writes logs to stdout:
+Running `lcsd` without `--daemonize` keeps the process in the foreground and writes logs to stderr:
 
 ```
 lcsd --config /etc/lcs/lcs.conf
@@ -119,13 +158,42 @@ Use `--verbose` for detailed debug output covering state changes, quorum events,
 lcsd --daemonize --config /etc/lcs/lcs.conf
 ```
 
-A `pidfile` path must be set in the configuration when running in this mode.
+Set `pidfile` in the configuration if you want `lcsd` to write a pidfile in this mode.
 
 ---
 
 # Local CLI
 
 `lcs` communicates with the local `lcsd` through the configured Unix domain socket (default `/run/lcs/lcsd.sock`). All `lcs` commands target the local daemon and do not connect directly to cluster TCP ports on other nodes.
+
+## `lcs` command line
+
+Usage:
+
+```
+lcs [--version]
+lcs [-s SOCKET|--socket SOCKET] status
+lcs [-s SOCKET|--socket SOCKET] nrpe
+lcs [-s SOCKET|--socket SOCKET] move VIP NODE
+lcs [-s SOCKET|--socket SOCKET] clear-conflict VIP
+```
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `-s SOCKET`, `--socket SOCKET` | Connect to this local `lcsd` Unix socket instead of `/run/lcs/lcsd.sock`. Useful for tests, multiple local daemons, or non-default packaging paths. |
+| `--version`, `-V` | Print the CLI version and exit. |
+| `--help`, `-h` | Print usage information and exit. |
+
+Commands:
+
+| Command | Description |
+|---------|-------------|
+| `status` | Print cluster quorum, node status, VIP state, ownership, epochs, group metadata, and conflict details as seen by the local daemon. |
+| `nrpe` | Print one monitoring-plugin style line and exit with Nagios-compatible status codes. |
+| `move VIP NODE` | Request a controlled cluster-level handoff of `VIP` to `NODE`. The target must be an online `full-member`. |
+| `clear-conflict VIP` | Clear a VIP conflict state after an administrator has inspected and fixed the underlying address conflict. |
 
 `lcs status` shows how long the observed cluster membership has stayed in the current shape. This timer resets whenever any node changes between online and offline, including `3/3 -> 2/3`, `2/3 -> 3/3`, or `2/3` with one offline node changing to `2/3` with a different offline node.
 
@@ -148,6 +216,15 @@ Example:
 ```
 OK - quorum=yes votes=3/3 need=2 membership_for=2h 13m 04s nodes=3/3 resources=1/1 active
 ```
+
+General `lcs` exit status:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Command succeeded. For `nrpe`, this means OK. |
+| `1` | Command reached the daemon but failed, or status could not be fetched. For `nrpe`, this means WARNING. |
+| `2` | Invalid command-line arguments. For `nrpe`, this means CRITICAL. |
+| `3` | Used by `nrpe` for UNKNOWN when local status cannot be read. |
 
 ---
 
