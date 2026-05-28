@@ -69,6 +69,25 @@ static int set_string(char *dst, size_t dst_len, const char *value)
     return 0;
 }
 
+static int set_vip_interface(lcs_vip_config_t *vip, const char *value)
+{
+    const char *at = strchr(value, '@');
+    size_t len = at ? (size_t)(at - value) : strlen(value);
+    if (len == 0 || len >= sizeof(vip->interface))
+        return -1;
+
+    memcpy(vip->interface, value, len);
+    vip->interface[len] = '\0';
+    if (at)
+    {
+        if (strlen(value) >= sizeof(vip->interface_original))
+            return -1;
+        snprintf(vip->interface_original, sizeof(vip->interface_original), "%s", value);
+        vip->interface_normalized = true;
+    }
+    return 0;
+}
+
 static int parse_role(const char *value, lcs_node_role_t *role)
 {
     if (strcmp(value, "full-member") == 0)
@@ -405,7 +424,7 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
             return set_string(vip->address, sizeof(vip->address), value);
 
         if (strcmp(key, "interface") == 0)
-            return set_string(vip->interface, sizeof(vip->interface), value);
+            return set_vip_interface(vip, value);
 
         if (strcmp(key, "pre_start") == 0)
             return set_string(vip->pre_start, sizeof(vip->pre_start), value);

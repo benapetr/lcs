@@ -32,6 +32,7 @@ typedef struct
     char group_name[LCS_NAME_MAX + 1];
     char address[LCS_ADDR_MAX + 1];
     char interface[LCS_NAME_MAX + 1];
+    char interface_original[LCS_ADDR_MAX + 1];
     char pre_start[LCS_PATH_MAX + 1];
     char post_start[LCS_PATH_MAX + 1];
     char pre_stop[LCS_PATH_MAX + 1];
@@ -39,6 +40,7 @@ typedef struct
     int group_idx;
     uint32_t priority;
     bool priority_set;
+    bool interface_normalized;
 } lcs_vip_config_t;
 
 typedef struct

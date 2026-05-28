@@ -421,6 +421,15 @@ static void log_startup_config(const daemon_options_t *opts, bool syslog_enabled
                  g_state.cfg.probe_timeout_ms,
                  g_state.cfg.hook_timeout_ms,
                  *g_state.cfg.secret ? "true" : "false");
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    {
+        const lcs_vip_config_t *vip = &g_state.cfg.vips[i];
+        if (vip->interface_normalized)
+        {
+            lcs_log_warn("VIP %s interface %s normalized to %s; use the kernel interface name without @parent in config",
+                         vip->name, vip->interface_original, vip->interface);
+        }
+    }
 }
 
 static int setup_runtime(int *epoll_fd)

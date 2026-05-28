@@ -75,7 +75,7 @@ For `keep-together` groups, a manual `lcs move` request for any group member is 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `address` | yes | — | VIP address in CIDR notation, e.g. `192.0.2.10/32` or `2001:db8::10/128`. |
-| `interface` | yes | — | Linux interface on which the VIP is added and probed. |
+| `interface` | yes | — | Linux interface on which the VIP is added and probed. `ip` display names like `bond1.3675@bond1` are accepted and normalized to the kernel interface name before `@`, for example `bond1.3675`. |
 | `group` | no | — | Group name from a `[group NAME]` section. |
 | `priority` | no | inverse sorted VIP index | Positive integer priority inside the group. Higher numbers are higher priority. Priorities must be unique within a group. |
 | `pre_start` | no | — | Absolute path to a script run after the lease is obtained but before the conflict check and VIP add. |

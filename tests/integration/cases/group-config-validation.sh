@@ -22,6 +22,35 @@ run_bad_config()
     }
 }
 
+run_good_config_starts()
+{
+    local name="$1"
+    local expected="$2"
+    local expected2="$3"
+    local cfg="$TEST_TMP/$name.conf"
+    shift 3
+    cat >"$cfg"
+    local out="$TEST_TMP/$name.out"
+    LCS_VIP_DRY_RUN=1 "$LCSD" -c "$cfg" --no-syslog --no-timestamp >"$out" 2>&1 &
+    local pid=$!
+    sleep 0.4
+    if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid" 2>/dev/null || true
+        cat "$out" >&2
+        die "$name unexpectedly failed validation/startup"
+    fi
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    grep -Fq "$expected" "$out" || {
+        cat "$out" >&2
+        die "$name did not print expected output: $expected"
+    }
+    grep -Fq "$expected2" "$out" || {
+        cat "$out" >&2
+        die "$name did not print expected output: $expected2"
+    }
+}
+
 prepare_cluster
 
 run_bad_config duplicate-priority "duplicate vip priority in group" <<EOF
@@ -67,6 +96,26 @@ address = 127.0.0.1
 group = missing
 address = 127.0.0.201/32
 interface = lo
+EOF
+
+run_good_config_starts interface-display-name \
+    "interface bond1.3675@bond1 normalized to bond1.3675" \
+    "dry-run VIP del 127.0.0.201/32 on bond1.3675" <<EOF
+[cluster]
+name = integration
+node = node1
+bind = 127.0.0.1
+port = $(node_port node1)
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[vip vip1]
+address = 127.0.0.201/32
+interface = bond1.3675@bond1
 EOF
 
 log "group config validation regression passed"

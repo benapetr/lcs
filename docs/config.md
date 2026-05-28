@@ -132,6 +132,8 @@ mode = best-effort
 address = 198.51.100.50/24
 
 # REQUIRED: Linux interface used for this VIP.
+# If copied from "ip addr", display names like bond1.3675@bond1 are accepted
+# and normalized to the kernel interface name before "@", for example bond1.3675.
 interface = eth0
 
 # OPTIONAL: placement group name. Must match a [group NAME] section.
