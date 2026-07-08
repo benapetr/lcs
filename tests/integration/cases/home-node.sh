@@ -36,7 +36,7 @@ wait_for_quorum node3
 wait_for_owner node1 node2
 
 log "manual move away from home blocks automatic home rebalance"
-"$LCS" -s "$(node_socket node1)" move vip1 node1
+"$LCS" -s "$(node_socket node1)" resource move vip1 node1
 wait_for_owner node1 node1
 wait_until 8 "vip1 home block visible" vip_home_blocked
 
@@ -44,7 +44,7 @@ sleep 2
 wait_for_owner node1 node1
 
 log "manual move back home clears automatic home rebalance block"
-"$LCS" -s "$(node_socket node1)" move vip1 node2
+"$LCS" -s "$(node_socket node1)" resource move vip1 node2
 wait_for_owner node1 node2
 wait_for_owner node2 node2
 

@@ -1,4 +1,4 @@
-.TH LCS 8 "2026-05-11" "lcs 1.0.4" "System Administration"
+.TH LCS 8 "2026-05-11" "lcs 1.1.0" "System Administration"
 .SH NAME
 lcs \- command line client for the Lightweight Cluster Service daemon
 .SH SYNOPSIS
@@ -18,16 +18,41 @@ lcs \- command line client for the Lightweight Cluster Service daemon
 .RB [ \-s
 .IR SOCKET | \-\-socket
 .IR SOCKET ]
+.B resource
+.B list
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.B resource
 .B move
-.I VIP
+.I RESOURCE
 .I NODE
 .br
 .B lcs
 .RB [ \-s
 .IR SOCKET | \-\-socket
 .IR SOCKET ]
+.B resource
+.B start
+.I RESOURCE
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.B resource
+.B stop
+.I RESOURCE
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.B resource
 .B clear-conflict
-.I VIP
+.I RESOURCE
 .br
 .B lcs
 .B \-\-version
@@ -63,9 +88,12 @@ Print a single monitoring-plugin style status line and exit with Nagios
 compatible status codes. Exit status is 0 for OK, 1 for WARNING, 2 for
 CRITICAL, and 3 for UNKNOWN.
 .TP
-.BI move " VIP NODE"
+.B resource list
+Print a compact resource-only view.
+.TP
+.BI resource " move RESOURCE NODE"
 Request a controlled cluster-level move of
-.I VIP
+.I RESOURCE
 to
 .IR NODE .
 The old owner is asked to release the VIP, the cluster records a newer lease
@@ -75,9 +103,19 @@ the highest-priority group member so the whole group moves consistently.
 Moving a VIP away from its configured home node blocks automatic return until
 a later manual move back to that home node succeeds.
 .TP
-.BI clear-conflict " VIP"
+.BI resource " start RESOURCE"
+Clear an administrative stop and allow normal placement to start
+.IR RESOURCE .
+.TP
+.BI resource " stop RESOURCE"
+Administratively stop
+.I RESOURCE
+in cluster memory and release it through the normal stop path, including hooks.
+The stop is not persisted across a full cluster restart.
+.TP
+.BI resource " clear-conflict RESOURCE"
 Clear the conflict state for
-.I VIP
+.I RESOURCE
 after an administrator has inspected and resolved the underlying IP conflict.
 .SH EXAMPLES
 .TP
@@ -93,7 +131,13 @@ lcs -s /tmp/lcs-node1.sock status
 .TP
 Move a VIP to another full-member node:
 .EX
-lcs move vip1 node2
+lcs resource move vip1 node2
+.EE
+.TP
+Temporarily stop and start a resource:
+.EX
+lcs resource stop vip1
+lcs resource start vip1
 .EE
 .TP
 Run a monitoring check:

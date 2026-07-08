@@ -96,19 +96,23 @@ Resources can be assigned to optional groups:
 
 Priority is local to each group. Higher numbers are higher priority. If a priority is not set, LCS derives it from inverse sorted resource order, so earlier sorted resources get higher default priority.
 
-Automatic rebalance uses the same safe move path as `lcs move`: the old owner releases first, quorum records a newer lease epoch, and the target activates only after it obtains a majority lease. Only one automatic rebalance move runs at a time.
+Automatic rebalance uses the same safe move path as `lcs resource move`: the old owner releases first, quorum records a newer lease epoch, and the target activates only after it obtains a majority lease. Only one automatic rebalance move runs at a time.
 
-For `keep-together` groups, moving any member through `lcs move` moves the highest-priority group member first. Other group members then follow through normal rebalance.
+For `keep-together` groups, moving any member through `lcs resource move` moves the highest-priority group member first. Other group members then follow through normal rebalance.
 
 # Home nodes
 
 Each resource can optionally set `home_node` to the name of a full-member node. When configured and not blocked, LCS places the resource on that node whenever it is online. Resources without a home node keep the existing behavior: after placement or failover, they remain wherever they last landed unless group rebalance or another failover moves them.
 
-Manual `lcs move VIP NODE` to a non-home node blocks automatic return for that resource. A later manual move back to the configured home node clears the block.
+Manual `lcs resource move RESOURCE NODE` to a non-home node blocks automatic return for that resource. A later manual move back to the configured home node clears the block.
+
+# Resource control
+
+Use `lcs resource list` for a compact resource-only view. `lcs resource stop RESOURCE` marks a resource administratively stopped in cluster memory and releases it through the normal stop path, including hooks. It stays stopped until `lcs resource start RESOURCE` is called, or until the whole cluster is restarted.
 
 # Observability
 
-lcs tool can be used to display cluster status, run simple monitoring checks, move resources from one node to another one, or acknowledge conflicting states
+lcs tool can be used to display cluster status, list resources, run simple monitoring checks, move resources from one node to another one, temporarily stop/start resources, or acknowledge conflicting states
 ```
 # lcs status
 Cluster

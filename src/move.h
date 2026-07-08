@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 
-// This handles the VIP move operation (usually initiated by lcs move via CLU)
+// This handles the VIP move operation (usually initiated by lcs resource move via CLI)
 
 int move_start_local_client(int epoll_fd, int local_slot, uint32_t client_seq, const void *payload, uint32_t len);
 int move_start_peer_request(int epoll_fd, int source_node_idx, uint32_t peer_seq, const void *payload, uint32_t len);

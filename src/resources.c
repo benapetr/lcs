@@ -244,7 +244,9 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
     {
         uint64_t failover_count = g_state.resources[i].failover_count;
         uint64_t home_generation = g_state.resources[i].home_generation;
+        uint64_t disabled_generation = g_state.resources[i].disabled_generation;
         bool home_blocked = g_state.resources[i].home_blocked;
+        bool disabled = g_state.resources[i].disabled;
         if (g_state.resources[i].owner_node == g_state.self_index &&
             g_state.resources[i].owner_instance_id == g_state.instance_id)
             resources_release_local_internal((int)i, epoll_fd, false);
@@ -254,7 +256,9 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
         g_state.resources[i].state = LCS_RES_STOPPED;
         g_state.resources[i].failover_count = failover_count;
         g_state.resources[i].home_generation = home_generation;
+        g_state.resources[i].disabled_generation = disabled_generation;
         g_state.resources[i].home_blocked = home_blocked;
+        g_state.resources[i].disabled = disabled;
     }
 
     lease_cancel_all_operations();
@@ -327,6 +331,12 @@ int resources_activate_local(int vip_idx, uint64_t epoch, int epoll_fd)
     }
     resource_runtime_t *res = &g_state.resources[vip_idx];
     uint64_t now = lcs_now_ms();
+    if (res->disabled)
+    {
+        lcs_log_debug("refusing to activate VIP %s because it is administratively stopped",
+                      g_state.cfg.vips[vip_idx].name);
+        return -1;
+    }
     if (res->state == LCS_RES_CONFLICT)
     {
         lcs_log_warn("refusing to activate VIP %s because it is in conflict state", g_state.cfg.vips[vip_idx].name);
@@ -411,6 +421,46 @@ void resources_graceful_shutdown(int epoll_fd)
         resources_cancel_hook((int)i);
 }
 
+int resources_set_disabled(int vip_idx, bool disabled, int epoll_fd, char *message, size_t message_len)
+{
+    if (vip_idx < 0 || (size_t)vip_idx >= g_state.cfg.vip_count)
+    {
+        snprintf(message, message_len, "unknown resource");
+        return -1;
+    }
+
+    resource_runtime_t *res = &g_state.resources[vip_idx];
+    if (res->disabled == disabled)
+    {
+        snprintf(message, message_len, "resource already %s",
+                 disabled ? "stopped" : "started");
+        return 0;
+    }
+
+    uint64_t now = lcs_now_ms();
+    res->disabled = disabled;
+    res->disabled_generation = now > res->disabled_generation ?
+                               now : res->disabled_generation + 1;
+    res->next_activation_attempt_ms = 0;
+    if (disabled)
+    {
+        lcs_log_info("admin stopped resource %s", g_state.cfg.vips[vip_idx].name);
+        if (res->owner_node == g_state.self_index &&
+            res->owner_instance_id == g_state.instance_id &&
+            (res->state == LCS_RES_ACTIVE ||
+             res->state == LCS_RES_STARTING ||
+             res->state == LCS_RES_STOPPING))
+            resources_release_local(vip_idx, epoll_fd);
+        snprintf(message, message_len, "resource stop requested");
+    } else
+    {
+        lcs_log_info("admin started resource %s", g_state.cfg.vips[vip_idx].name);
+        snprintf(message, message_len, "resource start requested");
+    }
+    peer_broadcast_state_sync(epoll_fd);
+    return 0;
+}
+
 void resources_auto_place(int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
@@ -427,6 +477,12 @@ void resources_auto_place(int epoll_fd)
     for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
         resource_runtime_t *res = &g_state.resources[i];
+        if (res->disabled)
+        {
+            lcs_log_debug4("auto-place skip VIP %s: resource is administratively stopped",
+                           g_state.cfg.vips[i].name);
+            continue;
+        }
         if (res->owner_node >= 0)
         {
             lcs_log_debug4("auto-place skip VIP %s: owner is %s state=%u epoch=%llu",
@@ -484,6 +540,7 @@ void resources_home_rebalance(int epoll_fd)
         const lcs_vip_config_t *vip = &g_state.cfg.vips[i];
         resource_runtime_t *res = &g_state.resources[i];
         if (vip->home_node_idx < 0 ||
+            res->disabled ||
             res->home_blocked ||
             res->state != LCS_RES_ACTIVE ||
             res->owner_node < 0 ||
@@ -515,6 +572,17 @@ void resources_maintain_owned_leases(int epoll_fd)
     for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
         resource_runtime_t *res = &g_state.resources[i];
+        if (res->disabled &&
+            res->owner_node == g_state.self_index &&
+            res->owner_instance_id == g_state.instance_id &&
+            (res->state == LCS_RES_ACTIVE ||
+             res->state == LCS_RES_STARTING ||
+             res->state == LCS_RES_STOPPING))
+        {
+            lcs_log_info("releasing administratively stopped VIP %s", g_state.cfg.vips[i].name);
+            resources_release_local((int)i, epoll_fd);
+            continue;
+        }
         if (res->owner_node != g_state.self_index ||
             res->owner_instance_id != g_state.instance_id ||
             (res->state != LCS_RES_ACTIVE &&

@@ -100,6 +100,8 @@ int cluster_encode_state(unsigned char *payload, size_t cap, size_t *len)
             lcs_buf_put_u64(&w, res->failover_count) != 0 ||
             lcs_buf_put_u64(&w, res->home_generation) != 0 ||
             lcs_buf_put_u8(&w, res->home_blocked ? 1 : 0) != 0 ||
+            lcs_buf_put_u64(&w, res->disabled_generation) != 0 ||
+            lcs_buf_put_u8(&w, res->disabled ? 1 : 0) != 0 ||
             lcs_buf_put_fixed_string(&w, res->conflict_reason, LCS_REASON_MAX + 1) != 0)
             return -1;
     }
@@ -126,8 +128,8 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
     for (uint16_t n = 0; n < count; n++)
     {
         uint16_t id, owner;
-        uint8_t state, home_blocked;
-        uint64_t owner_instance_id, epoch, lease_id, remaining_ms, failover_count, home_generation;
+        uint8_t state, home_blocked, disabled;
+        uint64_t owner_instance_id, epoch, lease_id, remaining_ms, failover_count, home_generation, disabled_generation;
         char reason[LCS_REASON_MAX + 1];
         if (lcs_buf_get_u16(&r, &id) != 0 ||
             lcs_buf_get_u16(&r, &owner) != 0 ||
@@ -139,6 +141,8 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             lcs_buf_get_u64(&r, &failover_count) != 0 ||
             lcs_buf_get_u64(&r, &home_generation) != 0 ||
             lcs_buf_get_u8(&r, &home_blocked) != 0 ||
+            lcs_buf_get_u64(&r, &disabled_generation) != 0 ||
+            lcs_buf_get_u8(&r, &disabled) != 0 ||
             lcs_buf_get_fixed_string(&r, reason, sizeof(reason), LCS_REASON_MAX + 1) != 0 ||
             id >= g_state.cfg.vip_count)
             return -1;
@@ -148,6 +152,11 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
         {
             res->home_generation = home_generation;
             res->home_blocked = home_blocked != 0;
+        }
+        if (disabled_generation > res->disabled_generation)
+        {
+            res->disabled_generation = disabled_generation;
+            res->disabled = disabled != 0;
         }
         if (failover_count > res->failover_count)
             res->failover_count = failover_count;

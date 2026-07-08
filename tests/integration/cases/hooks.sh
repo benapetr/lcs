@@ -105,7 +105,7 @@ wait_until 10 "node1 pre-start hook" hook_has "node=node1 vip=vip1 event=pre-sta
 wait_until 10 "node1 post-start hook" hook_has "node=node1 vip=vip1 event=post-start"
 
 log "moving vip1 from node1 to node2 through node1 CLI"
-"$LCS" -s "$(node_socket node1)" move vip1 node2
+"$LCS" -s "$(node_socket node1)" resource move vip1 node2
 
 wait_for_owner node1 node2
 wait_for_owner node2 node2

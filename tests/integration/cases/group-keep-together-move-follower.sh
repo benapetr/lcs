@@ -93,7 +93,7 @@ wait_until 15 "vip1 owner node1 as seen by node3" vip_owner_has node3 vip1 node1
 wait_until 15 "vip2 owner node1 as seen by node3" vip_owner_has node3 vip2 node1
 
 log "moving follower vip2 to node2 through node1 CLI"
-"$LCS" -s "$(node_socket node1)" move vip2 node2
+"$LCS" -s "$(node_socket node1)" resource move vip2 node2
 
 wait_until 15 "vip1 owner node2" vip_owner_has node1 vip1 node2
 wait_until 15 "vip2 owner node2" vip_owner_has node1 vip2 node2

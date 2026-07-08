@@ -64,11 +64,11 @@ Configuration uses an INI-style file. The same format is used on every node; onl
 
 `anti-affinity` prefers VIPs in the group on different full-members. In `strict` mode, lower-priority VIPs remain down when there are not enough online full-members. In `best-effort` mode, LCS prefers separation but may place multiple VIPs on the same node if needed.
 
-Group placement is enforced during automatic VIP placement and during periodic rebalance. Rebalance is deterministic: only the first online full-member by sorted node name starts automatic group moves, and only one rebalance move runs at a time. Automatic rebalance uses the same controlled move machinery as `lcs move`, so the old owner releases first, the cluster records a newer lease epoch, and the target activates only after it obtains a majority lease.
+Group placement is enforced during automatic VIP placement and during periodic rebalance. Rebalance is deterministic: only the first online full-member by sorted node name starts automatic group moves, and only one rebalance move runs at a time. Automatic rebalance uses the same controlled move machinery as `lcs resource move`, so the old owner releases first, the cluster records a newer lease epoch, and the target activates only after it obtains a majority lease.
 
 For best-effort anti-affinity, if multiple group VIPs temporarily run on one node because too few full-members were online, LCS moves lower-priority VIPs away when another full-member becomes available. For keep-together, if grouped VIPs end up split across full-members, LCS moves lower-priority VIPs to the active owner of the highest-priority grouped VIP.
 
-For `keep-together` groups, a manual `lcs move` request for any group member is redirected to the highest-priority member first. This prevents a lower-priority follower from being moved away and then immediately moved back by rebalance.
+For `keep-together` groups, a manual `lcs resource move` request for any group member is redirected to the highest-priority member first. This prevents a lower-priority follower from being moved away and then immediately moved back by rebalance.
 
 ## `[vip NAME]`
 
@@ -84,7 +84,7 @@ For `keep-together` groups, a manual `lcs move` request for any group member is 
 | `pre_stop` | no | — | Absolute path to a script run before planned VIP removal. |
 | `post_stop` | no | — | Absolute path to a script run after planned VIP removal. |
 
-If `home_node` is set, LCS places and rebalances the VIP back to that node whenever the node is online. If `home_node` is not set, ungrouped VIPs keep the existing behavior and remain wherever they were last placed unless failover moves them. A manual `lcs move` away from the home node blocks automatic return for that VIP; a later manual move back to the configured home node clears the block.
+If `home_node` is set, LCS places and rebalances the VIP back to that node whenever the node is online. If `home_node` is not set, ungrouped VIPs keep the existing behavior and remain wherever they were last placed unless failover moves them. A manual `lcs resource move` away from the home node blocks automatic return for that VIP; a later manual move back to the configured home node clears the block.
 
 ### VIP hooks
 
@@ -177,8 +177,11 @@ Usage:
 lcs [--version]
 lcs [-s SOCKET|--socket SOCKET] status
 lcs [-s SOCKET|--socket SOCKET] nrpe
-lcs [-s SOCKET|--socket SOCKET] move VIP NODE
-lcs [-s SOCKET|--socket SOCKET] clear-conflict VIP
+lcs [-s SOCKET|--socket SOCKET] resource list
+lcs [-s SOCKET|--socket SOCKET] resource move RESOURCE NODE
+lcs [-s SOCKET|--socket SOCKET] resource start RESOURCE
+lcs [-s SOCKET|--socket SOCKET] resource stop RESOURCE
+lcs [-s SOCKET|--socket SOCKET] resource clear-conflict RESOURCE
 ```
 
 Options:
@@ -195,8 +198,11 @@ Commands:
 |---------|-------------|
 | `status` | Print cluster quorum, node status, VIP state, ownership, epochs, group metadata, and conflict details as seen by the local daemon. |
 | `nrpe` | Print one monitoring-plugin style line and exit with Nagios-compatible status codes. |
-| `move VIP NODE` | Request a controlled cluster-level handoff of `VIP` to `NODE`. The target must be an online `full-member`. |
-| `clear-conflict VIP` | Clear a VIP conflict state after an administrator has inspected and fixed the underlying address conflict. |
+| `resource list` | Print a compact resource-only view. |
+| `resource move RESOURCE NODE` | Request a controlled cluster-level handoff of `RESOURCE` to `NODE`. The target must be an online `full-member`. |
+| `resource start RESOURCE` | Clear an administrative stop and allow normal placement again. |
+| `resource stop RESOURCE` | Administratively stop a resource in cluster memory and release it through the normal stop path, including hooks. The stop is not persisted across a full cluster restart. |
+| `resource clear-conflict RESOURCE` | Clear a resource conflict state after an administrator has inspected and fixed the underlying address conflict. |
 
 `lcs status` shows how long the observed cluster membership has stayed in the current shape. This timer resets whenever any node changes between online and offline, including `3/3 -> 2/3`, `2/3 -> 3/3`, or `2/3` with one offline node changing to `2/3` with a different offline node.
 
@@ -293,9 +299,9 @@ If the entire cluster restarts and all in-memory epochs are lost, the cluster be
 
 ---
 
-# Moving a VIP
+# Moving a Resource
 
-The `lcs move` command performs a controlled cluster-level handoff. It does not directly add the VIP on the target node.
+The `lcs resource move` command performs a controlled cluster-level handoff. It does not directly add the VIP on the target node.
 
 When a move is requested, the cluster:
 
@@ -308,6 +314,14 @@ When a move is requested, the cluster:
 7. Allows the target node to complete the normal VIP activation safety checks before adding the VIP.
 
 The target node activates the VIP only after it holds a current majority lease for the new epoch and the previous owner has either confirmed release or its old lease has expired.
+
+---
+
+# Starting and Stopping a Resource
+
+`lcs resource stop RESOURCE` sets an in-memory administrative stop flag for the resource and broadcasts it to the cluster. If the resource is active, the owner releases it using the same stop path as planned handoff and shutdown, including `pre_stop` and `post_stop` hooks. Automatic placement and rebalance skip the resource while the flag is set.
+
+`lcs resource start RESOURCE` clears that flag and allows normal placement to start the resource again. The flag is intentionally not persisted; if the whole cluster is restarted, resources start according to the configuration and normal placement rules.
 
 ---
 

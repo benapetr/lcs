@@ -34,8 +34,8 @@ Check status through any node socket:
 Move the VIP between full members:
 
 ```sh
-./lcs move vip1 node2 -s /tmp/lcs-node1.sock
-./lcs move vip1 node1 -s /tmp/lcs-node2.sock
+./lcs resource move vip1 node2 -s /tmp/lcs-node1.sock
+./lcs resource move vip1 node1 -s /tmp/lcs-node2.sock
 ```
 
 The VIP uses `lo`, so ARP/ND conflict checks and announcements are skipped.

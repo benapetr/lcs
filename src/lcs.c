@@ -19,8 +19,11 @@ static void usage(FILE *out)
     fprintf(out, "usage: lcs [--version]\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] status\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] nrpe\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] move VIP NODE\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] clear-conflict VIP\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource list\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource move RESOURCE NODE\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource start RESOURCE\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource stop RESOURCE\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource clear-conflict RESOURCE\n");
 }
 
 static int connect_socket(const char *path)
@@ -90,6 +93,7 @@ typedef struct
     char reason[LCS_REASON_MAX + 1];
     uint32_t priority;
     uint8_t home_blocked;
+    uint8_t disabled;
 } status_vip_t;
 
 typedef struct
@@ -171,6 +175,7 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
                                   &vip->priority,
                                   vip->home_node, sizeof(vip->home_node),
                                   &vip->home_blocked,
+                                  &vip->disabled,
                                   vip->reason,
                                   sizeof(vip->reason)) != 0 ||
             vip->id >= status->vip_count)
@@ -224,10 +229,49 @@ static int cmd_status(const char *socket_path)
             printf(" group=%s priority=%u", vip->group, vip->priority);
         if (*vip->home_node)
             printf(" home=%s%s", vip->home_node, vip->home_blocked ? " blocked=yes" : "");
+        if (vip->disabled)
+            printf(" disabled=yes");
         printf("\n");
         if (vip->state == LCS_RES_CONFLICT && *vip->reason) {
             printf("    conflict: %s\n", vip->reason);
         }
+    }
+    return 0;
+}
+
+static int cmd_resource_list(const char *socket_path)
+{
+    status_snapshot_t status;
+    if (fetch_status(socket_path, &status) != 0)
+        return 1;
+
+    char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1];
+    memset(node_names, 0, sizeof(node_names));
+    for (uint16_t i = 0; i < status.node_count; i++)
+    {
+        status_node_t *node = &status.nodes[i];
+        snprintf(node_names[node->id], sizeof(node_names[node->id]), "%s", node->name);
+    }
+
+    for (uint16_t i = 0; i < status.vip_count; i++)
+    {
+        status_vip_t *vip = &status.vips[i];
+        const char *owner = "-";
+        if (vip->owner_node != UINT16_MAX && vip->owner_node < status.node_count)
+            owner = node_names[vip->owner_node];
+
+        printf("%s state=%s owner=%s address=%s dev=%s",
+               vip->name, state_name(vip->state), owner,
+               vip->address, vip->interface);
+        if (vip->disabled)
+            printf(" disabled=yes");
+        if (*vip->group)
+            printf(" group=%s priority=%u", vip->group, vip->priority);
+        if (*vip->home_node)
+            printf(" home=%s%s", vip->home_node, vip->home_blocked ? " home_blocked=yes" : "");
+        if (vip->state == LCS_RES_CONFLICT && *vip->reason)
+            printf(" conflict=\"%s\"", vip->reason);
+        printf("\n");
     }
     return 0;
 }
@@ -243,6 +287,8 @@ static int cmd_nrpe(const char *socket_path)
 
     uint16_t online_nodes = 0;
     uint16_t down_resources = 0;
+    uint16_t active_resources = 0;
+    uint16_t disabled_resources = 0;
     char down_detail[512] = "";
     size_t down_len = 0;
     for (uint16_t i = 0; i < status.node_count; i++)
@@ -253,8 +299,16 @@ static int cmd_nrpe(const char *socket_path)
     for (uint16_t i = 0; i < status.vip_count; i++)
     {
         status_vip_t *vip = &status.vips[i];
-        if (vip->state == LCS_RES_ACTIVE)
+        if (vip->disabled)
+        {
+            disabled_resources++;
             continue;
+        }
+        if (vip->state == LCS_RES_ACTIVE)
+        {
+            active_resources++;
+            continue;
+        }
         down_resources++;
         int n = snprintf(down_detail + down_len, sizeof(down_detail) - down_len,
                          "%s%s=%s", down_len ? "," : "", vip->name,
@@ -282,7 +336,9 @@ static int cmd_nrpe(const char *socket_path)
            state, status.has_quorum ? "yes" : "no", status.votes_seen,
            status.node_count, status.quorum_needed, membership_for,
            online_nodes, status.node_count,
-           (uint16_t)(status.vip_count - down_resources), status.vip_count);
+           active_resources, status.vip_count);
+    if (disabled_resources > 0)
+        printf(" disabled=%u", disabled_resources);
     if (down_resources > 0)
         printf(" down=%s", down_detail);
     printf("\n");
@@ -331,6 +387,62 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip)
     if (lcs_decode_simple_resp(payload, hdr.length, &status, message, sizeof(message)) != 0)
     {
         fprintf(stderr, "lcs: invalid clear-conflict response payload\n");
+        return 1;
+    }
+    if (status != 0)
+    {
+        fprintf(stderr, "lcs: %s\n", message);
+        return 1;
+    }
+    printf("%s\n", message);
+    return 0;
+}
+
+static int cmd_resource_control(const char *socket_path, const char *resource,
+                                uint16_t req_type, uint16_t resp_type,
+                                const char *action)
+{
+    int fd = connect_socket(socket_path);
+    if (fd < 0)
+        return 1;
+
+    unsigned char req[LCS_MAX_FRAME];
+    size_t req_len = 0;
+    if (lcs_encode_resource_req(req, sizeof(req), &req_len, resource) != 0)
+    {
+        fprintf(stderr, "lcs: failed to encode resource %s request\n", action);
+        close(fd);
+        return 1;
+    }
+    uint32_t seq = lcs_next_seq();
+    if (lcs_write_frame(fd, req_type, seq, req, (uint32_t)req_len) != 0)
+    {
+        fprintf(stderr, "lcs: failed to send resource %s request\n", action);
+        close(fd);
+        return 1;
+    }
+    unsigned char payload[LCS_MAX_FRAME];
+    lcs_frame_header_t hdr;
+    int read_rc = lcs_read_frame(fd, &hdr, payload, sizeof(payload));
+    if (read_rc <= 0)
+    {
+        fprintf(stderr, "lcs: invalid resource %s response: %s\n", action, lcs_protocol_error());
+        close(fd);
+        return 1;
+    }
+    if (hdr.type != resp_type && hdr.type != LCS_MSG_ERROR)
+    {
+        fprintf(stderr, "lcs: invalid resource %s response: got message type %u, expected %u or %u\n",
+                action, hdr.type, resp_type, LCS_MSG_ERROR);
+        close(fd);
+        return 1;
+    }
+    close(fd);
+    int32_t status = -1;
+    char message[128];
+    if (lcs_decode_simple_resp(payload, hdr.length, &status, message, sizeof(message)) != 0)
+    {
+        fprintf(stderr, "lcs: invalid resource %s response payload\n", action);
         return 1;
     }
     if (status != 0)
@@ -395,6 +507,71 @@ static int cmd_move(const char *socket_path, const char *vip, const char *node)
     return 0;
 }
 
+static int cmd_resource(const char *socket_path, int argc, char **argv, int optind)
+{
+    if (optind >= argc)
+    {
+        usage(stderr);
+        return 2;
+    }
+
+    const char *cmd = argv[optind++];
+    if (strcmp(cmd, "list") == 0)
+    {
+        if (optind != argc)
+        {
+            usage(stderr);
+            return 2;
+        }
+        return cmd_resource_list(socket_path);
+    }
+    if (strcmp(cmd, "move") == 0)
+    {
+        if (optind + 2 != argc)
+        {
+            usage(stderr);
+            return 2;
+        }
+        return cmd_move(socket_path, argv[optind], argv[optind + 1]);
+    }
+    if (strcmp(cmd, "start") == 0)
+    {
+        if (optind + 1 != argc)
+        {
+            usage(stderr);
+            return 2;
+        }
+        return cmd_resource_control(socket_path, argv[optind],
+                                    LCS_MSG_RESOURCE_START_REQ,
+                                    LCS_MSG_RESOURCE_START_RESP,
+                                    "start");
+    }
+    if (strcmp(cmd, "stop") == 0)
+    {
+        if (optind + 1 != argc)
+        {
+            usage(stderr);
+            return 2;
+        }
+        return cmd_resource_control(socket_path, argv[optind],
+                                    LCS_MSG_RESOURCE_STOP_REQ,
+                                    LCS_MSG_RESOURCE_STOP_RESP,
+                                    "stop");
+    }
+    if (strcmp(cmd, "clear-conflict") == 0)
+    {
+        if (optind + 1 != argc)
+        {
+            usage(stderr);
+            return 2;
+        }
+        return cmd_clear_conflict(socket_path, argv[optind]);
+    }
+
+    usage(stderr);
+    return 2;
+}
+
 int main(int argc, char **argv)
 {
     const char *socket_path = LCS_DEFAULT_SOCKET_PATH;
@@ -447,24 +624,8 @@ int main(int argc, char **argv)
         }
         return cmd_nrpe(socket_path);
     }
-    if (strcmp(cmd, "move") == 0)
-    {
-        if (optind + 2 != argc)
-        {
-            usage(stderr);
-            return 2;
-        }
-        return cmd_move(socket_path, argv[optind], argv[optind + 1]);
-    }
-    if (strcmp(cmd, "clear-conflict") == 0)
-    {
-        if (optind + 1 != argc)
-        {
-            usage(stderr);
-            return 2;
-        }
-        return cmd_clear_conflict(socket_path, argv[optind]);
-    }
+    if (strcmp(cmd, "resource") == 0)
+        return cmd_resource(socket_path, argc, argv, optind);
     usage(stderr);
     return 2;
 }

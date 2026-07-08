@@ -185,6 +185,11 @@ static int move_validate_request(const void *payload,
         snprintf(message, message_len, "target node is not a full-member");
         return -1;
     }
+    if (g_state.resources[*vip_idx].disabled)
+    {
+        snprintf(message, message_len, "resource is administratively stopped");
+        return -1;
+    }
     return 0;
 }
 

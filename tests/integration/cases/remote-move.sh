@@ -16,7 +16,7 @@ wait_for_quorum node3
 wait_for_owner node1 node1
 
 log "moving vip1 from node1 to node2 through node1 CLI"
-"$LCS" -s "$(node_socket node1)" move vip1 node2
+"$LCS" -s "$(node_socket node1)" resource move vip1 node2
 
 wait_for_owner node1 node2
 wait_for_owner node2 node2

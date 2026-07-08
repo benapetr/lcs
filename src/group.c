@@ -33,6 +33,8 @@ static bool group_has_waiting_higher_priority_vip(int vip_idx)
 
         const lcs_vip_config_t *other_vip = &g_state.cfg.vips[i];
         const resource_runtime_t *other_res = &g_state.resources[i];
+        if (other_res->disabled)
+            continue;
         if (other_vip->priority <= vip->priority)
             continue;
         if (other_res->owner_node >= 0 || other_res->state == LCS_RES_CONFLICT)

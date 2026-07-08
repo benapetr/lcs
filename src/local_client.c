@@ -179,6 +179,7 @@ static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
                                   g_state.cfg.vips[i].priority,
                                   home_node,
                                   g_state.resources[i].home_blocked ? 1 : 0,
+                                  g_state.resources[i].disabled ? 1 : 0,
                                   g_state.resources[i].conflict_reason) != 0)
         {
             client_queue_error(epoll_fd, slot_idx, seq, "failed to encode status vip");
@@ -259,6 +260,36 @@ static void client_queue_clear_conflict(int epoll_fd,
     client_queue_simple_response(epoll_fd, slot_idx, LCS_MSG_CLEAR_CONFLICT_RESP, seq, status, message);
 }
 
+static void client_queue_resource_control(int epoll_fd,
+                                          int slot_idx, uint16_t resp_type,
+                                          uint32_t seq,
+                                          const void *payload, uint32_t len,
+                                          bool disabled)
+{
+    char resource_name[LCS_NAME_MAX + 1];
+    int32_t status = -1;
+    char message[128] = "";
+    if (lcs_decode_resource_req(payload, len, resource_name, sizeof(resource_name)) != 0)
+    {
+        snprintf(message, sizeof(message), "invalid resource request");
+    } else if (!cluster_has_quorum())
+    {
+        snprintf(message, sizeof(message), "majority quorum is not available");
+    } else
+    {
+        int vip_idx = lcs_config_vip_index(&g_state.cfg, resource_name);
+        if (vip_idx < 0)
+        {
+            snprintf(message, sizeof(message), "unknown resource");
+        } else if (resources_set_disabled(vip_idx, disabled, epoll_fd,
+                                          message, sizeof(message)) == 0)
+        {
+            status = 0;
+        }
+    }
+    client_queue_simple_response(epoll_fd, slot_idx, resp_type, seq, status, message);
+}
+
 static int client_process_frame(int epoll_fd, int slot_idx,
                                 const lcs_frame_header_t *hdr,
                                 const unsigned char *payload)
@@ -274,6 +305,14 @@ static int client_process_frame(int epoll_fd, int slot_idx,
             return 0;
         case LCS_MSG_CLEAR_CONFLICT_REQ:
             client_queue_clear_conflict(epoll_fd, slot_idx, hdr->seq, payload, hdr->length);
+            break;
+        case LCS_MSG_RESOURCE_START_REQ:
+            client_queue_resource_control(epoll_fd, slot_idx, LCS_MSG_RESOURCE_START_RESP,
+                                          hdr->seq, payload, hdr->length, false);
+            break;
+        case LCS_MSG_RESOURCE_STOP_REQ:
+            client_queue_resource_control(epoll_fd, slot_idx, LCS_MSG_RESOURCE_STOP_RESP,
+                                          hdr->seq, payload, hdr->length, true);
             break;
         default:
             client_queue_error(epoll_fd, slot_idx, hdr->seq, "unsupported local CLI message");

@@ -196,6 +196,16 @@ int lcs_decode_clear_conflict_req(const void *payload, size_t len, char *vip, si
     return r.off == r.len ? 0 : -1;
 }
 
+int lcs_encode_resource_req(void *payload, size_t cap, size_t *len, const char *resource)
+{
+    return lcs_encode_clear_conflict_req(payload, cap, len, resource);
+}
+
+int lcs_decode_resource_req(const void *payload, size_t len, char *resource, size_t resource_len)
+{
+    return lcs_decode_clear_conflict_req(payload, len, resource, resource_len);
+}
+
 int lcs_encode_simple_resp(void *payload, size_t cap, size_t *len, int32_t status, const char *message)
 {
     lcs_buf_writer_t w;
@@ -277,7 +287,8 @@ int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
                           const char *name, const char *address,
                           const char *interface, const char *group,
                           uint32_t priority, const char *home_node,
-                          uint8_t home_blocked, const char *reason)
+                          uint8_t home_blocked, uint8_t disabled,
+                          const char *reason)
 {
     return lcs_buf_put_u16(w, id) ||
            lcs_buf_put_u16(w, owner_node) ||
@@ -291,6 +302,7 @@ int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
            lcs_buf_put_u32(w, priority) ||
            lcs_buf_put_fixed_string(w, home_node, LCS_NAME_MAX + 1) ||
            lcs_buf_put_u8(w, home_blocked) ||
+           lcs_buf_put_u8(w, disabled) ||
            lcs_buf_put_fixed_string(w, reason, LCS_REASON_MAX + 1) ? -1 : 0;
 }
 
@@ -303,6 +315,7 @@ int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_nod
                           uint32_t *priority,
                           char *home_node, size_t home_node_len,
                           uint8_t *home_blocked,
+                          uint8_t *disabled,
                           char *reason, size_t reason_len)
 {
     return lcs_buf_get_u16(r, id) ||
@@ -317,6 +330,7 @@ int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_nod
            lcs_buf_get_u32(r, priority) ||
            lcs_buf_get_fixed_string(r, home_node, home_node_len, LCS_NAME_MAX + 1) ||
            lcs_buf_get_u8(r, home_blocked) ||
+           lcs_buf_get_u8(r, disabled) ||
            lcs_buf_get_fixed_string(r, reason, reason_len, LCS_REASON_MAX + 1) ? -1 : 0;
 }
 
