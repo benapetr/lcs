@@ -83,6 +83,7 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     {
         g_state.next_placement_ms = now + LCS_PLACEMENT_INTERVAL_MS;
         resources_auto_place(sched->epoll_fd);
+        resources_home_rebalance(sched->epoll_fd);
         group_rebalance(sched->epoll_fd);
     }
 }

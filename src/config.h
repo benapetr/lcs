@@ -30,6 +30,7 @@ typedef struct
 {
     char name[LCS_NAME_MAX + 1];
     char group_name[LCS_NAME_MAX + 1];
+    char home_node_name[LCS_NAME_MAX + 1];
     char address[LCS_ADDR_MAX + 1];
     char interface[LCS_NAME_MAX + 1];
     char interface_original[LCS_ADDR_MAX + 1];
@@ -38,6 +39,7 @@ typedef struct
     char pre_stop[LCS_PATH_MAX + 1];
     char post_stop[LCS_PATH_MAX + 1];
     int group_idx;
+    int home_node_idx;
     uint32_t priority;
     bool priority_set;
     bool interface_normalized;

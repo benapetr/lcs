@@ -3,12 +3,12 @@
 This is an extremely lightweight GNU/Linux cluster service (similar to pcsd or keepalived) that supports
 
 - Quorum (each node is either full-member or quorum-only)
-- Ability to maintain VIPs (only active at one node at a time)
-- Optional VIP groups for keep-together or anti-affinity placement
+- Ability to maintain resources such as VIPs (only active at one node at a time)
+- Optional resource groups for keep-together or anti-affinity placement
 - Option to run scripts on failover
 - Simple CLI that allows checking current state of cluster
 - Prometheus exporter bundled in
-- CLI allows moving the VIP between nodes
+- CLI allows moving resources between nodes
 
 It constists of two tiny binaries
 - lcs - the CLI tool
@@ -25,7 +25,7 @@ The goals:
 - Minimal 3rd dependencies - just standard C and GNU/Linux libs
 
 Concepts:
-- Only a trivial config file that defines all cluster members, resource groups and VIP resources (see examples)
+- Only a trivial config file that defines all cluster members, resource groups and resources (currently VIPs; see examples)
 - Listens only on specified interfaces / IPs (or any by default)
 - lcsd uses TCP for daemon-to-daemon cluster communication
 - Supports both IPv4 and IPv6 for cluster node addresses and VIP resources
@@ -74,6 +74,7 @@ mode = best-effort
 [vip vip1]
 group = service
 priority = 1
+home_node = a
 address = 127.0.0.200/32
 interface = lo
 # pre_start = /usr/local/libexec/lcs/vip-pre-start
@@ -82,26 +83,32 @@ interface = lo
 # post_stop = /usr/local/libexec/lcs/vip-post-stop
 ```
 
-Similar config needs to exist on each node, only difference is IP to listen on and node name. That's all you need. Now launch lcsd on all nodes, it should form the quorum and setup VIPs. For troubleshooting use -vvv for maximal logs.
+Similar config needs to exist on each node, only difference is IP to listen on and node name. That's all you need. Now launch lcsd on all nodes, it should form the quorum and set up resources. For troubleshooting use -vvv for maximal logs.
 
-# VIP groups
+# Resource groups
 
-VIPs can be assigned to optional groups:
+Resources can be assigned to optional groups:
 
-- `keep-together` prefers grouped VIPs on the same full-member.
-- `anti-affinity` prefers grouped VIPs on different full-members.
-- `strict` mode may keep lower-priority VIPs stopped when the rule cannot be satisfied.
-- `best-effort` mode keeps VIPs available if possible, then rebalances when topology allows.
+- `keep-together` prefers grouped resources on the same full-member.
+- `anti-affinity` prefers grouped resources on different full-members.
+- `strict` mode may keep lower-priority resources stopped when the rule cannot be satisfied.
+- `best-effort` mode keeps resources available if possible, then rebalances when topology allows.
 
-Priority is local to each group. Higher numbers are higher priority. If a priority is not set, LCS derives it from inverse sorted VIP order, so earlier sorted VIPs get higher default priority.
+Priority is local to each group. Higher numbers are higher priority. If a priority is not set, LCS derives it from inverse sorted resource order, so earlier sorted resources get higher default priority.
 
 Automatic rebalance uses the same safe move path as `lcs move`: the old owner releases first, quorum records a newer lease epoch, and the target activates only after it obtains a majority lease. Only one automatic rebalance move runs at a time.
 
 For `keep-together` groups, moving any member through `lcs move` moves the highest-priority group member first. Other group members then follow through normal rebalance.
 
+# Home nodes
+
+Each resource can optionally set `home_node` to the name of a full-member node. When configured and not blocked, LCS places the resource on that node whenever it is online. Resources without a home node keep the existing behavior: after placement or failover, they remain wherever they last landed unless group rebalance or another failover moves them.
+
+Manual `lcs move VIP NODE` to a non-home node blocks automatic return for that resource. A later manual move back to the configured home node clears the block.
+
 # Observability
 
-lcs tool can be used to display cluster status, run simple monitoring checks, move VIPs from one node to another one, or acknowledge conflicting states
+lcs tool can be used to display cluster status, run simple monitoring checks, move resources from one node to another one, or acknowledge conflicting states
 ```
 # lcs status
 Cluster
@@ -121,7 +128,7 @@ For NRPE / Nagios-style monitoring:
 OK - quorum=yes votes=3/3 need=2 membership_for=2h 13m 04s nodes=3/3 resources=1/1 active
 ```
 
-Exit codes are `0` for OK, `1` for WARNING when any node is offline, `2` for CRITICAL when quorum is lost or any VIP resource is not active, and `3` if local status cannot be read.
+Exit codes are `0` for OK, `1` for WARNING when any node is offline, `2` for CRITICAL when quorum is lost or any resource is not active, and `3` if local status cannot be read.
 
 Prometheus can be used to monitor cluster state
 

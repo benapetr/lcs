@@ -243,6 +243,8 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
     for (size_t i = 0; i < g_state.cfg.vip_count; i++)
     {
         uint64_t failover_count = g_state.resources[i].failover_count;
+        uint64_t home_generation = g_state.resources[i].home_generation;
+        bool home_blocked = g_state.resources[i].home_blocked;
         if (g_state.resources[i].owner_node == g_state.self_index &&
             g_state.resources[i].owner_instance_id == g_state.instance_id)
             resources_release_local_internal((int)i, epoll_fd, false);
@@ -251,6 +253,8 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
         g_state.resources[i].owner_node = -1;
         g_state.resources[i].state = LCS_RES_STOPPED;
         g_state.resources[i].failover_count = failover_count;
+        g_state.resources[i].home_generation = home_generation;
+        g_state.resources[i].home_blocked = home_blocked;
     }
 
     lease_cancel_all_operations();
@@ -463,6 +467,35 @@ void resources_auto_place(int epoll_fd)
                        (unsigned long long)res->epoch,
                        (unsigned long long)(res->epoch + 1));
         resources_activate_local((int)i, res->epoch + 1, epoll_fd);
+    }
+}
+
+void resources_home_rebalance(int epoll_fd)
+{
+    if (!cluster_has_quorum() || move_any_active())
+        return;
+
+    int coordinator = cluster_first_online_full_member();
+    if (coordinator != g_state.self_index)
+        return;
+
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    {
+        const lcs_vip_config_t *vip = &g_state.cfg.vips[i];
+        resource_runtime_t *res = &g_state.resources[i];
+        if (vip->home_node_idx < 0 ||
+            res->home_blocked ||
+            res->state != LCS_RES_ACTIVE ||
+            res->owner_node < 0 ||
+            res->owner_node == vip->home_node_idx ||
+            !cluster_node_is_online((size_t)vip->home_node_idx) ||
+            lease_operation_active((int)i) ||
+            move_active_for_vip((int)i))
+            continue;
+
+        if (move_start_internal(epoll_fd, (int)i, vip->home_node_idx, "home-node rebalance") != 0 ||
+            move_any_active())
+            return;
     }
 }
 

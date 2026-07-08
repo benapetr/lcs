@@ -45,6 +45,7 @@ static move_runtime_t *move_alloc(void)
 
 static void move_complete(int epoll_fd, move_runtime_t *move)
 {
+    bool should_broadcast_state = false;
     if (move->vip_idx >= 0 && move->target_idx >= 0)
     {
         const char *origin = "move";
@@ -57,6 +58,34 @@ static void move_complete(int epoll_fd, move_runtime_t *move)
 
         if (move->final_status == 0)
         {
+            resource_runtime_t *res = &g_state.resources[move->vip_idx];
+            const lcs_vip_config_t *vip = &g_state.cfg.vips[move->vip_idx];
+            if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT &&
+                vip->home_node_idx >= 0 &&
+                move->target_idx != vip->home_node_idx &&
+                !res->home_blocked)
+            {
+                uint64_t now = lcs_now_ms();
+                res->home_blocked = true;
+                res->home_generation = now > res->home_generation ?
+                                       now : res->home_generation + 1;
+                should_broadcast_state = true;
+                lcs_log_info("manual move of VIP %s to %s blocked home-node rebalance to %s",
+                             vip->name,
+                             cluster_node_name_or_none(move->target_idx),
+                             cluster_node_name_or_none(vip->home_node_idx));
+            }
+            if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT &&
+                vip->home_node_idx >= 0 &&
+                move->target_idx == vip->home_node_idx &&
+                res->home_blocked)
+            {
+                uint64_t now = lcs_now_ms();
+                res->home_blocked = false;
+                res->home_generation = now > res->home_generation ?
+                                       now : res->home_generation + 1;
+                should_broadcast_state = true;
+            }
             lcs_log_info("%s of VIP %s to %s completed: %s",
                          origin, g_state.cfg.vips[move->vip_idx].name,
                          cluster_node_name_or_none(move->target_idx),
@@ -77,6 +106,8 @@ static void move_complete(int epoll_fd, move_runtime_t *move)
     {
         peer_queue_simple_resp(epoll_fd, move->source_node_idx, move->peer_seq, LCS_MSG_MOVE_RESP, move->final_status, move->final_message);
     }
+    if (should_broadcast_state)
+        peer_broadcast_state_sync(epoll_fd);
     move_clear(move);
 }
 

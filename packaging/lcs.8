@@ -72,6 +72,8 @@ The old owner is asked to release the VIP, the cluster records a newer lease
 epoch, and the target activates the VIP only after it obtains a majority lease.
 For keep-together groups, moving a lower-priority member may be redirected to
 the highest-priority group member so the whole group moves consistently.
+Moving a VIP away from its configured home node blocks automatic return until
+a later manual move back to that home node succeeds.
 .TP
 .BI clear-conflict " VIP"
 Clear the conflict state for

@@ -169,6 +169,12 @@ Optional placement group name.
 Positive integer priority inside the group. Higher numbers are higher priority.
 If omitted, priority is derived so earlier sorted VIPs have higher priority.
 .TP
+.B home_node
+Optional preferred full-member node for this VIP. When the node is online, LCS
+places and rebalances the VIP there unless automatic return has been blocked by
+a manual move away from home. A later manual move back to the configured home
+node clears that block.
+.TP
 .BR pre_start ", " post_start ", " pre_stop ", " post_stop
 Optional absolute paths to hook programs executed around VIP activation and
 removal. Hooks receive environment variables such as

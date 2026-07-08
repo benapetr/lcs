@@ -70,6 +70,16 @@ static bool group_node_hosts_member(int vip_idx, int node_idx)
     return false;
 }
 
+static bool group_vip_at_unblocked_home(int vip_idx)
+{
+    const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
+    const resource_runtime_t *res = &g_state.resources[vip_idx];
+    return vip->home_node_idx >= 0 &&
+           !res->home_blocked &&
+           res->owner_node == vip->home_node_idx &&
+           cluster_node_is_online((size_t)vip->home_node_idx);
+}
+
 static int group_first_unused_online_full_member(int vip_idx)
 {
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
@@ -108,6 +118,12 @@ int group_auto_place_target(int vip_idx)
         return -1;
 
     const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
+    const resource_runtime_t *res = &g_state.resources[vip_idx];
+    if (vip->home_node_idx >= 0 &&
+        !res->home_blocked &&
+        cluster_node_is_online((size_t)vip->home_node_idx))
+        return vip->home_node_idx;
+
     if (vip->group_idx < 0)
         return group_normal_target();
 
@@ -252,7 +268,8 @@ static int group_keep_together_rebalance(int epoll_fd, int group_idx)
         if (vip->group_idx != group_idx ||
             res->state != LCS_RES_ACTIVE ||
             res->owner_node < 0 ||
-            res->owner_node == target)
+            res->owner_node == target ||
+            group_vip_at_unblocked_home((int)i))
             continue;
 
         if (candidate < 0 || vip->priority < candidate_priority)
@@ -280,6 +297,7 @@ static int group_anti_affinity_rebalance(int epoll_fd, int group_idx)
         if (vip->group_idx != group_idx ||
             res->state != LCS_RES_ACTIVE ||
             res->owner_node < 0 ||
+            group_vip_at_unblocked_home((int)i) ||
             group_active_member_count_on_node(group_idx, res->owner_node) < 2)
             continue;
 

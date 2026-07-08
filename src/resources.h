@@ -15,6 +15,7 @@ int  resources_release_for_handoff(int vip_idx, uint64_t epoch, uint64_t lease_i
 void resources_drop_local(int vip_idx, int epoll_fd);
 void resources_graceful_shutdown(int epoll_fd);
 void resources_auto_place(int epoll_fd);
+void resources_home_rebalance(int epoll_fd);
 void resources_maintain_owned_leases(int epoll_fd);
 void resources_process_hooks(int epoll_fd);
 

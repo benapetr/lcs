@@ -86,8 +86,10 @@ typedef struct
     char address[LCS_ADDR_MAX + 1];
     char interface[LCS_NAME_MAX + 1];
     char group[LCS_NAME_MAX + 1];
+    char home_node[LCS_NAME_MAX + 1];
     char reason[LCS_REASON_MAX + 1];
     uint32_t priority;
+    uint8_t home_blocked;
 } status_vip_t;
 
 typedef struct
@@ -166,7 +168,10 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
                                   vip->address, sizeof(vip->address),
                                   vip->interface, sizeof(vip->interface),
                                   vip->group, sizeof(vip->group),
-                                  &vip->priority, vip->reason,
+                                  &vip->priority,
+                                  vip->home_node, sizeof(vip->home_node),
+                                  &vip->home_blocked,
+                                  vip->reason,
                                   sizeof(vip->reason)) != 0 ||
             vip->id >= status->vip_count)
         {
@@ -217,6 +222,8 @@ static int cmd_status(const char *socket_path)
                owner, (unsigned long long)vip->epoch);
         if (*vip->group)
             printf(" group=%s priority=%u", vip->group, vip->priority);
+        if (*vip->home_node)
+            printf(" home=%s%s", vip->home_node, vip->home_blocked ? " blocked=yes" : "");
         printf("\n");
         if (vip->state == LCS_RES_CONFLICT && *vip->reason) {
             printf("    conflict: %s\n", vip->reason);

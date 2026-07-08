@@ -145,6 +145,13 @@ group = public
 # Default: derived from sorted VIP order, with earlier VIPs getting higher priority.
 priority = 200
 
+# OPTIONAL: preferred full-member node for this VIP.
+# Manual moves away from the home node block automatic return until the
+# resource is manually moved back home.
+# Default: empty, meaning this VIP keeps current placement unless normal failover
+# or group rebalance moves it.
+home_node = node-a
+
 # OPTIONAL: hook run after majority lease acquisition, before conflict probing and VIP add.
 # Path must be empty or absolute.
 # Default: empty.

@@ -255,6 +255,7 @@ static int parse_section(lcs_config_t *cfg, char *name, section_t *sec, char *er
         int idx = (int)cfg->vip_count++;
         set_string(cfg->vips[idx].name, sizeof(cfg->vips[idx].name), vip_name);
         cfg->vips[idx].group_idx = -1;
+        cfg->vips[idx].home_node_idx = -1;
         sec->type = SEC_VIP;
         sec->index = idx;
         return 0;
@@ -411,6 +412,9 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
         lcs_vip_config_t *vip = &cfg->vips[sec.index];
         if (strcmp(key, "group") == 0)
             return set_string(vip->group_name, sizeof(vip->group_name), value);
+
+        if (strcmp(key, "home_node") == 0)
+            return set_string(vip->home_node_name, sizeof(vip->home_node_name), value);
 
         if (strcmp(key, "priority") == 0)
         {
@@ -611,6 +615,23 @@ static int validate_groups_and_assign_vips(lcs_config_t *cfg, char *err, size_t 
             vip->group_idx = group_idx;
         } else {
             vip->group_idx = -1;
+        }
+        if (*vip->home_node_name)
+        {
+            int node_idx = lcs_config_node_index(cfg, vip->home_node_name);
+            if (node_idx < 0)
+            {
+                set_err(err, err_len, 0, "vip references unknown home node");
+                return -1;
+            }
+            if (cfg->nodes[node_idx].role != LCS_NODE_FULL)
+            {
+                set_err(err, err_len, 0, "vip home node must be a full-member");
+                return -1;
+            }
+            vip->home_node_idx = node_idx;
+        } else {
+            vip->home_node_idx = -1;
         }
     }
 

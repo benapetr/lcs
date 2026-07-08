@@ -10,8 +10,8 @@
 #include <stdint.h>
 
 #define LCS_PROTO_MAGIC 0x4c435331u
-#define LCS_PEER_PROTO_VERSION 3
-#define LCS_LOCAL_PROTO_VERSION 1000
+#define LCS_PEER_PROTO_VERSION 4
+#define LCS_LOCAL_PROTO_VERSION 1001
 #define LCS_MAX_FRAME (64u * 1024u)
 
 typedef enum
@@ -104,7 +104,8 @@ int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
                           uint64_t epoch, uint64_t lease_id, uint8_t state,
                           const char *name, const char *address,
                           const char *interface, const char *group,
-                          uint32_t priority, const char *reason);
+                          uint32_t priority, const char *home_node,
+                          uint8_t home_blocked, const char *reason);
 int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_node,
                           uint64_t *epoch, uint64_t *lease_id, uint8_t *state,
                           char *name, size_t name_len,
@@ -112,6 +113,8 @@ int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_nod
                           char *interface, size_t interface_len,
                           char *group, size_t group_len,
                           uint32_t *priority,
+                          char *home_node, size_t home_node_len,
+                          uint8_t *home_blocked,
                           char *reason, size_t reason_len);
 
 #endif

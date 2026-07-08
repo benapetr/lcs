@@ -276,7 +276,8 @@ int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
                           uint64_t epoch, uint64_t lease_id, uint8_t state,
                           const char *name, const char *address,
                           const char *interface, const char *group,
-                          uint32_t priority, const char *reason)
+                          uint32_t priority, const char *home_node,
+                          uint8_t home_blocked, const char *reason)
 {
     return lcs_buf_put_u16(w, id) ||
            lcs_buf_put_u16(w, owner_node) ||
@@ -288,6 +289,8 @@ int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
            lcs_buf_put_fixed_string(w, interface, LCS_NAME_MAX + 1) ||
            lcs_buf_put_fixed_string(w, group, LCS_NAME_MAX + 1) ||
            lcs_buf_put_u32(w, priority) ||
+           lcs_buf_put_fixed_string(w, home_node, LCS_NAME_MAX + 1) ||
+           lcs_buf_put_u8(w, home_blocked) ||
            lcs_buf_put_fixed_string(w, reason, LCS_REASON_MAX + 1) ? -1 : 0;
 }
 
@@ -298,6 +301,8 @@ int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_nod
                           char *interface, size_t interface_len,
                           char *group, size_t group_len,
                           uint32_t *priority,
+                          char *home_node, size_t home_node_len,
+                          uint8_t *home_blocked,
                           char *reason, size_t reason_len)
 {
     return lcs_buf_get_u16(r, id) ||
@@ -310,6 +315,8 @@ int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_nod
            lcs_buf_get_fixed_string(r, interface, interface_len, LCS_NAME_MAX + 1) ||
            lcs_buf_get_fixed_string(r, group, group_len, LCS_NAME_MAX + 1) ||
            lcs_buf_get_u32(r, priority) ||
+           lcs_buf_get_fixed_string(r, home_node, home_node_len, LCS_NAME_MAX + 1) ||
+           lcs_buf_get_u8(r, home_blocked) ||
            lcs_buf_get_fixed_string(r, reason, reason_len, LCS_REASON_MAX + 1) ? -1 : 0;
 }
 

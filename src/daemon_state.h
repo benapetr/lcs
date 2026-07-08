@@ -51,7 +51,9 @@ typedef struct
     uint64_t renew_after_ms;
     uint64_t next_activation_attempt_ms;
     uint64_t failover_count;
+    uint64_t home_generation;
     bool failover_pending;
+    bool home_blocked;
     pid_t hook_pid;
     resource_hook_type_t hook_type;
     uint64_t hook_deadline_ms;

@@ -98,6 +98,44 @@ address = 127.0.0.201/32
 interface = lo
 EOF
 
+run_bad_config unknown-home-node "vip references unknown home node" <<EOF
+[cluster]
+name = integration
+node = node1
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[vip vip1]
+home_node = missing
+address = 127.0.0.201/32
+interface = lo
+EOF
+
+run_bad_config quorum-only-home-node "vip home node must be a full-member" <<EOF
+[cluster]
+name = integration
+node = node1
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[node node2]
+role = quorum-only
+address = 127.0.0.1
+
+[vip vip1]
+home_node = node2
+address = 127.0.0.201/32
+interface = lo
+EOF
+
 run_good_config_starts interface-display-name \
     "interface bond1.3675@bond1 normalized to bond1.3675" \
     "dry-run VIP del 127.0.0.201/32 on bond1.3675" <<EOF

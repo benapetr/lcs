@@ -78,10 +78,13 @@ For `keep-together` groups, a manual `lcs move` request for any group member is 
 | `interface` | yes | — | Linux interface on which the VIP is added and probed. `ip` display names like `bond1.3675@bond1` are accepted and normalized to the kernel interface name before `@`, for example `bond1.3675`. |
 | `group` | no | — | Group name from a `[group NAME]` section. |
 | `priority` | no | inverse sorted VIP index | Positive integer priority inside the group. Higher numbers are higher priority. Priorities must be unique within a group. |
+| `home_node` | no | — | Preferred full-member node for this VIP. |
 | `pre_start` | no | — | Absolute path to a script run after the lease is obtained but before the conflict check and VIP add. |
 | `post_start` | no | — | Absolute path to a script run after the VIP is activated and announced. |
 | `pre_stop` | no | — | Absolute path to a script run before planned VIP removal. |
 | `post_stop` | no | — | Absolute path to a script run after planned VIP removal. |
+
+If `home_node` is set, LCS places and rebalances the VIP back to that node whenever the node is online. If `home_node` is not set, ungrouped VIPs keep the existing behavior and remain wherever they were last placed unless failover moves them. A manual `lcs move` away from the home node blocks automatic return for that VIP; a later manual move back to the configured home node clears the block.
 
 ### VIP hooks
 
