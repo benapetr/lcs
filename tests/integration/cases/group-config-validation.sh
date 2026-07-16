@@ -136,6 +136,55 @@ address = 127.0.0.201/32
 interface = lo
 EOF
 
+run_bad_config service-missing-unit "service systemd_unit must be a valid .service unit name" <<EOF
+[cluster]
+name = integration
+node = node1
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[service app]
+priority = 1
+EOF
+
+run_bad_config service-vip-fields "service resources cannot set address or interface" <<EOF
+[cluster]
+name = integration
+node = node1
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[service app]
+systemd_unit = app.service
+address = 127.0.0.201/32
+EOF
+
+run_good_config_starts service-resource-config \
+    "startup config:" \
+    "vips=1" <<EOF
+[cluster]
+name = integration
+node = node1
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[service app]
+systemd_unit = app.service
+home_node = node1
+EOF
+
 run_good_config_starts interface-display-name \
     "interface bond1.3675@bond1 normalized to bond1.3675" \
     "dry-run VIP del 127.0.0.201/32 on bond1.3675" <<EOF

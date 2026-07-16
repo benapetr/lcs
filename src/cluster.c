@@ -4,6 +4,7 @@
 #include "cluster.h"
 
 #include "log.h"
+#include "systemd_service.h"
 #include "util.h"
 #include "vip.h"
 
@@ -37,6 +38,15 @@ const char *cluster_node_name_or_none(int node_idx)
     if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count)
         return "-";
     return g_state.cfg.nodes[node_idx].name;
+}
+
+static void cluster_stop_local_resource(size_t id)
+{
+    const lcs_vip_config_t *res = &g_state.cfg.vips[id];
+    if (res->type == LCS_RESOURCE_SERVICE)
+        lcs_systemd_service_stop(res);
+    else
+        lcs_vip_del(res);
 }
 
 int cluster_has_quorum(void)
@@ -182,7 +192,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
                 res->owner_instance_id == g_state.instance_id &&
                 owner != (uint16_t)g_state.self_index &&
                 res->state == LCS_RES_ACTIVE)
-                lcs_vip_del(&g_state.cfg.vips[id]);
+                cluster_stop_local_resource(id);
             res->epoch = epoch;
             res->lease_id = lease_id;
             res->owner_node = owner == UINT16_MAX ? -1 : (int)owner;

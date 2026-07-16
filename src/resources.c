@@ -9,6 +9,7 @@
 #include "log.h"
 #include "move.h"
 #include "peer.h"
+#include "systemd_service.h"
 #include "util.h"
 #include "vip.h"
 
@@ -51,6 +52,50 @@ static const char *resources_hook_path(const lcs_vip_config_t *vip, resource_hoo
             return vip->post_stop;
         default:
             return "";
+    }
+}
+
+static const char *resource_kind(const lcs_vip_config_t *res)
+{
+    return res->type == LCS_RESOURCE_SERVICE ? "service" : "VIP";
+}
+
+static int resource_start_local(const lcs_vip_config_t *res)
+{
+    if (res->type == LCS_RESOURCE_SERVICE)
+        return lcs_systemd_service_start(res);
+    return lcs_vip_add(res);
+}
+
+static int resource_stop_local(const lcs_vip_config_t *res)
+{
+    if (res->type == LCS_RESOURCE_SERVICE)
+        return lcs_systemd_service_stop(res);
+    return lcs_vip_del(res);
+}
+
+static int resource_is_local_active(const lcs_vip_config_t *res)
+{
+    if (res->type == LCS_RESOURCE_SERVICE)
+        return lcs_systemd_service_is_active(res);
+    return 1;
+}
+
+static int resource_conflict_check(const lcs_vip_config_t *res)
+{
+    if (res->type == LCS_RESOURCE_SERVICE)
+        return 0;
+    return lcs_vip_conflict_check(&g_state.cfg, res);
+}
+
+static void resource_announce(const lcs_vip_config_t *res)
+{
+    if (res->type == LCS_RESOURCE_SERVICE)
+        return;
+    if (lcs_vip_announce(&g_state.cfg, res) != 0)
+    {
+        lcs_log_warn("failed to send VIP announcement for %s on %s",
+                     res->address, res->interface);
     }
 }
 
@@ -109,6 +154,9 @@ static int resources_start_hook(int vip_idx, resource_hook_type_t type, uint64_t
         snprintf(timeout_buf, sizeof(timeout_buf), "%u", g_state.cfg.hook_timeout_ms);
         setenv("LCS_CLUSTER", g_state.cfg.cluster_name, 1);
         setenv("LCS_NODE", g_state.cfg.nodes[g_state.self_index].name, 1);
+        setenv("LCS_RESOURCE", vip->name, 1);
+        setenv("LCS_RESOURCE_TYPE", vip->type == LCS_RESOURCE_SERVICE ? "service" : "vip", 1);
+        setenv("LCS_SYSTEMD_UNIT", vip->systemd_unit, 1);
         setenv("LCS_VIP", vip->name, 1);
         setenv("LCS_ADDRESS", vip->address, 1);
         setenv("LCS_INTERFACE", vip->interface, 1);
@@ -149,7 +197,8 @@ static int resources_complete_local_activation(int vip_idx, uint64_t epoch, uint
     // TODO: VIP conflict probing is intentionally still synchronous. Making ARP/ND
     // probes fully scheduler-driven would require a separate async probe state
     // machine for little practical benefit while probe waits remain short.
-    int conflict_rc = lcs_vip_conflict_check(&g_state.cfg, &g_state.cfg.vips[vip_idx]);
+    const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
+    int conflict_rc = resource_conflict_check(vip);
     if (conflict_rc > 0)
     {
         lease_release_majority(vip_idx, g_state.self_index, epoch, lease_id, epoll_fd);
@@ -159,18 +208,16 @@ static int resources_complete_local_activation(int vip_idx, uint64_t epoch, uint
     }
     if (conflict_rc < 0)
     {
-        lcs_log_warn("auto-place failed VIP %s: conflict probe failed", g_state.cfg.vips[vip_idx].name);
+        lcs_log_warn("auto-place failed %s %s: conflict probe failed", resource_kind(vip), vip->name);
         lease_release_majority(vip_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
         return -1;
     }
-    if (lcs_vip_add(&g_state.cfg.vips[vip_idx]) != 0)
+    if (resource_start_local(vip) != 0)
     {
-        lcs_log_warn("auto-place failed VIP %s: failed to add %s on %s",
-                     g_state.cfg.vips[vip_idx].name,
-                     g_state.cfg.vips[vip_idx].address,
-                     g_state.cfg.vips[vip_idx].interface);
+        lcs_log_warn("auto-place failed %s %s: failed to start",
+                     resource_kind(vip), vip->name);
         lease_release_majority(vip_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
@@ -178,12 +225,7 @@ static int resources_complete_local_activation(int vip_idx, uint64_t epoch, uint
     }
     res->state = LCS_RES_ACTIVE;
     res->next_activation_attempt_ms = 0;
-    if (lcs_vip_announce(&g_state.cfg, &g_state.cfg.vips[vip_idx]) != 0)
-    {
-        lcs_log_warn("failed to send VIP announcement for %s on %s",
-                     g_state.cfg.vips[vip_idx].address,
-                     g_state.cfg.vips[vip_idx].interface);
-    }
+    resource_announce(vip);
     if (res->failover_pending)
     {
         res->failover_count++;
@@ -192,8 +234,8 @@ static int resources_complete_local_activation(int vip_idx, uint64_t epoch, uint
                      g_state.cfg.vips[vip_idx].name,
                      (unsigned long long)res->failover_count);
     }
-    lcs_log_info("activated VIP %s on %s epoch=%llu",
-                 g_state.cfg.vips[vip_idx].name, g_state.cfg.nodes[g_state.self_index].name,
+    lcs_log_info("activated %s %s on %s epoch=%llu",
+                 resource_kind(vip), vip->name, g_state.cfg.nodes[g_state.self_index].name,
                  (unsigned long long)epoch);
     peer_broadcast_state_sync(epoll_fd);
     resources_start_hook(vip_idx, LCS_HOOK_POST_START, epoch, lease_id);
@@ -226,7 +268,7 @@ static void resources_release_local_internal(int vip_idx, int epoll_fd, bool all
     }
 
     if (res->state == LCS_RES_ACTIVE || res->state == LCS_RES_STOPPING)
-        lcs_vip_del(&g_state.cfg.vips[vip_idx]);
+        resource_stop_local(&g_state.cfg.vips[vip_idx]);
 
     lease_release_majority(vip_idx, g_state.self_index, release_epoch, old_lease_id, epoll_fd);
     resources_clear_local_lease(res, release_epoch);
@@ -277,7 +319,7 @@ void resources_cleanup_local_vips_without_lease(void)
         if (g_state.resources[i].owner_node != g_state.self_index ||
             g_state.resources[i].owner_instance_id != g_state.instance_id ||
             g_state.resources[i].state != LCS_RES_ACTIVE)
-            lcs_vip_del(&g_state.cfg.vips[i]);
+            resource_stop_local(&g_state.cfg.vips[i]);
     }
 }
 
@@ -288,7 +330,7 @@ void resources_enter_conflict_state(int vip_idx, uint64_t epoch, const char *rea
     if (res->owner_node == g_state.self_index &&
         res->owner_instance_id == g_state.instance_id &&
         res->state == LCS_RES_ACTIVE)
-        lcs_vip_del(&g_state.cfg.vips[vip_idx]);
+        resource_stop_local(&g_state.cfg.vips[vip_idx]);
     res->epoch = epoch > res->epoch ? epoch : res->epoch + 1;
     res->owner_node = -1;
     res->owner_instance_id = 0;
@@ -370,7 +412,7 @@ int resources_release_for_handoff(int vip_idx, uint64_t epoch, uint64_t lease_id
     resource_runtime_t *res = &g_state.resources[vip_idx];
 
     resources_cancel_hook(vip_idx);
-    if (lcs_vip_del(&g_state.cfg.vips[vip_idx]) != 0)
+    if (resource_stop_local(&g_state.cfg.vips[vip_idx]) != 0)
         return -1;
 
     res->owner_node = -1;
@@ -594,6 +636,21 @@ void resources_maintain_owned_leases(int epoll_fd)
             lcs_log_warn("dropping VIP %s because local lease expired", g_state.cfg.vips[i].name);
             resources_release_local_internal((int)i, epoll_fd, false);
             continue;
+        }
+        int active_rc = resource_is_local_active(&g_state.cfg.vips[i]);
+        if (active_rc == 0)
+        {
+            lcs_log_warn("owned service %s is no longer active; releasing for failover",
+                         g_state.cfg.vips[i].name);
+            res->failover_pending = true;
+            resources_release_local_internal((int)i, epoll_fd, true);
+            peer_broadcast_state_sync(epoll_fd);
+            continue;
+        }
+        if (active_rc < 0 && g_state.cfg.vips[i].type == LCS_RESOURCE_SERVICE)
+        {
+            lcs_log_warn("owned service %s health check failed; keeping lease for retry",
+                         g_state.cfg.vips[i].name);
         }
         if (res->renew_after_ms && now < res->renew_after_ms)
             continue;

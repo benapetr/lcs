@@ -3,7 +3,7 @@
 This is an extremely lightweight GNU/Linux cluster service (similar to pcsd or keepalived) that supports
 
 - Quorum (each node is either full-member or quorum-only)
-- Ability to maintain resources such as VIPs (only active at one node at a time)
+- Ability to maintain resources such as VIPs and systemd services (only active at one node at a time)
 - Optional resource groups for keep-together or anti-affinity placement
 - Option to run scripts on failover
 - Simple CLI that allows checking current state of cluster
@@ -25,14 +25,16 @@ The goals:
 - Minimal 3rd dependencies - just standard C and GNU/Linux libs
 
 Concepts:
-- Only a trivial config file that defines all cluster members, resource groups and resources (currently VIPs; see examples)
+- Only a trivial config file that defines all cluster members, resource groups and resources (VIPs and systemd services; see examples)
 - Listens only on specified interfaces / IPs (or any by default)
 - lcsd uses TCP for daemon-to-daemon cluster communication
 - Supports both IPv4 and IPv6 for cluster node addresses and VIP resources
 
 # Building
 
-Just run `make`
+Just run `make`.
+
+Systemd service resources use D-Bus through sd-bus. Build with `make WITH_SYSTEMD=1` on systems with `libsystemd` development headers installed to enable service start/stop/health operations.
 
 # Installing
 
@@ -82,6 +84,17 @@ interface = lo
 # pre_stop = /usr/local/libexec/lcs/vip-pre-stop
 # post_stop = /usr/local/libexec/lcs/vip-post-stop
 ```
+
+Systemd service resources use `[service NAME]` sections:
+
+```
+[service app]
+group = service
+home_node = a
+systemd_unit = app.service
+```
+
+The service unit should not be enabled to start independently on every node; LCS should be the actor that starts and stops it.
 
 Similar config needs to exist on each node, only difference is IP to listen on and node name. That's all you need. Now launch lcsd on all nodes, it should form the quorum and set up resources. For troubleshooting use -vvv for maximal logs.
 

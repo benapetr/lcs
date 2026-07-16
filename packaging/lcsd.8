@@ -14,17 +14,18 @@ lcsd \- Lightweight Cluster Service daemon
 .B \-\-version
 .SH DESCRIPTION
 .B lcsd
-is a small Linux high-availability daemon that manages virtual IP addresses
-(VIPs) across a cluster. VIP ownership is protected by short-lived majority
-leases. A node may activate a VIP only after quorum grants the lease, and it
-must renew that lease continuously to keep the VIP active.
+is a small Linux high-availability daemon that manages resources such as
+virtual IP addresses (VIPs) and systemd services across a cluster. Resource
+ownership is protected by short-lived majority leases. A node may activate a
+resource only after quorum grants the lease, and it must renew that lease
+continuously to keep the resource active.
 .PP
 All configured nodes are voting members for quorum and lease decisions.
 Nodes with role
 .B full-member
-may run VIP resources. Nodes with role
+may run resources. Nodes with role
 .B quorum-only
-vote and participate in leases but never manipulate VIP addresses.
+vote and participate in leases but never activate resources.
 .PP
 Peer communication uses persistent TCP connections. Idle liveness is maintained
 with lightweight heartbeat frames. Full cluster state is exchanged when peers
@@ -138,7 +139,7 @@ Peer address, either IPv4, IPv6, or a hostname.
 Optional per-node peer TCP port override.
 .SS Group Sections
 .B [group NAME]
-sections define placement rules for VIPs.
+sections define placement rules for resources.
 .TP
 .B type
 Either
@@ -180,6 +181,9 @@ Optional absolute paths to hook programs executed around VIP activation and
 removal. Hooks receive environment variables such as
 .BR LCS_CLUSTER ,
 .BR LCS_NODE ,
+.BR LCS_RESOURCE ,
+.BR LCS_RESOURCE_TYPE ,
+.BR LCS_SYSTEMD_UNIT ,
 .BR LCS_VIP ,
 .BR LCS_ADDRESS ,
 .BR LCS_INTERFACE ,
@@ -187,6 +191,21 @@ removal. Hooks receive environment variables such as
 .BR LCS_EPOCH ,
 and
 .BR LCS_LEASE_ID .
+.SS Service Sections
+Each
+.B [service NAME]
+section defines one managed systemd service resource.
+.TP
+.B systemd_unit
+Systemd `.service` unit name managed through D-Bus.
+.PP
+Service resources use the same
+.BR group ,
+.BR priority ,
+.BR home_node ,
+and hook keys as VIP resources. Build with
+.B make WITH_SYSTEMD=1
+on systems with libsystemd development headers to enable service operations.
 .SH FILES
 .TP
 .I /etc/lcs/lcs.conf

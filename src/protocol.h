@@ -11,7 +11,7 @@
 
 #define LCS_PROTO_MAGIC 0x4c435331u
 #define LCS_PEER_PROTO_VERSION 5
-#define LCS_LOCAL_PROTO_VERSION 1002
+#define LCS_LOCAL_PROTO_VERSION 1003
 #define LCS_MAX_FRAME (64u * 1024u)
 
 typedef enum
@@ -111,6 +111,8 @@ int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
                           const char *name, const char *address,
                           const char *interface, const char *group,
                           uint32_t priority, const char *home_node,
+                          const char *resource_type,
+                          const char *systemd_unit,
                           uint8_t home_blocked, uint8_t disabled,
                           const char *reason);
 int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_node,
@@ -121,6 +123,8 @@ int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_nod
                           char *group, size_t group_len,
                           uint32_t *priority,
                           char *home_node, size_t home_node_len,
+                          char *resource_type, size_t resource_type_len,
+                          char *systemd_unit, size_t systemd_unit_len,
                           uint8_t *home_blocked,
                           uint8_t *disabled,
                           char *reason, size_t reason_len);

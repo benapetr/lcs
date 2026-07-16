@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
 
+CONFIG_ROOT="${DPKG_ROOT:-}"
+if [ "$1" = configure ] && [ ! -e "$CONFIG_ROOT/etc/lcs/lcs.conf" ]; then
+	install -d "$CONFIG_ROOT/etc/lcs"
+	cp -p "$CONFIG_ROOT/usr/share/lcs/lcs.conf.example" "$CONFIG_ROOT/etc/lcs/lcs.conf"
+fi
+
 if [ -z "$DPKG_ROOT" ] && [ "$1" = configure ] && [ -d /run/systemd/system ]; then
 	systemctl --system daemon-reload >/dev/null || true
 	if [ -e /run/lcs/restart-after-upgrade ]; then

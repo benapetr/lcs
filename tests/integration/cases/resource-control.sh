@@ -14,14 +14,14 @@ resource_disabled_stopped()
 resource_list_disabled()
 {
     "$LCS" -s "$(node_socket node1)" resource list 2>/dev/null |
-        grep -F "vip1 state=stopped owner=- address=127.0.0.200/32 dev=lo" |
+        grep -F "vip1 type=vip state=stopped owner=- address=127.0.0.200/32 dev=lo" |
         grep -Fq "disabled=yes"
 }
 
 resource_list_active()
 {
     "$LCS" -s "$(node_socket node1)" resource list 2>/dev/null |
-        grep -Fq "vip1 state=active owner=node1 address=127.0.0.200/32 dev=lo"
+        grep -Fq "vip1 type=vip state=active owner=node1 address=127.0.0.200/32 dev=lo"
 }
 
 trap cleanup_cluster EXIT

@@ -53,6 +53,12 @@ typedef enum
 
 typedef enum
 {
+    LCS_RESOURCE_VIP = 1,
+    LCS_RESOURCE_SERVICE = 2,
+} lcs_resource_type_t;
+
+typedef enum
+{
     LCS_VIP_BACKEND_IP = 1,
     LCS_VIP_BACKEND_NETLINK = 2,
 } lcs_vip_backend_t;

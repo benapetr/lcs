@@ -90,6 +90,8 @@ typedef struct
     char interface[LCS_NAME_MAX + 1];
     char group[LCS_NAME_MAX + 1];
     char home_node[LCS_NAME_MAX + 1];
+    char resource_type[LCS_NAME_MAX + 1];
+    char systemd_unit[LCS_NAME_MAX + 1];
     char reason[LCS_REASON_MAX + 1];
     uint32_t priority;
     uint8_t home_blocked;
@@ -174,6 +176,8 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
                                   vip->group, sizeof(vip->group),
                                   &vip->priority,
                                   vip->home_node, sizeof(vip->home_node),
+                                  vip->resource_type, sizeof(vip->resource_type),
+                                  vip->systemd_unit, sizeof(vip->systemd_unit),
                                   &vip->home_blocked,
                                   &vip->disabled,
                                   vip->reason,
@@ -222,9 +226,17 @@ static int cmd_status(const char *socket_path)
         if (vip->owner_node != UINT16_MAX && vip->owner_node < status.node_count)
             owner = node_names[vip->owner_node];
 
-        printf("  %s %s dev=%s state=%s owner=%s epoch=%llu",
-               vip->name, vip->address, vip->interface, state_name(vip->state),
-               owner, (unsigned long long)vip->epoch);
+        if (strcmp(vip->resource_type, "service") == 0)
+        {
+            printf("  %s type=service unit=%s state=%s owner=%s epoch=%llu",
+                   vip->name, vip->systemd_unit, state_name(vip->state),
+                   owner, (unsigned long long)vip->epoch);
+        } else
+        {
+            printf("  %s %s dev=%s state=%s owner=%s epoch=%llu",
+                   vip->name, vip->address, vip->interface, state_name(vip->state),
+                   owner, (unsigned long long)vip->epoch);
+        }
         if (*vip->group)
             printf(" group=%s priority=%u", vip->group, vip->priority);
         if (*vip->home_node)
@@ -260,9 +272,13 @@ static int cmd_resource_list(const char *socket_path)
         if (vip->owner_node != UINT16_MAX && vip->owner_node < status.node_count)
             owner = node_names[vip->owner_node];
 
-        printf("%s state=%s owner=%s address=%s dev=%s",
-               vip->name, state_name(vip->state), owner,
-               vip->address, vip->interface);
+        printf("%s type=%s state=%s owner=%s",
+               vip->name, *vip->resource_type ? vip->resource_type : "vip",
+               state_name(vip->state), owner);
+        if (*vip->address)
+            printf(" address=%s dev=%s", vip->address, vip->interface);
+        if (*vip->systemd_unit)
+            printf(" unit=%s", vip->systemd_unit);
         if (vip->disabled)
             printf(" disabled=yes");
         if (*vip->group)

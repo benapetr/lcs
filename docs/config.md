@@ -11,8 +11,9 @@ after values are also supported.
 # LCS configuration is INI-like:
 #   [cluster]       one required cluster section
 #   [node NAME]     one required section per cluster member
-#   [group NAME]    optional VIP placement group sections
+#   [group NAME]    optional resource placement group sections
 #   [vip NAME]      one section per managed VIP resource
+#   [service NAME]  one section per managed systemd service resource
 #
 # Names may contain letters, numbers, "_", "-", ".", and ":".
 # Boolean values may be true/false, yes/no, on/off, or 1/0.
@@ -180,4 +181,17 @@ priority = 100
 
 # OPTIONAL: hooks may be omitted per VIP by leaving these keys out.
 # If omitted, no hook is executed for that event.
+
+[service app]
+# REQUIRED: systemd unit name managed through D-Bus.
+systemd_unit = app.service
+
+# OPTIONAL: service resources use the same placement controls and hooks as VIPs.
+group = public
+priority = 50
+home_node = node-a
+# pre_start = /usr/local/libexec/lcs/app-pre-start
+# post_start = /usr/local/libexec/lcs/app-post-start
+# pre_stop = /usr/local/libexec/lcs/app-pre-stop
+# post_stop = /usr/local/libexec/lcs/app-post-stop
 ```

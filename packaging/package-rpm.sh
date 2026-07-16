@@ -164,6 +164,10 @@ if command -v systemctl >/dev/null 2>&1; then
         systemctl try-restart lcsd.service >/dev/null 2>&1 || true
     fi
 fi
+if [ ! -e /etc/lcs/lcs.conf ]; then
+    mkdir -p /etc/lcs
+    cp -p %{_datadir}/lcs/lcs.conf.example /etc/lcs/lcs.conf
+fi
 
 %preun
 if [ \$1 -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
@@ -181,6 +185,7 @@ fi
 %{_docdir}/%{name}/examples
 %{_bindir}/lcs
 %{_sbindir}/lcsd
+%{_datadir}/lcs/lcs.conf.example
 %{_unitdir}/lcsd.service
 %{_mandir}/man8/lcs.8*
 %{_mandir}/man8/lcsd.8*

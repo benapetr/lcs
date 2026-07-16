@@ -8,6 +8,7 @@
 #include "peer.h"
 #include "protocol.h"
 #include "resources.h"
+#include "systemd_service.h"
 #include "util.h"
 #include "vip.h"
 
@@ -75,6 +76,7 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
         return -1;
     }
     resource_runtime_t *res = &g_state.resources[resource_id];
+    const lcs_vip_config_t *cfg_res = &g_state.cfg.vips[resource_id];
     if (res->state == LCS_RES_CONFLICT)
     {
         lcs_log_debug("rejecting lease message type=%u for VIP %s from %s: local conflict state",
@@ -111,7 +113,12 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
             if (res->owner_node == g_state.self_index &&
                 res->owner_instance_id == g_state.instance_id &&
                 res->state == LCS_RES_ACTIVE)
-                lcs_vip_del(&g_state.cfg.vips[resource_id]);
+            {
+                if (cfg_res->type == LCS_RESOURCE_SERVICE)
+                    lcs_systemd_service_stop(cfg_res);
+                else
+                    lcs_vip_del(cfg_res);
+            }
             res->epoch = epoch;
             res->lease_id = 0;
             res->owner_node = -1;
@@ -168,7 +175,12 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
         res->owner_instance_id == g_state.instance_id &&
         owner_node != (uint16_t)g_state.self_index &&
         res->state == LCS_RES_ACTIVE)
-        lcs_vip_del(&g_state.cfg.vips[resource_id]);
+    {
+        if (cfg_res->type == LCS_RESOURCE_SERVICE)
+            lcs_systemd_service_stop(cfg_res);
+        else
+            lcs_vip_del(cfg_res);
+    }
     uint64_t now = lcs_now_ms();
     res->epoch = epoch;
     res->lease_id = lease_id;

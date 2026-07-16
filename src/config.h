@@ -28,9 +28,11 @@ typedef struct
 // VIP
 typedef struct
 {
+    lcs_resource_type_t type;
     char name[LCS_NAME_MAX + 1];
     char group_name[LCS_NAME_MAX + 1];
     char home_node_name[LCS_NAME_MAX + 1];
+    char systemd_unit[LCS_NAME_MAX + 1];
     char address[LCS_ADDR_MAX + 1];
     char interface[LCS_NAME_MAX + 1];
     char interface_original[LCS_ADDR_MAX + 1];

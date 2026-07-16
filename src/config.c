@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <net/if.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,7 @@ typedef enum
     SEC_NODE,
     SEC_GROUP,
     SEC_VIP,
+    SEC_SERVICE,
 } section_type_t;
 
 typedef struct
@@ -234,29 +236,31 @@ static int parse_section(lcs_config_t *cfg, char *name, section_t *sec, char *er
         return 0;
     }
 
-    if (strncmp(body, "vip ", 4) == 0)
+    if (strncmp(body, "vip ", 4) == 0 || strncmp(body, "service ", 8) == 0)
     {
-        char *vip_name = lcs_trim(body + 4);
+        bool is_service = strncmp(body, "service ", 8) == 0;
+        char *vip_name = lcs_trim(body + (is_service ? 8 : 4));
         if (!lcs_valid_name(vip_name))
         {
-            set_err(err, err_len, line, "invalid vip name");
+            set_err(err, err_len, line, is_service ? "invalid service name" : "invalid vip name");
             return -1;
         }
         if (cfg->vip_count >= LCS_MAX_VIPS)
         {
-            set_err(err, err_len, line, "too many VIPs");
+            set_err(err, err_len, line, "too many resources");
             return -1;
         }
         if (lcs_config_vip_index(cfg, vip_name) >= 0)
         {
-            set_err(err, err_len, line, "duplicate vip section");
+            set_err(err, err_len, line, "duplicate resource section");
             return -1;
         }
         int idx = (int)cfg->vip_count++;
+        cfg->vips[idx].type = is_service ? LCS_RESOURCE_SERVICE : LCS_RESOURCE_VIP;
         set_string(cfg->vips[idx].name, sizeof(cfg->vips[idx].name), vip_name);
         cfg->vips[idx].group_idx = -1;
         cfg->vips[idx].home_node_idx = -1;
-        sec->type = SEC_VIP;
+        sec->type = is_service ? SEC_SERVICE : SEC_VIP;
         sec->index = idx;
         return 0;
     }
@@ -323,6 +327,19 @@ static int valid_interface_name(const char *value)
             return 0;
     }
     return 1;
+}
+
+static int valid_systemd_unit_name(const char *value)
+{
+    if (!value || !*value || strlen(value) > LCS_NAME_MAX)
+        return 0;
+
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++)
+    {
+        if (!(isalnum(*p) || *p == '_' || *p == '-' || *p == '.' || *p == '@' || *p == ':'))
+            return 0;
+    }
+    return strstr(value, ".service") != NULL;
 }
 
 static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, char *err, size_t err_len, unsigned line)
@@ -407,7 +424,7 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
 
         if (strcmp(key, "mode") == 0)
             return parse_group_mode(value, &group->mode);
-    } else if (sec.type == SEC_VIP)
+    } else if (sec.type == SEC_VIP || sec.type == SEC_SERVICE)
     {
         lcs_vip_config_t *vip = &cfg->vips[sec.index];
         if (strcmp(key, "group") == 0)
@@ -441,6 +458,12 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
 
         if (strcmp(key, "post_stop") == 0)
             return set_string(vip->post_stop, sizeof(vip->post_stop), value);
+
+        if (sec.type == SEC_SERVICE)
+        {
+            if (strcmp(key, "systemd_unit") == 0 || strcmp(key, "unit") == 0)
+                return set_string(vip->systemd_unit, sizeof(vip->systemd_unit), value);
+        }
     }
     set_err(err, err_len, line, "unknown key");
     return -1;
@@ -492,7 +515,9 @@ int lcs_config_load(const char *path, lcs_config_t *cfg, char *err, size_t err_l
     FILE *f = fopen(path, "r");
     if (!f)
     {
-        set_err(err, err_len, 0, "failed to open config");
+        if (err && err_len)
+            snprintf(err, err_len, "failed to open config %s: %s",
+                     path ? path : "-", strerror(errno));
         return -1;
     }
     char line_buf[512];
@@ -723,6 +748,20 @@ int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
     for (size_t i = 0; i < cfg->vip_count; i++)
     {
         const lcs_vip_config_t *vip = &cfg->vips[i];
+        if (vip->type == LCS_RESOURCE_SERVICE)
+        {
+            if (!valid_systemd_unit_name(vip->systemd_unit))
+            {
+                set_err(err, err_len, 0, "service systemd_unit must be a valid .service unit name");
+                return -1;
+            }
+            if (*vip->address || *vip->interface)
+            {
+                set_err(err, err_len, 0, "service resources cannot set address or interface");
+                return -1;
+            }
+            continue;
+        }
         if (!valid_vip_cidr(vip->address))
         {
             set_err(err, err_len, 0, "vip address must be IPv4/IPv6 CIDR");

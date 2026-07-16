@@ -1,6 +1,6 @@
 # LCS — Lease-based Cluster Service
 
-LCS is a lightweight high-availability daemon that manages virtual IP addresses (VIPs) across a cluster of Linux nodes. Ownership of each VIP is controlled by a short-lived lease that must be continuously renewed by a majority of voting nodes. When a node loses quorum or crashes, the lease expires and another eligible node takes over.
+LCS is a lightweight high-availability daemon that manages resources such as virtual IP addresses (VIPs) and systemd services across a cluster of Linux nodes. Ownership of each resource is controlled by a short-lived lease that must be continuously renewed by a majority of voting nodes. When a node loses quorum or crashes, the lease expires and another eligible node takes over.
 
 `lcsd` is the cluster daemon. `lcs` is the CLI used to query and control the local daemon.
 
@@ -10,7 +10,7 @@ LCS is a lightweight high-availability daemon that manages virtual IP addresses 
 
 Every node listed in the configuration is a voting cluster member. All voting members participate in quorum, lease grants, lease renewal, and cluster-state decisions. There is no dedicated arbiter and no single lease authority.
 
-**full-member** — can vote and can run resources such as VIPs. Every full-member is eligible to host every configured VIP.
+**full-member** — can vote and can run resources such as VIPs and services. Every full-member is eligible to host every configured resource.
 
 **quorum-only** — can vote and participates in leases, but never runs resources or activates VIPs. This role is intended for arbiter-style placement in small clusters—for example, two full-member nodes plus one quorum-only node—without requiring a third full server.
 
@@ -86,11 +86,23 @@ For `keep-together` groups, a manual `lcs resource move` request for any group m
 
 If `home_node` is set, LCS places and rebalances the VIP back to that node whenever the node is online. If `home_node` is not set, ungrouped VIPs keep the existing behavior and remain wherever they were last placed unless failover moves them. A manual `lcs resource move` away from the home node blocks automatic return for that VIP; a later manual move back to the configured home node clears the block.
 
+## `[service NAME]`
+
+Service resources are systemd units managed over D-Bus. They use the same placement fields as VIPs: `group`, `priority`, `home_node`, and the hook fields.
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `systemd_unit` | yes | Systemd `.service` unit name, for example `nginx.service`. |
+
+Build `lcsd` with `make WITH_SYSTEMD=1` on systems with `libsystemd` development headers installed to enable service operations. Without that build flag, service resources parse but cannot be started, stopped, or health-checked.
+
+The managed unit should not be enabled to start independently on every node. LCS should be the actor that starts and stops it, otherwise systemd may run it outside the cluster lease.
+
 ### VIP hooks
 
 Hook scripts are executed directly with `exec`, not through a shell. The following environment variables are provided to each hook:
 
-`LCS_CLUSTER`, `LCS_NODE`, `LCS_VIP`, `LCS_ADDRESS`, `LCS_INTERFACE`, `LCS_EVENT`, `LCS_EPOCH`, `LCS_LEASE_ID`, `LCS_HOOK_TIMEOUT_MS`
+`LCS_CLUSTER`, `LCS_NODE`, `LCS_RESOURCE`, `LCS_RESOURCE_TYPE`, `LCS_SYSTEMD_UNIT`, `LCS_VIP`, `LCS_ADDRESS`, `LCS_INTERFACE`, `LCS_EVENT`, `LCS_EPOCH`, `LCS_LEASE_ID`, `LCS_HOOK_TIMEOUT_MS`
 
 A hook must exit with status `0` to be considered successful. If `pre_start` fails or times out, activation is aborted and the lease is released. If `pre_stop` fails or times out, the failure is logged but the VIP is still removed. Hook execution runs asynchronously in the daemon event loop, so peer communication and lease renewal continue while a hook is running. If quorum is lost or the local lease expires during a hook, `lcsd` skips any remaining stop hooks and removes the VIP immediately.
 
@@ -325,9 +337,9 @@ The target node activates the VIP only after it holds a current majority lease f
 
 ---
 
-# Automatic VIP placement
+# Automatic Resource Placement
 
-When the cluster reaches majority quorum and a VIP has no known owner, `lcsd` automatically places it on the first eligible full-member ordered by sorted node name. Placement follows the normal sequence: advance the epoch, acquire a majority lease, run the conflict check, then add the VIP.
+When the cluster reaches majority quorum and a resource has no known owner, `lcsd` automatically places it on the first eligible full-member ordered by sorted node name. Placement follows the normal sequence: advance the epoch, acquire a majority lease, run type-specific safety checks, then start the resource.
 
 Grouped VIPs may override this default target selection:
 
@@ -341,6 +353,8 @@ Grouped VIPs may override this default target selection:
 # VIP activation safety
 
 Before activating a VIP, a node must hold a valid majority lease and pass a same-L2 conflict check. `lcsd` sends ARP probes for IPv4 VIPs and Neighbor Discovery probes for IPv6 VIPs to detect whether another host on the segment already owns the address.
+
+Before activating a service resource, a node must hold a valid majority lease and successfully request `StartUnit` for the configured systemd unit over D-Bus. While the node owns the service, LCS periodically checks the unit `ActiveState`; if it is no longer active, LCS releases the resource so the cluster can place it again.
 
 If a conflict is detected—even when quorum indicates this node should own the VIP—activation is blocked. The resource enters a conflict state, `lcsd` logs the condition, and the VIP remains inactive until an administrator investigates and resolves the conflict manually.
 
