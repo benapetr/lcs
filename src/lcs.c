@@ -17,13 +17,13 @@
 static void usage(FILE *out)
 {
     fprintf(out, "usage: lcs [--version]\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] status\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] nrpe\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource list\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource move RESOURCE NODE\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource start RESOURCE\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource stop RESOURCE\n");
-    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] resource clear-conflict RESOURCE\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] status\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] nrpe\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource list\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource move RESOURCE NODE\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource start RESOURCE\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource stop RESOURCE\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource clear-conflict RESOURCE\n");
 }
 
 static int connect_socket(const char *path)
@@ -69,6 +69,52 @@ static const char *state_name(uint8_t state)
     }
 }
 
+static void json_string(FILE *out, const char *value)
+{
+    fputc('"', out);
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++)
+    {
+        switch (*p)
+        {
+            case '"':
+                fputs("\\\"", out);
+                break;
+            case '\\':
+                fputs("\\\\", out);
+                break;
+            case '\b':
+                fputs("\\b", out);
+                break;
+            case '\f':
+                fputs("\\f", out);
+                break;
+            case '\n':
+                fputs("\\n", out);
+                break;
+            case '\r':
+                fputs("\\r", out);
+                break;
+            case '\t':
+                fputs("\\t", out);
+                break;
+            default:
+                if (*p < 0x20)
+                    fprintf(out, "\\u%04x", *p);
+                else
+                    fputc(*p, out);
+                break;
+        }
+    }
+    fputc('"', out);
+}
+
+static void print_simple_response_json(bool ok, const char *message)
+{
+    printf("{\"ok\":%s,\"message\":", ok ? "true" : "false");
+    json_string(stdout, message);
+    printf("}\n");
+}
+
 typedef struct
 {
     uint16_t id;
@@ -110,6 +156,106 @@ typedef struct
     status_node_t nodes[LCS_MAX_NODES];
     status_vip_t vips[LCS_MAX_VIPS];
 } status_snapshot_t;
+
+static const char *status_owner_name(const status_snapshot_t *status,
+                                     const status_vip_t *vip,
+                                     char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1])
+{
+    if (vip->owner_node != UINT16_MAX && vip->owner_node < status->node_count)
+        return node_names[vip->owner_node];
+    return NULL;
+}
+
+static void status_node_names(const status_snapshot_t *status,
+                              char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1])
+{
+    memset(node_names, 0, sizeof(char) * LCS_MAX_NODES * (LCS_NAME_MAX + 1));
+    for (uint16_t i = 0; i < status->node_count; i++)
+    {
+        const status_node_t *node = &status->nodes[i];
+        snprintf(node_names[node->id], LCS_NAME_MAX + 1, "%s", node->name);
+    }
+}
+
+static void print_status_json(const status_snapshot_t *status)
+{
+    char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1];
+    status_node_names(status, node_names);
+
+    printf("{\"cluster\":{\"quorum\":%s,\"votes_seen\":%u,\"quorum_needed\":%u,\"membership_seconds\":%llu},",
+           status->has_quorum ? "true" : "false",
+           status->votes_seen, status->quorum_needed,
+           (unsigned long long)status->membership_seconds);
+
+    printf("\"nodes\":[");
+    for (uint16_t i = 0; i < status->node_count; i++)
+    {
+        const status_node_t *node = &status->nodes[i];
+        if (i)
+            printf(",");
+        printf("{\"id\":%u,\"name\":", node->id);
+        json_string(stdout, node->name);
+        printf(",\"role\":");
+        json_string(stdout, role_name(node->role));
+        printf(",\"online\":%s,\"self\":%s}",
+               node->online ? "true" : "false",
+               node->self ? "true" : "false");
+    }
+    printf("],\"resources\":[");
+    for (uint16_t i = 0; i < status->vip_count; i++)
+    {
+        const status_vip_t *vip = &status->vips[i];
+        const char *owner = status_owner_name(status, vip, node_names);
+        if (i)
+            printf(",");
+        printf("{\"id\":%u,\"name\":", vip->id);
+        json_string(stdout, vip->name);
+        printf(",\"type\":");
+        json_string(stdout, *vip->resource_type ? vip->resource_type : "vip");
+        printf(",\"state\":");
+        json_string(stdout, state_name(vip->state));
+        printf(",\"owner\":");
+        if (owner)
+            json_string(stdout, owner);
+        else
+            printf("null");
+        printf(",\"epoch\":%llu,\"lease_id\":%llu",
+               (unsigned long long)vip->epoch,
+               (unsigned long long)vip->lease_id);
+        if (*vip->address)
+        {
+            printf(",\"address\":");
+            json_string(stdout, vip->address);
+            printf(",\"interface\":");
+            json_string(stdout, vip->interface);
+        }
+        if (*vip->systemd_unit)
+        {
+            printf(",\"systemd_unit\":");
+            json_string(stdout, vip->systemd_unit);
+        }
+        if (*vip->group)
+        {
+            printf(",\"group\":");
+            json_string(stdout, vip->group);
+            printf(",\"priority\":%u", vip->priority);
+        }
+        if (*vip->home_node)
+        {
+            printf(",\"home_node\":");
+            json_string(stdout, vip->home_node);
+            printf(",\"home_blocked\":%s", vip->home_blocked ? "true" : "false");
+        }
+        printf(",\"disabled\":%s", vip->disabled ? "true" : "false");
+        if (vip->state == LCS_RES_CONFLICT && *vip->reason)
+        {
+            printf(",\"conflict_reason\":");
+            json_string(stdout, vip->reason);
+        }
+        printf("}");
+    }
+    printf("]}\n");
+}
 
 static int fetch_status(const char *socket_path, status_snapshot_t *status)
 {
@@ -195,11 +341,17 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
     return 0;
 }
 
-static int cmd_status(const char *socket_path)
+static int cmd_status(const char *socket_path, bool json_output)
 {
     status_snapshot_t status;
     if (fetch_status(socket_path, &status) != 0)
         return 1;
+
+    if (json_output)
+    {
+        print_status_json(&status);
+        return 0;
+    }
 
     char membership_for[64];
     lcs_format_duration(status.membership_seconds, membership_for,
@@ -251,7 +403,7 @@ static int cmd_status(const char *socket_path)
     return 0;
 }
 
-static int cmd_resource_list(const char *socket_path)
+static int cmd_resource_list(const char *socket_path, bool json_output)
 {
     status_snapshot_t status;
     if (fetch_status(socket_path, &status) != 0)
@@ -263,6 +415,62 @@ static int cmd_resource_list(const char *socket_path)
     {
         status_node_t *node = &status.nodes[i];
         snprintf(node_names[node->id], sizeof(node_names[node->id]), "%s", node->name);
+    }
+
+    if (json_output)
+    {
+        printf("{\"resources\":[");
+        for (uint16_t i = 0; i < status.vip_count; i++)
+        {
+            status_vip_t *vip = &status.vips[i];
+            const char *owner = status_owner_name(&status, vip, node_names);
+            if (i)
+                printf(",");
+            printf("{\"name\":");
+            json_string(stdout, vip->name);
+            printf(",\"type\":");
+            json_string(stdout, *vip->resource_type ? vip->resource_type : "vip");
+            printf(",\"state\":");
+            json_string(stdout, state_name(vip->state));
+            printf(",\"owner\":");
+            if (owner)
+                json_string(stdout, owner);
+            else
+                printf("null");
+            if (*vip->address)
+            {
+                printf(",\"address\":");
+                json_string(stdout, vip->address);
+                printf(",\"interface\":");
+                json_string(stdout, vip->interface);
+            }
+            if (*vip->systemd_unit)
+            {
+                printf(",\"systemd_unit\":");
+                json_string(stdout, vip->systemd_unit);
+            }
+            printf(",\"disabled\":%s", vip->disabled ? "true" : "false");
+            if (*vip->group)
+            {
+                printf(",\"group\":");
+                json_string(stdout, vip->group);
+                printf(",\"priority\":%u", vip->priority);
+            }
+            if (*vip->home_node)
+            {
+                printf(",\"home_node\":");
+                json_string(stdout, vip->home_node);
+                printf(",\"home_blocked\":%s", vip->home_blocked ? "true" : "false");
+            }
+            if (vip->state == LCS_RES_CONFLICT && *vip->reason)
+            {
+                printf(",\"conflict_reason\":");
+                json_string(stdout, vip->reason);
+            }
+            printf("}");
+        }
+        printf("]}\n");
+        return 0;
     }
 
     for (uint16_t i = 0; i < status.vip_count; i++)
@@ -292,12 +500,15 @@ static int cmd_resource_list(const char *socket_path)
     return 0;
 }
 
-static int cmd_nrpe(const char *socket_path)
+static int cmd_nrpe(const char *socket_path, bool json_output)
 {
     status_snapshot_t status;
     if (fetch_status(socket_path, &status) != 0)
     {
-        printf("UNKNOWN - failed to read local lcsd status\n");
+        if (json_output)
+            printf("{\"state\":\"UNKNOWN\",\"ok\":false,\"message\":\"failed to read local lcsd status\"}\n");
+        else
+            printf("UNKNOWN - failed to read local lcsd status\n");
         return 3;
     }
 
@@ -348,6 +559,25 @@ static int cmd_nrpe(const char *socket_path)
         rc = 1;
     }
 
+    if (json_output)
+    {
+        printf("{\"state\":");
+        json_string(stdout, state);
+        printf(",\"exit_code\":%d,\"quorum\":%s,\"votes_seen\":%u,\"node_count\":%u,\"quorum_needed\":%u,\"membership_seconds\":%llu,\"online_nodes\":%u,\"active_resources\":%u,\"resource_count\":%u,\"disabled_resources\":%u,\"down_resources\":%u",
+               rc, status.has_quorum ? "true" : "false", status.votes_seen,
+               status.node_count, status.quorum_needed,
+               (unsigned long long)status.membership_seconds,
+               online_nodes, active_resources, status.vip_count,
+               disabled_resources, down_resources);
+        if (down_resources > 0)
+        {
+            printf(",\"down_detail\":");
+            json_string(stdout, down_detail);
+        }
+        printf("}\n");
+        return rc;
+    }
+
     printf("%s - quorum=%s votes=%u/%u need=%u membership_for=%s nodes=%u/%u resources=%u/%u active",
            state, status.has_quorum ? "yes" : "no", status.votes_seen,
            status.node_count, status.quorum_needed, membership_for,
@@ -361,7 +591,7 @@ static int cmd_nrpe(const char *socket_path)
     return rc;
 }
 
-static int cmd_clear_conflict(const char *socket_path, const char *vip)
+static int cmd_clear_conflict(const char *socket_path, const char *vip, bool json_output)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
@@ -407,16 +637,23 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip)
     }
     if (status != 0)
     {
-        fprintf(stderr, "lcs: %s\n", message);
+        if (json_output)
+            print_simple_response_json(false, message);
+        else
+            fprintf(stderr, "lcs: %s\n", message);
         return 1;
     }
-    printf("%s\n", message);
+    if (json_output)
+        print_simple_response_json(true, message);
+    else
+        printf("%s\n", message);
     return 0;
 }
 
 static int cmd_resource_control(const char *socket_path, const char *resource,
                                 uint16_t req_type, uint16_t resp_type,
-                                const char *action)
+                                const char *action,
+                                bool json_output)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
@@ -463,14 +700,21 @@ static int cmd_resource_control(const char *socket_path, const char *resource,
     }
     if (status != 0)
     {
-        fprintf(stderr, "lcs: %s\n", message);
+        if (json_output)
+            print_simple_response_json(false, message);
+        else
+            fprintf(stderr, "lcs: %s\n", message);
         return 1;
     }
-    printf("%s\n", message);
+    if (json_output)
+        print_simple_response_json(true, message);
+    else
+        printf("%s\n", message);
     return 0;
 }
 
-static int cmd_move(const char *socket_path, const char *vip, const char *node)
+static int cmd_move(const char *socket_path, const char *vip, const char *node,
+                    bool json_output)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
@@ -516,14 +760,21 @@ static int cmd_move(const char *socket_path, const char *vip, const char *node)
     }
     if (status != 0)
     {
-        fprintf(stderr, "lcs: %s\n", message);
+        if (json_output)
+            print_simple_response_json(false, message);
+        else
+            fprintf(stderr, "lcs: %s\n", message);
         return 1;
     }
-    printf("%s\n", message);
+    if (json_output)
+        print_simple_response_json(true, message);
+    else
+        printf("%s\n", message);
     return 0;
 }
 
-static int cmd_resource(const char *socket_path, int argc, char **argv, int optind)
+static int cmd_resource(const char *socket_path, int argc, char **argv, int optind,
+                        bool json_output)
 {
     if (optind >= argc)
     {
@@ -539,7 +790,7 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
             usage(stderr);
             return 2;
         }
-        return cmd_resource_list(socket_path);
+        return cmd_resource_list(socket_path, json_output);
     }
     if (strcmp(cmd, "move") == 0)
     {
@@ -548,7 +799,7 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
             usage(stderr);
             return 2;
         }
-        return cmd_move(socket_path, argv[optind], argv[optind + 1]);
+        return cmd_move(socket_path, argv[optind], argv[optind + 1], json_output);
     }
     if (strcmp(cmd, "start") == 0)
     {
@@ -560,7 +811,8 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
         return cmd_resource_control(socket_path, argv[optind],
                                     LCS_MSG_RESOURCE_START_REQ,
                                     LCS_MSG_RESOURCE_START_RESP,
-                                    "start");
+                                    "start",
+                                    json_output);
     }
     if (strcmp(cmd, "stop") == 0)
     {
@@ -572,7 +824,8 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
         return cmd_resource_control(socket_path, argv[optind],
                                     LCS_MSG_RESOURCE_STOP_REQ,
                                     LCS_MSG_RESOURCE_STOP_RESP,
-                                    "stop");
+                                    "stop",
+                                    json_output);
     }
     if (strcmp(cmd, "clear-conflict") == 0)
     {
@@ -581,7 +834,7 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
             usage(stderr);
             return 2;
         }
-        return cmd_clear_conflict(socket_path, argv[optind]);
+        return cmd_clear_conflict(socket_path, argv[optind], json_output);
     }
 
     usage(stderr);
@@ -591,22 +844,35 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
 int main(int argc, char **argv)
 {
     const char *socket_path = LCS_DEFAULT_SOCKET_PATH;
+    bool json_output = false;
     int opt;
     static const struct option long_opts[] = {
         { "socket", required_argument, NULL, 's' },
+        { "json", no_argument, NULL, 'j' },
         { "version", no_argument, NULL, 'V' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
     };
-    while ((opt = getopt_long(argc, argv, "s:hV", long_opts, NULL)) != -1)
+    while ((opt = getopt_long(argc, argv, "s:jhV", long_opts, NULL)) != -1)
     {
         switch (opt)
         {
             case 's':
                 socket_path = optarg;
                 break;
+            case 'j':
+                json_output = true;
+                break;
             case 'V':
-                printf("lcs %s\n", LCS_VERSION);
+                if (json_output)
+                {
+                    printf("{\"version\":");
+                    json_string(stdout, LCS_VERSION);
+                    printf("}\n");
+                } else
+                {
+                    printf("lcs %s\n", LCS_VERSION);
+                }
                 return 0;
             case 'h':
                 usage(stdout);
@@ -629,7 +895,7 @@ int main(int argc, char **argv)
             usage(stderr);
             return 2;
         }
-        return cmd_status(socket_path);
+        return cmd_status(socket_path, json_output);
     }
     if (strcmp(cmd, "nrpe") == 0)
     {
@@ -638,10 +904,10 @@ int main(int argc, char **argv)
             usage(stderr);
             return 2;
         }
-        return cmd_nrpe(socket_path);
+        return cmd_nrpe(socket_path, json_output);
     }
     if (strcmp(cmd, "resource") == 0)
-        return cmd_resource(socket_path, argc, argv, optind);
+        return cmd_resource(socket_path, argc, argv, optind, json_output);
     usage(stderr);
     return 2;
 }

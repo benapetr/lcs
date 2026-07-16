@@ -138,6 +138,16 @@ VIPs
   vip1 192.168.6.70/24 dev=enX0 state=active owner=node1 epoch=11 group=service priority=1
 ```
 
+Use `--json` with CLI commands when integrating with automation:
+
+```
+# lcs --json status
+{"cluster":{"quorum":true,"votes_seen":3,"quorum_needed":2,"membership_seconds":7984},"nodes":[{"id":0,"name":"node1","role":"full-member","online":true,"self":true}],"resources":[{"id":0,"name":"vip1","type":"vip","state":"active","owner":"node1","epoch":11,"lease_id":42,"address":"192.168.6.70/24","interface":"enX0","group":"service","priority":1,"disabled":false}]}
+
+# lcs --json resource list
+{"resources":[{"name":"vip1","type":"vip","state":"active","owner":"node1","address":"192.168.6.70/24","interface":"enX0","disabled":false}]}
+```
+
 For NRPE / Nagios-style monitoring:
 
 ```
