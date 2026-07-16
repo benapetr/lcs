@@ -708,7 +708,7 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx,
 
             return peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_LEASE_ACK, -1, "lease rejected");
         case LCS_MSG_OWNER_RELEASE_REQ:
-            if (lease_handle_owner_release_request(payload, hdr->length, source_node_idx) == 0)
+            if (lease_handle_owner_release_request(payload, hdr->length, source_node_idx, epoll_fd) == 0)
                 return peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_OWNER_RELEASE_RESP, 0, "ok");
 
             return peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_OWNER_RELEASE_RESP, -1, "owner release rejected");

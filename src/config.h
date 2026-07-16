@@ -33,6 +33,7 @@ typedef struct
     char group_name[LCS_NAME_MAX + 1];
     char home_node_name[LCS_NAME_MAX + 1];
     char systemd_unit[LCS_NAME_MAX + 1];
+    char depends_on_names[LCS_MAX_RESOURCE_DEPS][LCS_NAME_MAX + 1];
     char address[LCS_ADDR_MAX + 1];
     char interface[LCS_NAME_MAX + 1];
     char interface_original[LCS_ADDR_MAX + 1];
@@ -42,6 +43,8 @@ typedef struct
     char post_stop[LCS_PATH_MAX + 1];
     int group_idx;
     int home_node_idx;
+    int depends_on_idx[LCS_MAX_RESOURCE_DEPS];
+    size_t depends_on_count;
     uint32_t priority;
     bool priority_set;
     bool interface_normalized;

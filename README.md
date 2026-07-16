@@ -91,6 +91,7 @@ Systemd service resources use `[service NAME]` sections:
 [service app]
 group = service
 home_node = a
+depends_on = vip1
 systemd_unit = app.service
 ```
 
@@ -118,6 +119,22 @@ For `keep-together` groups, moving any member through `lcs resource move` moves 
 Each resource can optionally set `home_node` to the name of a full-member node. When configured and not blocked, LCS places the resource on that node whenever it is online. Resources without a home node keep the existing behavior: after placement or failover, they remain wherever they last landed unless group rebalance or another failover moves them.
 
 Manual `lcs resource move RESOURCE NODE` to a non-home node blocks automatic return for that resource. A later manual move back to the configured home node clears the block.
+
+# Resource dependencies
+
+Resources can declare hard startup/shutdown dependencies with `depends_on`.
+Multiple dependencies are comma-separated and dependency chains are supported:
+
+```
+[service app]
+depends_on = public-vip, database-vip
+systemd_unit = app.service
+```
+
+LCS only starts a resource after all dependencies are active on the same node.
+When a dependency is stopped or moved away, local dependents are stopped first,
+so shutdown order is the reverse of startup order. Configuration validation
+rejects unknown dependencies, self-dependencies, and dependency cycles.
 
 # Resource control
 

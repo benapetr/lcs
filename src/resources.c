@@ -21,6 +21,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static void resources_release_local_internal(int vip_idx, int epoll_fd, bool allow_hooks);
+
 static const char *resources_hook_name(resource_hook_type_t type)
 {
     switch (type)
@@ -190,6 +192,72 @@ static void resources_clear_local_lease(resource_runtime_t *res, uint64_t epoch)
     res->conflict_reason[0] = '\0';
 }
 
+static bool resource_locally_owned_active(int vip_idx)
+{
+    if (vip_idx < 0 || (size_t)vip_idx >= g_state.cfg.vip_count)
+        return false;
+
+    const resource_runtime_t *res = &g_state.resources[vip_idx];
+    return res->owner_node == g_state.self_index &&
+           res->owner_instance_id == g_state.instance_id &&
+           res->state == LCS_RES_ACTIVE;
+}
+
+static bool resource_locally_owned_running(int vip_idx)
+{
+    if (vip_idx < 0 || (size_t)vip_idx >= g_state.cfg.vip_count)
+        return false;
+
+    const resource_runtime_t *res = &g_state.resources[vip_idx];
+    return res->owner_node == g_state.self_index &&
+           res->owner_instance_id == g_state.instance_id &&
+           (res->state == LCS_RES_ACTIVE ||
+            res->state == LCS_RES_STARTING ||
+            res->state == LCS_RES_STOPPING);
+}
+
+static bool resource_dependencies_active_locally(int vip_idx)
+{
+    const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
+    for (size_t i = 0; i < vip->depends_on_count; i++)
+    {
+        int dep_idx = vip->depends_on_idx[i];
+        if (!resource_locally_owned_active(dep_idx))
+            return false;
+    }
+    return true;
+}
+
+static bool resources_release_local_dependents(int vip_idx, int epoll_fd, bool allow_hooks)
+{
+    bool pending = false;
+    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    {
+        if ((int)i == vip_idx)
+            continue;
+
+        const lcs_vip_config_t *candidate = &g_state.cfg.vips[i];
+        bool depends = false;
+        for (size_t d = 0; d < candidate->depends_on_count; d++)
+        {
+            if (candidate->depends_on_idx[d] == vip_idx)
+            {
+                depends = true;
+                break;
+            }
+        }
+        if (!depends || !resource_locally_owned_running((int)i))
+            continue;
+
+        lcs_log_info("releasing dependent resource %s before %s",
+                     candidate->name, g_state.cfg.vips[vip_idx].name);
+        resources_release_local_internal((int)i, epoll_fd, allow_hooks);
+        if (resource_locally_owned_running((int)i))
+            pending = true;
+    }
+    return pending;
+}
+
 static int resources_complete_local_activation(int vip_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     resource_runtime_t *res = &g_state.resources[vip_idx];
@@ -254,6 +322,9 @@ static void resources_release_local_internal(int vip_idx, int epoll_fd, bool all
         resources_clear_local_lease(res, release_epoch);
         return;
     }
+
+    if (resources_release_local_dependents(vip_idx, epoll_fd, allow_hooks))
+        return;
 
     if (!allow_hooks)
         resources_cancel_hook(vip_idx);
@@ -350,6 +421,16 @@ int resources_activate_acquired_local(int vip_idx, uint64_t epoch, uint64_t leas
 {
     resource_runtime_t *res = &g_state.resources[vip_idx];
     uint64_t now = lcs_now_ms();
+    if (!resource_dependencies_active_locally(vip_idx))
+    {
+        lcs_log_warn("auto-place failed %s %s: dependencies are not active locally",
+                     resource_kind(&g_state.cfg.vips[vip_idx]),
+                     g_state.cfg.vips[vip_idx].name);
+        lease_release_majority(vip_idx, g_state.self_index, epoch, lease_id, epoll_fd);
+        resources_clear_local_lease(res, epoch);
+        res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
+        return -1;
+    }
     if (*g_state.cfg.vips[vip_idx].pre_start)
     {
         res->state = LCS_RES_STARTING;
@@ -391,6 +472,12 @@ int resources_activate_local(int vip_idx, uint64_t epoch, int epoll_fd)
                        (unsigned long long)(res->next_activation_attempt_ms - now));
         return -1;
     }
+    if (!resource_dependencies_active_locally(vip_idx))
+    {
+        lcs_log_debug2("auto-place skip VIP %s: dependencies are not active locally",
+                       g_state.cfg.vips[vip_idx].name);
+        return -1;
+    }
     uint64_t lease_id = lcs_random_u64();
     if (lease_start_acquire(vip_idx, g_state.self_index, epoch, lease_id, epoll_fd) != 0)
     {
@@ -407,9 +494,12 @@ void resources_release_local(int vip_idx, int epoll_fd)
     resources_release_local_internal(vip_idx, epoll_fd, true);
 }
 
-int resources_release_for_handoff(int vip_idx, uint64_t epoch, uint64_t lease_id)
+int resources_release_for_handoff(int vip_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     resource_runtime_t *res = &g_state.resources[vip_idx];
+
+    if (resources_release_local_dependents(vip_idx, epoll_fd, false))
+        return -1;
 
     resources_cancel_hook(vip_idx);
     if (resource_stop_local(&g_state.cfg.vips[vip_idx]) != 0)
@@ -435,24 +525,26 @@ void resources_drop_local(int vip_idx, int epoll_fd)
 
 void resources_graceful_shutdown(int epoll_fd)
 {
-    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
-    {
-        resource_runtime_t *res = &g_state.resources[i];
-        if (res->owner_node == g_state.self_index &&
-            res->owner_instance_id == g_state.instance_id)
-        {
-            lcs_log_info("releasing VIP %s before shutdown", g_state.cfg.vips[i].name);
-            resources_release_local((int)i, epoll_fd);
-        }
-    }
     uint64_t deadline = lcs_now_ms() + g_state.cfg.hook_timeout_ms + 100u;
     for (;;)
     {
         bool pending = false;
+        for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+        {
+            resource_runtime_t *res = &g_state.resources[i];
+            if (res->owner_node == g_state.self_index &&
+                res->owner_instance_id == g_state.instance_id)
+            {
+                lcs_log_info("releasing VIP %s before shutdown", g_state.cfg.vips[i].name);
+                resources_release_local((int)i, epoll_fd);
+            }
+        }
         resources_process_hooks(epoll_fd);
         for (size_t i = 0; i < g_state.cfg.vip_count; i++)
         {
-            if (g_state.resources[i].hook_pid > 0)
+            if (g_state.resources[i].hook_pid > 0 ||
+                (g_state.resources[i].owner_node == g_state.self_index &&
+                 g_state.resources[i].owner_instance_id == g_state.instance_id))
                 pending = true;
         }
         if (!pending || lcs_now_ms() >= deadline)

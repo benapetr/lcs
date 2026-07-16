@@ -260,6 +260,8 @@ static int parse_section(lcs_config_t *cfg, char *name, section_t *sec, char *er
         set_string(cfg->vips[idx].name, sizeof(cfg->vips[idx].name), vip_name);
         cfg->vips[idx].group_idx = -1;
         cfg->vips[idx].home_node_idx = -1;
+        for (size_t i = 0; i < LCS_MAX_RESOURCE_DEPS; i++)
+            cfg->vips[idx].depends_on_idx[i] = -1;
         sec->type = is_service ? SEC_SERVICE : SEC_VIP;
         sec->index = idx;
         return 0;
@@ -340,6 +342,35 @@ static int valid_systemd_unit_name(const char *value)
             return 0;
     }
     return strstr(value, ".service") != NULL;
+}
+
+static int parse_depends_on(lcs_vip_config_t *vip, const char *value)
+{
+    char buf[512];
+    if (set_string(buf, sizeof(buf), value) != 0)
+        return -1;
+
+    vip->depends_on_count = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+    {
+        char *name = lcs_trim(tok);
+        if (!lcs_valid_name(name))
+            return -1;
+        if (vip->depends_on_count >= LCS_MAX_RESOURCE_DEPS)
+            return -1;
+        for (size_t i = 0; i < vip->depends_on_count; i++)
+        {
+            if (strcmp(vip->depends_on_names[i], name) == 0)
+                return -1;
+        }
+        if (set_string(vip->depends_on_names[vip->depends_on_count],
+                       sizeof(vip->depends_on_names[vip->depends_on_count]),
+                       name) != 0)
+            return -1;
+        vip->depends_on_count++;
+    }
+    return vip->depends_on_count > 0 ? 0 : -1;
 }
 
 static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, char *err, size_t err_len, unsigned line)
@@ -440,6 +471,9 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
             vip->priority_set = true;
             return 0;
         }
+
+        if (strcmp(key, "depends_on") == 0 || strcmp(key, "depends-on") == 0)
+            return parse_depends_on(vip, value);
 
         if (strcmp(key, "address") == 0)
             return set_string(vip->address, sizeof(vip->address), value);
@@ -605,6 +639,68 @@ int lcs_config_vip_index(const lcs_config_t *cfg, const char *name)
     return -1;
 }
 
+static int validate_dependency_dfs(const lcs_config_t *cfg, int vip_idx,
+                                   uint8_t *visiting, uint8_t *visited,
+                                   char *err, size_t err_len)
+{
+    if (visited[vip_idx])
+        return 0;
+    if (visiting[vip_idx])
+    {
+        set_err(err, err_len, 0, "resource dependency cycle detected");
+        return -1;
+    }
+
+    visiting[vip_idx] = 1;
+    const lcs_vip_config_t *vip = &cfg->vips[vip_idx];
+    for (size_t i = 0; i < vip->depends_on_count; i++)
+    {
+        int dep_idx = vip->depends_on_idx[i];
+        if (dep_idx < 0 || (size_t)dep_idx >= cfg->vip_count)
+        {
+            set_err(err, err_len, 0, "resource references unknown dependency");
+            return -1;
+        }
+        if (validate_dependency_dfs(cfg, dep_idx, visiting, visited, err, err_len) != 0)
+            return -1;
+    }
+    visiting[vip_idx] = 0;
+    visited[vip_idx] = 1;
+    return 0;
+}
+
+static int validate_resource_dependencies(lcs_config_t *cfg, char *err, size_t err_len)
+{
+    for (size_t i = 0; i < cfg->vip_count; i++)
+    {
+        lcs_vip_config_t *vip = &cfg->vips[i];
+        for (size_t j = 0; j < vip->depends_on_count; j++)
+        {
+            int dep_idx = lcs_config_vip_index(cfg, vip->depends_on_names[j]);
+            if (dep_idx < 0)
+            {
+                set_err(err, err_len, 0, "resource references unknown dependency");
+                return -1;
+            }
+            if (dep_idx == (int)i)
+            {
+                set_err(err, err_len, 0, "resource cannot depend on itself");
+                return -1;
+            }
+            vip->depends_on_idx[j] = dep_idx;
+        }
+    }
+
+    uint8_t visiting[LCS_MAX_VIPS] = {0};
+    uint8_t visited[LCS_MAX_VIPS] = {0};
+    for (size_t i = 0; i < cfg->vip_count; i++)
+    {
+        if (validate_dependency_dfs(cfg, (int)i, visiting, visited, err, err_len) != 0)
+            return -1;
+    }
+    return 0;
+}
+
 static int validate_groups_and_assign_vips(lcs_config_t *cfg, char *err, size_t err_len)
 {
     for (size_t i = 0; i < cfg->group_count; i++)
@@ -675,6 +771,8 @@ static int validate_groups_and_assign_vips(lcs_config_t *cfg, char *err, size_t 
             }
         }
     }
+    if (validate_resource_dependencies(cfg, err, err_len) != 0)
+        return -1;
     return 0;
 }
 

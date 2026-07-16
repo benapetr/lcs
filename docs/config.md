@@ -153,6 +153,11 @@ priority = 200
 # or group rebalance moves it.
 home_node = node-a
 
+# OPTIONAL: comma-separated hard resource dependencies.
+# This resource starts only after all dependencies are active on the same node.
+# Dependents stop before this resource stops.
+# depends_on = base-vip, storage-vip
+
 # OPTIONAL: hook run after majority lease acquisition, before conflict probing and VIP add.
 # Path must be empty or absolute.
 # Default: empty.
@@ -190,6 +195,7 @@ systemd_unit = app.service
 group = public
 priority = 50
 home_node = node-a
+depends_on = public_v4
 # pre_start = /usr/local/libexec/lcs/app-pre-start
 # post_start = /usr/local/libexec/lcs/app-post-start
 # pre_stop = /usr/local/libexec/lcs/app-pre-stop

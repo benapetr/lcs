@@ -79,6 +79,7 @@ For `keep-together` groups, a manual `lcs resource move` request for any group m
 | `group` | no | — | Group name from a `[group NAME]` section. |
 | `priority` | no | inverse sorted VIP index | Positive integer priority inside the group. Higher numbers are higher priority. Priorities must be unique within a group. |
 | `home_node` | no | — | Preferred full-member node for this VIP. |
+| `depends_on` | no | — | Comma-separated resource names that must be active on the same node before this resource can start. |
 | `pre_start` | no | — | Absolute path to a script run after the lease is obtained but before the conflict check and VIP add. |
 | `post_start` | no | — | Absolute path to a script run after the VIP is activated and announced. |
 | `pre_stop` | no | — | Absolute path to a script run before planned VIP removal. |
@@ -88,7 +89,7 @@ If `home_node` is set, LCS places and rebalances the VIP back to that node whene
 
 ## `[service NAME]`
 
-Service resources are systemd units managed over D-Bus. They use the same placement fields as VIPs: `group`, `priority`, `home_node`, and the hook fields.
+Service resources are systemd units managed over D-Bus. They use the same placement fields as VIPs: `group`, `priority`, `home_node`, `depends_on`, and the hook fields.
 
 | Key | Required | Description |
 |-----|----------|-------------|
@@ -97,6 +98,19 @@ Service resources are systemd units managed over D-Bus. They use the same placem
 Build `lcsd` with `make WITH_SYSTEMD=1` on systems with `libsystemd` development headers installed to enable service operations. Without that build flag, service resources parse but cannot be started, stopped, or health-checked.
 
 The managed unit should not be enabled to start independently on every node. LCS should be the actor that starts and stops it, otherwise systemd may run it outside the cluster lease.
+
+## Resource dependencies
+
+`depends_on` declares hard resource dependencies. A resource starts only after all
+listed dependencies are active on the same node. When a dependency stops, moves,
+or is released during shutdown, LCS releases local dependents first, so shutdown
+order is the reverse of startup order.
+
+Multiple dependencies are comma-separated, and chains are supported. For example,
+if `worker` depends on `app` and `app` depends on `web-vip`, startup order is
+`web-vip`, then `app`, then `worker`; stop order is `worker`, then `app`, then
+`web-vip`. Configuration validation rejects unknown dependencies,
+self-dependencies, and dependency cycles.
 
 ### VIP hooks
 
@@ -339,7 +353,7 @@ The target node activates the VIP only after it holds a current majority lease f
 
 # Automatic Resource Placement
 
-When the cluster reaches majority quorum and a resource has no known owner, `lcsd` automatically places it on the first eligible full-member ordered by sorted node name. Placement follows the normal sequence: advance the epoch, acquire a majority lease, run type-specific safety checks, then start the resource.
+When the cluster reaches majority quorum and a resource has no known owner, `lcsd` automatically places it on the first eligible full-member ordered by sorted node name. If the resource has dependencies, placement waits until they are active on the same node. Placement follows the normal sequence: advance the epoch, acquire a majority lease, run type-specific safety checks, then start the resource.
 
 Grouped VIPs may override this default target selection:
 

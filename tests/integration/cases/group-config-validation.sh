@@ -167,6 +167,62 @@ systemd_unit = app.service
 address = 127.0.0.201/32
 EOF
 
+run_bad_config unknown-dependency "resource references unknown dependency" <<EOF
+[cluster]
+name = integration
+node = node1
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[vip vip1]
+depends_on = missing
+address = 127.0.0.201/32
+interface = lo
+EOF
+
+run_bad_config self-dependency "resource cannot depend on itself" <<EOF
+[cluster]
+name = integration
+node = node1
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[vip vip1]
+depends_on = vip1
+address = 127.0.0.201/32
+interface = lo
+EOF
+
+run_bad_config dependency-cycle "resource dependency cycle detected" <<EOF
+[cluster]
+name = integration
+node = node1
+socket = $(node_socket node1)
+metrics = false
+
+[node node1]
+role = full-member
+address = 127.0.0.1
+
+[vip vip1]
+depends_on = vip2
+address = 127.0.0.201/32
+interface = lo
+
+[vip vip2]
+depends_on = vip1
+address = 127.0.0.202/32
+interface = lo
+EOF
+
 run_good_config_starts service-resource-config \
     "startup config:" \
     "vips=1" <<EOF

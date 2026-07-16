@@ -13,6 +13,7 @@
 #define LCS_MAX_NODES 32
 #define LCS_MAX_VIPS 32
 #define LCS_MAX_GROUPS 32
+#define LCS_MAX_RESOURCE_DEPS 8
 #define LCS_NAME_MAX 63
 #define LCS_ADDR_MAX 127
 #define LCS_PATH_MAX 255

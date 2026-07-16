@@ -1,4 +1,5 @@
-This example runs a 3-node cluster with one systemd service resource.
+This example runs a 3-node cluster with one systemd service resource and
+one VIP resource grouped together.
 
 It uses:
 
@@ -6,7 +7,11 @@ It uses:
 - `b` full-member on `192.168.0.2`
 - `c` quorum-only voter on `192.168.0.3`
 - one service resource: `web` managing `nginx.service`
-- `a` as the service home node
+- one VIP resource: `web-vip` using `192.168.0.100/24` on `eth0`
+- `a` as the home node for both resources
+- a `keep-together` group so the VIP and service run on the same full-member
+- `depends_on = web-vip` so LCS starts the VIP before `nginx.service` and stops
+  `nginx.service` before removing the VIP
 
 Build LCS with systemd D-Bus support:
 
@@ -24,10 +29,11 @@ LCS own start and stop decisions:
 systemctl disable --now nginx.service
 ```
 
-Then start `lcsd` on all nodes. The service normally starts on node `a`.
-If `a` fails, the lease expires and another full-member can start the unit.
-When `a` returns, LCS moves the service back home unless a manual move away
-from home has blocked automatic return.
+Adjust the `web-vip` address and interface for your network before using the
+example. Then start `lcsd` on all nodes. The service and VIP normally start on
+node `a`. If `a` fails, the leases expire and another full-member can start the
+unit and bring up the VIP. When `a` returns, LCS moves both resources back home
+unless a manual move away from home has blocked automatic return.
 
 Useful commands:
 

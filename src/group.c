@@ -23,6 +23,24 @@ static bool group_same(int vip_idx, int other_idx)
     return group_idx >= 0 && group_idx == g_state.cfg.vips[other_idx].group_idx;
 }
 
+static bool group_resource_depends_on(int vip_idx, int dependency_idx)
+{
+    if (vip_idx < 0 || dependency_idx < 0 ||
+        (size_t)vip_idx >= g_state.cfg.vip_count ||
+        (size_t)dependency_idx >= g_state.cfg.vip_count)
+        return false;
+
+    const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
+    for (size_t i = 0; i < vip->depends_on_count; i++)
+    {
+        int dep_idx = vip->depends_on_idx[i];
+        if (dep_idx == dependency_idx ||
+            group_resource_depends_on(dep_idx, dependency_idx))
+            return true;
+    }
+    return false;
+}
+
 static bool group_has_waiting_higher_priority_vip(int vip_idx)
 {
     const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
@@ -36,6 +54,8 @@ static bool group_has_waiting_higher_priority_vip(int vip_idx)
         if (other_res->disabled)
             continue;
         if (other_vip->priority <= vip->priority)
+            continue;
+        if (group_resource_depends_on((int)i, vip_idx))
             continue;
         if (other_res->owner_node >= 0 || other_res->state == LCS_RES_CONFLICT)
             continue;
@@ -114,6 +134,33 @@ static int group_anti_affinity_target(int vip_idx)
     return group_normal_target();
 }
 
+static int group_dependency_target(int vip_idx)
+{
+    const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
+    int target = -1;
+    for (size_t i = 0; i < vip->depends_on_count; i++)
+    {
+        int dep_idx = vip->depends_on_idx[i];
+        if (dep_idx < 0 || (size_t)dep_idx >= g_state.cfg.vip_count)
+            return -1;
+
+        const resource_runtime_t *dep_res = &g_state.resources[dep_idx];
+        if (dep_res->state != LCS_RES_ACTIVE ||
+            dep_res->owner_node < 0 ||
+            !cluster_node_is_online((size_t)dep_res->owner_node))
+            return -1;
+
+        if (target < 0)
+        {
+            target = dep_res->owner_node;
+        } else if (target != dep_res->owner_node)
+        {
+            return -1;
+        }
+    }
+    return target;
+}
+
 int group_auto_place_target(int vip_idx)
 {
     if (vip_idx < 0 || (size_t)vip_idx >= g_state.cfg.vip_count)
@@ -121,6 +168,9 @@ int group_auto_place_target(int vip_idx)
 
     const lcs_vip_config_t *vip = &g_state.cfg.vips[vip_idx];
     const resource_runtime_t *res = &g_state.resources[vip_idx];
+    if (vip->depends_on_count > 0)
+        return group_dependency_target(vip_idx);
+
     if (vip->home_node_idx >= 0 &&
         !res->home_blocked &&
         cluster_node_is_online((size_t)vip->home_node_idx))

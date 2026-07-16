@@ -48,7 +48,7 @@ void lease_release_majority(int vip_idx, int owner_idx, uint64_t epoch, uint64_t
 // Handle a controlled handoff request from the target node. The current owner
 // validates that the request matches its active epoch and lease ID, removes the
 // VIP locally, and confirms release before the target is allowed to activate.
-int  lease_handle_owner_release_request(const void *payload, size_t len, int source_node_idx);
+int  lease_handle_owner_release_request(const void *payload, size_t len, int source_node_idx, int epoll_fd);
 
 // Expire remote ownership records whose lease deadline has passed. This only
 // clears local cluster state for leases owned by other daemon instances; it does

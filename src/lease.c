@@ -542,7 +542,7 @@ void lease_release_majority(int vip_idx, int owner_idx, uint64_t epoch, uint64_t
     (void)lease_start_operation(epoll_fd, LCS_LEASE_OP_RELEASE, vip_idx, owner_idx, epoch, lease_id);
 }
 
-int lease_handle_owner_release_request(const void *payload, size_t len, int source_node_idx)
+int lease_handle_owner_release_request(const void *payload, size_t len, int source_node_idx, int epoll_fd)
 {
     uint16_t resource_id, owner_node;
     uint64_t epoch, lease_id, sender_instance_id;
@@ -568,7 +568,7 @@ int lease_handle_owner_release_request(const void *payload, size_t len, int sour
         res->lease_id != lease_id)
         return -1;
 
-    if (resources_release_for_handoff((int)resource_id, epoch, lease_id) != 0)
+    if (resources_release_for_handoff((int)resource_id, epoch, lease_id, epoll_fd) != 0)
         return -1;
     lcs_log_info("released VIP %s for controlled handoff at epoch=%llu", g_state.cfg.vips[resource_id].name, (unsigned long long)epoch);
     return 0;
