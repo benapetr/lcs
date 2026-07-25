@@ -20,7 +20,7 @@
 #define LCS_MOVE_OP_MAX 16
 #define LCS_MOVE_REQ_PAYLOAD_SIZE ((LCS_NAME_MAX + 1u) * 2u)
 #define LCS_MOVE_RESP_PAYLOAD_SIZE 256u
-#define LCS_LEASE_OP_MAX LCS_MAX_VIPS
+#define LCS_LEASE_OP_MAX LCS_MAX_RESOURCES
 #define LCS_LEASE_RESP_PAYLOAD_SIZE 256u
 
 typedef enum
@@ -175,7 +175,7 @@ typedef struct move_runtime
     uint32_t client_seq;
     int source_node_idx;
     uint32_t peer_seq;
-    int vip_idx;
+    int resource_idx;
     int target_idx;
     int old_owner_idx;
     uint64_t old_epoch;
@@ -220,7 +220,7 @@ typedef struct lease_runtime
     bool active;
     uint64_t id;
     lease_op_type_t type;
-    int vip_idx;
+    int resource_idx;
     int owner_idx;
     uint64_t epoch;
     uint64_t lease_id;
@@ -256,7 +256,7 @@ typedef struct
     move_runtime_t moves[LCS_MOVE_OP_MAX];
     uint64_t next_lease_op_id;
     lease_runtime_t lease_ops[LCS_LEASE_OP_MAX];
-    resource_runtime_t resources[LCS_MAX_VIPS];
+    resource_runtime_t resources[LCS_MAX_RESOURCES];
 } daemon_state_t;
 
 extern daemon_state_t g_state;

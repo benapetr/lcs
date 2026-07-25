@@ -12,7 +12,7 @@
 #include <systemd/sd-bus.h>
 #include <unistd.h>
 
-static int service_get_active_state(sd_bus *bus, const lcs_vip_config_t *res, char **state)
+static int service_get_active_state(sd_bus *bus, const lcs_resource_config_t *res, char **state)
 {
     sd_bus_error err = SD_BUS_ERROR_NULL;
     sd_bus_message *reply = NULL;
@@ -68,7 +68,7 @@ static int service_get_active_state(sd_bus *bus, const lcs_vip_config_t *res, ch
     return 0;
 }
 
-static int service_wait_state(sd_bus *bus, const lcs_vip_config_t *res, bool want_active)
+static int service_wait_state(sd_bus *bus, const lcs_resource_config_t *res, bool want_active)
 {
     for (unsigned i = 0; i < 50; i++)
     {
@@ -88,7 +88,7 @@ static int service_wait_state(sd_bus *bus, const lcs_vip_config_t *res, bool wan
     return -1;
 }
 
-static int service_call_unit_method(const lcs_vip_config_t *res, const char *method, bool wait_active)
+static int service_call_unit_method(const lcs_resource_config_t *res, const char *method, bool wait_active)
 {
     sd_bus *bus = NULL;
     sd_bus_error err = SD_BUS_ERROR_NULL;
@@ -136,17 +136,17 @@ static int service_call_unit_method(const lcs_vip_config_t *res, const char *met
     return 0;
 }
 
-int lcs_systemd_service_start(const lcs_vip_config_t *res)
+int lcs_systemd_service_start(const lcs_resource_config_t *res)
 {
     return service_call_unit_method(res, "StartUnit", true);
 }
 
-int lcs_systemd_service_stop(const lcs_vip_config_t *res)
+int lcs_systemd_service_stop(const lcs_resource_config_t *res)
 {
     return service_call_unit_method(res, "StopUnit", false);
 }
 
-int lcs_systemd_service_is_active(const lcs_vip_config_t *res)
+int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
 {
     sd_bus *bus = NULL;
     char *state = NULL;
@@ -172,21 +172,21 @@ int lcs_systemd_service_is_active(const lcs_vip_config_t *res)
 
 #else
 
-int lcs_systemd_service_start(const lcs_vip_config_t *res)
+int lcs_systemd_service_start(const lcs_resource_config_t *res)
 {
     lcs_log_warn("cannot start service %s unit=%s: built without systemd D-Bus support",
                  res->name, res->systemd_unit);
     return -1;
 }
 
-int lcs_systemd_service_stop(const lcs_vip_config_t *res)
+int lcs_systemd_service_stop(const lcs_resource_config_t *res)
 {
     lcs_log_warn("cannot stop service %s unit=%s: built without systemd D-Bus support",
                  res->name, res->systemd_unit);
     return -1;
 }
 
-int lcs_systemd_service_is_active(const lcs_vip_config_t *res)
+int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
 {
     lcs_log_warn("cannot inspect service %s unit=%s: built without systemd D-Bus support",
                  res->name, res->systemd_unit);

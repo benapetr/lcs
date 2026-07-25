@@ -142,27 +142,27 @@ typedef struct
     uint32_t priority;
     uint8_t home_blocked;
     uint8_t disabled;
-} status_vip_t;
+} status_resource_t;
 
 typedef struct
 {
     uint16_t node_count;
-    uint16_t vip_count;
+    uint16_t resource_count;
     uint16_t self_node;
     uint16_t quorum_needed;
     uint16_t votes_seen;
     uint64_t membership_seconds;
     uint8_t has_quorum;
     status_node_t nodes[LCS_MAX_NODES];
-    status_vip_t vips[LCS_MAX_VIPS];
+    status_resource_t resources[LCS_MAX_RESOURCES];
 } status_snapshot_t;
 
 static const char *status_owner_name(const status_snapshot_t *status,
-                                     const status_vip_t *vip,
+                                     const status_resource_t *resource,
                                      char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1])
 {
-    if (vip->owner_node != UINT16_MAX && vip->owner_node < status->node_count)
-        return node_names[vip->owner_node];
+    if (resource->owner_node != UINT16_MAX && resource->owner_node < status->node_count)
+        return node_names[resource->owner_node];
     return NULL;
 }
 
@@ -202,55 +202,55 @@ static void print_status_json(const status_snapshot_t *status)
                node->self ? "true" : "false");
     }
     printf("],\"resources\":[");
-    for (uint16_t i = 0; i < status->vip_count; i++)
+    for (uint16_t i = 0; i < status->resource_count; i++)
     {
-        const status_vip_t *vip = &status->vips[i];
-        const char *owner = status_owner_name(status, vip, node_names);
+        const status_resource_t *resource = &status->resources[i];
+        const char *owner = status_owner_name(status, resource, node_names);
         if (i)
             printf(",");
-        printf("{\"id\":%u,\"name\":", vip->id);
-        json_string(stdout, vip->name);
+        printf("{\"id\":%u,\"name\":", resource->id);
+        json_string(stdout, resource->name);
         printf(",\"type\":");
-        json_string(stdout, *vip->resource_type ? vip->resource_type : "vip");
+        json_string(stdout, *resource->resource_type ? resource->resource_type : "vip");
         printf(",\"state\":");
-        json_string(stdout, state_name(vip->state));
+        json_string(stdout, state_name(resource->state));
         printf(",\"owner\":");
         if (owner)
             json_string(stdout, owner);
         else
             printf("null");
         printf(",\"epoch\":%llu,\"lease_id\":%llu",
-               (unsigned long long)vip->epoch,
-               (unsigned long long)vip->lease_id);
-        if (*vip->address)
+               (unsigned long long)resource->epoch,
+               (unsigned long long)resource->lease_id);
+        if (*resource->address)
         {
             printf(",\"address\":");
-            json_string(stdout, vip->address);
+            json_string(stdout, resource->address);
             printf(",\"interface\":");
-            json_string(stdout, vip->interface);
+            json_string(stdout, resource->interface);
         }
-        if (*vip->systemd_unit)
+        if (*resource->systemd_unit)
         {
             printf(",\"systemd_unit\":");
-            json_string(stdout, vip->systemd_unit);
+            json_string(stdout, resource->systemd_unit);
         }
-        if (*vip->group)
+        if (*resource->group)
         {
             printf(",\"group\":");
-            json_string(stdout, vip->group);
-            printf(",\"priority\":%u", vip->priority);
+            json_string(stdout, resource->group);
+            printf(",\"priority\":%u", resource->priority);
         }
-        if (*vip->home_node)
+        if (*resource->home_node)
         {
             printf(",\"home_node\":");
-            json_string(stdout, vip->home_node);
-            printf(",\"home_blocked\":%s", vip->home_blocked ? "true" : "false");
+            json_string(stdout, resource->home_node);
+            printf(",\"home_blocked\":%s", resource->home_blocked ? "true" : "false");
         }
-        printf(",\"disabled\":%s", vip->disabled ? "true" : "false");
-        if (vip->state == LCS_RES_CONFLICT && *vip->reason)
+        printf(",\"disabled\":%s", resource->disabled ? "true" : "false");
+        if (resource->state == LCS_RES_CONFLICT && *resource->reason)
         {
             printf(",\"conflict_reason\":");
-            json_string(stdout, vip->reason);
+            json_string(stdout, resource->reason);
         }
         printf("}");
     }
@@ -289,12 +289,12 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, hdr.length);
     memset(status, 0, sizeof(*status));
-    if (lcs_decode_status_header(&r, &status->node_count, &status->vip_count,
+    if (lcs_decode_status_header(&r, &status->node_count, &status->resource_count,
                                  &status->self_node, &status->quorum_needed,
                                  &status->votes_seen, &status->has_quorum,
                                  &status->membership_seconds) != 0 ||
         status->node_count > LCS_MAX_NODES ||
-        status->vip_count > LCS_MAX_VIPS)
+        status->resource_count > LCS_MAX_RESOURCES)
     {
         fprintf(stderr, "lcs: invalid status response header\n");
         return 1;
@@ -311,26 +311,26 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
             return 1;
         }
     }
-    for (uint16_t i = 0; i < status->vip_count; i++)
+    for (uint16_t i = 0; i < status->resource_count; i++)
     {
-        status_vip_t *vip = &status->vips[i];
-        if (lcs_decode_status_vip(&r, &vip->id, &vip->owner_node,
-                                  &vip->epoch, &vip->lease_id, &vip->state,
-                                  vip->name, sizeof(vip->name),
-                                  vip->address, sizeof(vip->address),
-                                  vip->interface, sizeof(vip->interface),
-                                  vip->group, sizeof(vip->group),
-                                  &vip->priority,
-                                  vip->home_node, sizeof(vip->home_node),
-                                  vip->resource_type, sizeof(vip->resource_type),
-                                  vip->systemd_unit, sizeof(vip->systemd_unit),
-                                  &vip->home_blocked,
-                                  &vip->disabled,
-                                  vip->reason,
-                                  sizeof(vip->reason)) != 0 ||
-            vip->id >= status->vip_count)
+        status_resource_t *resource = &status->resources[i];
+        if (lcs_decode_status_resource(&r, &resource->id, &resource->owner_node,
+                                  &resource->epoch, &resource->lease_id, &resource->state,
+                                  resource->name, sizeof(resource->name),
+                                  resource->address, sizeof(resource->address),
+                                  resource->interface, sizeof(resource->interface),
+                                  resource->group, sizeof(resource->group),
+                                  &resource->priority,
+                                  resource->home_node, sizeof(resource->home_node),
+                                  resource->resource_type, sizeof(resource->resource_type),
+                                  resource->systemd_unit, sizeof(resource->systemd_unit),
+                                  &resource->home_blocked,
+                                  &resource->disabled,
+                                  resource->reason,
+                                  sizeof(resource->reason)) != 0 ||
+            resource->id >= status->resource_count)
         {
-            fprintf(stderr, "lcs: invalid status VIP entry\n");
+            fprintf(stderr, "lcs: invalid status resource entry\n");
             return 1;
         }
     }
@@ -370,34 +370,34 @@ static int cmd_status(const char *socket_path, bool json_output)
         printf("  %s role=%s online=%s%s\n", node->name, role_name(node->role),
                node->online ? "yes" : "no", node->self ? " (self)" : "");
     }
-    printf("VIPs\n");
-    for (uint16_t i = 0; i < status.vip_count; i++)
+    printf("Resources\n");
+    for (uint16_t i = 0; i < status.resource_count; i++)
     {
-        status_vip_t *vip = &status.vips[i];
+        status_resource_t *resource = &status.resources[i];
         const char *owner = "-";
-        if (vip->owner_node != UINT16_MAX && vip->owner_node < status.node_count)
-            owner = node_names[vip->owner_node];
+        if (resource->owner_node != UINT16_MAX && resource->owner_node < status.node_count)
+            owner = node_names[resource->owner_node];
 
-        if (strcmp(vip->resource_type, "service") == 0)
+        if (strcmp(resource->resource_type, "service") == 0)
         {
             printf("  %s type=service unit=%s state=%s owner=%s epoch=%llu",
-                   vip->name, vip->systemd_unit, state_name(vip->state),
-                   owner, (unsigned long long)vip->epoch);
+                   resource->name, resource->systemd_unit, state_name(resource->state),
+                   owner, (unsigned long long)resource->epoch);
         } else
         {
             printf("  %s %s dev=%s state=%s owner=%s epoch=%llu",
-                   vip->name, vip->address, vip->interface, state_name(vip->state),
-                   owner, (unsigned long long)vip->epoch);
+                   resource->name, resource->address, resource->interface, state_name(resource->state),
+                   owner, (unsigned long long)resource->epoch);
         }
-        if (*vip->group)
-            printf(" group=%s priority=%u", vip->group, vip->priority);
-        if (*vip->home_node)
-            printf(" home=%s%s", vip->home_node, vip->home_blocked ? " blocked=yes" : "");
-        if (vip->disabled)
+        if (*resource->group)
+            printf(" group=%s priority=%u", resource->group, resource->priority);
+        if (*resource->home_node)
+            printf(" home=%s%s", resource->home_node, resource->home_blocked ? " blocked=yes" : "");
+        if (resource->disabled)
             printf(" disabled=yes");
         printf("\n");
-        if (vip->state == LCS_RES_CONFLICT && *vip->reason) {
-            printf("    conflict: %s\n", vip->reason);
+        if (resource->state == LCS_RES_CONFLICT && *resource->reason) {
+            printf("    conflict: %s\n", resource->reason);
         }
     }
     return 0;
@@ -420,52 +420,52 @@ static int cmd_resource_list(const char *socket_path, bool json_output)
     if (json_output)
     {
         printf("{\"resources\":[");
-        for (uint16_t i = 0; i < status.vip_count; i++)
+        for (uint16_t i = 0; i < status.resource_count; i++)
         {
-            status_vip_t *vip = &status.vips[i];
-            const char *owner = status_owner_name(&status, vip, node_names);
+            status_resource_t *resource = &status.resources[i];
+            const char *owner = status_owner_name(&status, resource, node_names);
             if (i)
                 printf(",");
             printf("{\"name\":");
-            json_string(stdout, vip->name);
+            json_string(stdout, resource->name);
             printf(",\"type\":");
-            json_string(stdout, *vip->resource_type ? vip->resource_type : "vip");
+            json_string(stdout, *resource->resource_type ? resource->resource_type : "vip");
             printf(",\"state\":");
-            json_string(stdout, state_name(vip->state));
+            json_string(stdout, state_name(resource->state));
             printf(",\"owner\":");
             if (owner)
                 json_string(stdout, owner);
             else
                 printf("null");
-            if (*vip->address)
+            if (*resource->address)
             {
                 printf(",\"address\":");
-                json_string(stdout, vip->address);
+                json_string(stdout, resource->address);
                 printf(",\"interface\":");
-                json_string(stdout, vip->interface);
+                json_string(stdout, resource->interface);
             }
-            if (*vip->systemd_unit)
+            if (*resource->systemd_unit)
             {
                 printf(",\"systemd_unit\":");
-                json_string(stdout, vip->systemd_unit);
+                json_string(stdout, resource->systemd_unit);
             }
-            printf(",\"disabled\":%s", vip->disabled ? "true" : "false");
-            if (*vip->group)
+            printf(",\"disabled\":%s", resource->disabled ? "true" : "false");
+            if (*resource->group)
             {
                 printf(",\"group\":");
-                json_string(stdout, vip->group);
-                printf(",\"priority\":%u", vip->priority);
+                json_string(stdout, resource->group);
+                printf(",\"priority\":%u", resource->priority);
             }
-            if (*vip->home_node)
+            if (*resource->home_node)
             {
                 printf(",\"home_node\":");
-                json_string(stdout, vip->home_node);
-                printf(",\"home_blocked\":%s", vip->home_blocked ? "true" : "false");
+                json_string(stdout, resource->home_node);
+                printf(",\"home_blocked\":%s", resource->home_blocked ? "true" : "false");
             }
-            if (vip->state == LCS_RES_CONFLICT && *vip->reason)
+            if (resource->state == LCS_RES_CONFLICT && *resource->reason)
             {
                 printf(",\"conflict_reason\":");
-                json_string(stdout, vip->reason);
+                json_string(stdout, resource->reason);
             }
             printf("}");
         }
@@ -473,28 +473,28 @@ static int cmd_resource_list(const char *socket_path, bool json_output)
         return 0;
     }
 
-    for (uint16_t i = 0; i < status.vip_count; i++)
+    for (uint16_t i = 0; i < status.resource_count; i++)
     {
-        status_vip_t *vip = &status.vips[i];
+        status_resource_t *resource = &status.resources[i];
         const char *owner = "-";
-        if (vip->owner_node != UINT16_MAX && vip->owner_node < status.node_count)
-            owner = node_names[vip->owner_node];
+        if (resource->owner_node != UINT16_MAX && resource->owner_node < status.node_count)
+            owner = node_names[resource->owner_node];
 
         printf("%s type=%s state=%s owner=%s",
-               vip->name, *vip->resource_type ? vip->resource_type : "vip",
-               state_name(vip->state), owner);
-        if (*vip->address)
-            printf(" address=%s dev=%s", vip->address, vip->interface);
-        if (*vip->systemd_unit)
-            printf(" unit=%s", vip->systemd_unit);
-        if (vip->disabled)
+               resource->name, *resource->resource_type ? resource->resource_type : "vip",
+               state_name(resource->state), owner);
+        if (*resource->address)
+            printf(" address=%s dev=%s", resource->address, resource->interface);
+        if (*resource->systemd_unit)
+            printf(" unit=%s", resource->systemd_unit);
+        if (resource->disabled)
             printf(" disabled=yes");
-        if (*vip->group)
-            printf(" group=%s priority=%u", vip->group, vip->priority);
-        if (*vip->home_node)
-            printf(" home=%s%s", vip->home_node, vip->home_blocked ? " home_blocked=yes" : "");
-        if (vip->state == LCS_RES_CONFLICT && *vip->reason)
-            printf(" conflict=\"%s\"", vip->reason);
+        if (*resource->group)
+            printf(" group=%s priority=%u", resource->group, resource->priority);
+        if (*resource->home_node)
+            printf(" home=%s%s", resource->home_node, resource->home_blocked ? " home_blocked=yes" : "");
+        if (resource->state == LCS_RES_CONFLICT && *resource->reason)
+            printf(" conflict=\"%s\"", resource->reason);
         printf("\n");
     }
     return 0;
@@ -523,23 +523,23 @@ static int cmd_nrpe(const char *socket_path, bool json_output)
         if (status.nodes[i].online)
             online_nodes++;
     }
-    for (uint16_t i = 0; i < status.vip_count; i++)
+    for (uint16_t i = 0; i < status.resource_count; i++)
     {
-        status_vip_t *vip = &status.vips[i];
-        if (vip->disabled)
+        status_resource_t *resource = &status.resources[i];
+        if (resource->disabled)
         {
             disabled_resources++;
             continue;
         }
-        if (vip->state == LCS_RES_ACTIVE)
+        if (resource->state == LCS_RES_ACTIVE)
         {
             active_resources++;
             continue;
         }
         down_resources++;
         int n = snprintf(down_detail + down_len, sizeof(down_detail) - down_len,
-                         "%s%s=%s", down_len ? "," : "", vip->name,
-                         state_name(vip->state));
+                         "%s%s=%s", down_len ? "," : "", resource->name,
+                         state_name(resource->state));
         if (n > 0 && (size_t)n < sizeof(down_detail) - down_len)
             down_len += (size_t)n;
     }
@@ -567,7 +567,7 @@ static int cmd_nrpe(const char *socket_path, bool json_output)
                rc, status.has_quorum ? "true" : "false", status.votes_seen,
                status.node_count, status.quorum_needed,
                (unsigned long long)status.membership_seconds,
-               online_nodes, active_resources, status.vip_count,
+               online_nodes, active_resources, status.resource_count,
                disabled_resources, down_resources);
         if (down_resources > 0)
         {
@@ -582,7 +582,7 @@ static int cmd_nrpe(const char *socket_path, bool json_output)
            state, status.has_quorum ? "yes" : "no", status.votes_seen,
            status.node_count, status.quorum_needed, membership_for,
            online_nodes, status.node_count,
-           active_resources, status.vip_count);
+           active_resources, status.resource_count);
     if (disabled_resources > 0)
         printf(" disabled=%u", disabled_resources);
     if (down_resources > 0)

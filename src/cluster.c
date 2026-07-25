@@ -42,7 +42,7 @@ const char *cluster_node_name_or_none(int node_idx)
 
 static void cluster_stop_local_resource(size_t id)
 {
-    const lcs_vip_config_t *res = &g_state.cfg.vips[id];
+    const lcs_resource_config_t *res = &g_state.cfg.resources[id];
     if (res->type == LCS_RESOURCE_SERVICE)
         lcs_systemd_service_stop(res);
     else
@@ -92,10 +92,10 @@ int cluster_encode_state(unsigned char *payload, size_t cap, size_t *len)
 {
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, cap);
-    if (lcs_buf_put_u64(&w, g_state.instance_id) != 0 || lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.vip_count) != 0)
+    if (lcs_buf_put_u64(&w, g_state.instance_id) != 0 || lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.resource_count) != 0)
         return -1;
 
-    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         const resource_runtime_t *res = &g_state.resources[i];
         uint16_t owner = res->owner_node < 0 ? UINT16_MAX : (uint16_t)res->owner_node;
@@ -127,7 +127,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
     uint16_t count;
     if (lcs_buf_get_u64(&r, &sender_instance_id) != 0 ||
         lcs_buf_get_u16(&r, &count) != 0 ||
-        count != g_state.cfg.vip_count)
+        count != g_state.cfg.resource_count)
         return -1;
 
     if (source_node_idx >= 0 &&
@@ -154,7 +154,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             lcs_buf_get_u64(&r, &disabled_generation) != 0 ||
             lcs_buf_get_u8(&r, &disabled) != 0 ||
             lcs_buf_get_fixed_string(&r, reason, sizeof(reason), LCS_REASON_MAX + 1) != 0 ||
-            id >= g_state.cfg.vip_count)
+            id >= g_state.cfg.resource_count)
             return -1;
 
         resource_runtime_t *res = &g_state.resources[id];
@@ -203,8 +203,8 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             if (same_lease && incoming_deadline_ms && res->lease_deadline_ms &&
                 incoming_deadline_ms < res->lease_deadline_ms)
             {
-                lcs_log_debug3("state sync for VIP %s kept later local deadline for same lease epoch=%llu",
-                               g_state.cfg.vips[id].name, (unsigned long long)epoch);
+                lcs_log_debug3("state sync for resource %s kept later local deadline for same lease epoch=%llu",
+                               g_state.cfg.resources[id].name, (unsigned long long)epoch);
             } else
                 res->lease_deadline_ms = incoming_deadline_ms;
             snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",

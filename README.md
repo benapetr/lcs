@@ -151,7 +151,7 @@ Nodes
   node1 role=full-member online=yes (self)
   node2 role=full-member online=yes
   node3 role=quorum-only online=yes
-VIPs
+Resources
   vip1 192.168.6.70/24 dev=enX0 state=active owner=node1 epoch=11 group=service priority=1
 ```
 
@@ -192,20 +192,20 @@ lcs_cluster_membership_seconds{cluster="ingress"} 7984
 lcs_node_online{cluster="ingress",node="node1",role="full-member"} 1
 lcs_node_online{cluster="ingress",node="node2",role="full-member"} 1
 lcs_node_online{cluster="ingress",node="node3",role="quorum-only"} 1
-# TYPE lcs_vip_state gauge
-# TYPE lcs_vip_owner gauge
-# TYPE lcs_vip_epoch gauge
-# TYPE lcs_vip_lease_remaining_seconds gauge
-# TYPE lcs_vip_conflict gauge
-# TYPE lcs_vip_failovers_total counter
-# TYPE lcs_vip_priority gauge
-lcs_vip_state{cluster="ingress",vip="vip1",state="active"} 1
-lcs_vip_owner{cluster="ingress",vip="vip1",node="node1"} 1
-lcs_vip_owner{cluster="ingress",vip="vip1",node="node2"} 0
-lcs_vip_owner{cluster="ingress",vip="vip1",node="node3"} 0
-lcs_vip_epoch{cluster="ingress",vip="vip1"} 11
-lcs_vip_lease_remaining_seconds{cluster="ingress",vip="vip1"} 3.909
-lcs_vip_conflict{cluster="ingress",vip="vip1"} 0
-lcs_vip_failovers_total{cluster="ingress",vip="vip1"} 1
-lcs_vip_priority{cluster="ingress",vip="vip1",group="service"} 1
+# TYPE lcs_resource_state gauge
+# TYPE lcs_resource_owner gauge
+# TYPE lcs_resource_epoch gauge
+# TYPE lcs_resource_lease_remaining_seconds gauge
+# TYPE lcs_resource_conflict gauge
+# TYPE lcs_resource_failovers_total counter
+# TYPE lcs_resource_priority gauge
+lcs_resource_state{cluster="ingress",resource="vip1",type="vip",state="active"} 1
+lcs_resource_owner{cluster="ingress",resource="vip1",type="vip",node="node1"} 1
+lcs_resource_owner{cluster="ingress",resource="vip1",type="vip",node="node2"} 0
+lcs_resource_owner{cluster="ingress",resource="vip1",type="vip",node="node3"} 0
+lcs_resource_epoch{cluster="ingress",resource="vip1",type="vip"} 11
+lcs_resource_lease_remaining_seconds{cluster="ingress",resource="vip1",type="vip"} 3.909
+lcs_resource_conflict{cluster="ingress",resource="vip1",type="vip"} 0
+lcs_resource_failovers_total{cluster="ingress",resource="vip1",type="vip"} 1
+lcs_resource_priority{cluster="ingress",resource="vip1",type="vip",group="service"} 1
 ```

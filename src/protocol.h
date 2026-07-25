@@ -92,12 +92,12 @@ int lcs_encode_simple_resp(void *payload, size_t cap, size_t *len, int32_t statu
 int lcs_decode_simple_resp(const void *payload, size_t len, int32_t *status, char *message, size_t message_len);
 
 int lcs_encode_status_header(lcs_buf_writer_t *w, uint16_t node_count,
-                             uint16_t vip_count, uint16_t self_node,
+                             uint16_t resource_count, uint16_t self_node,
                              uint16_t quorum_needed, uint16_t votes_seen,
                              uint8_t has_quorum,
                              uint64_t membership_seconds);
 int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
-                             uint16_t *vip_count, uint16_t *self_node,
+                             uint16_t *resource_count, uint16_t *self_node,
                              uint16_t *quorum_needed, uint16_t *votes_seen,
                              uint8_t *has_quorum,
                              uint64_t *membership_seconds);
@@ -106,7 +106,7 @@ int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role,
 int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role,
                            uint8_t *online, uint8_t *self,
                            char *name, size_t name_len);
-int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
+int lcs_encode_status_resource(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
                           uint64_t epoch, uint64_t lease_id, uint8_t state,
                           const char *name, const char *address,
                           const char *interface, const char *group,
@@ -115,7 +115,7 @@ int lcs_encode_status_vip(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
                           const char *systemd_unit,
                           uint8_t home_blocked, uint8_t disabled,
                           const char *reason);
-int lcs_decode_status_vip(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_node,
+int lcs_decode_status_resource(lcs_buf_reader_t *r, uint16_t *id, uint16_t *owner_node,
                           uint64_t *epoch, uint64_t *lease_id, uint8_t *state,
                           char *name, size_t name_len,
                           char *address, size_t address_len,

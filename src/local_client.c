@@ -138,7 +138,7 @@ static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
     uint64_t membership_seconds = g_state.membership_since_ms && now >= g_state.membership_since_ms ?
                                   (now - g_state.membership_since_ms) / 1000u : 0;
     if (lcs_encode_status_header(&w, (uint16_t)g_state.cfg.node_count,
-                                 (uint16_t)g_state.cfg.vip_count,
+                                 (uint16_t)g_state.cfg.resource_count,
                                  (uint16_t)g_state.self_index,
                                  (uint16_t)g_state.quorum_needed,
                                  (uint16_t)g_state.votes_seen,
@@ -160,32 +160,32 @@ static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
             return;
         }
     }
-    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         uint16_t owner = g_state.resources[i].owner_node < 0 ?
                          UINT16_MAX : (uint16_t)g_state.resources[i].owner_node;
-        const char *group = g_state.cfg.vips[i].group_idx >= 0 ?
-                            g_state.cfg.groups[g_state.cfg.vips[i].group_idx].name : "";
-        const char *home_node = g_state.cfg.vips[i].home_node_idx >= 0 ?
-                                g_state.cfg.nodes[g_state.cfg.vips[i].home_node_idx].name : "";
-        const char *type = g_state.cfg.vips[i].type == LCS_RESOURCE_SERVICE ? "service" : "vip";
-        if (lcs_encode_status_vip(&w, (uint16_t)i, owner,
+        const char *group = g_state.cfg.resources[i].group_idx >= 0 ?
+                            g_state.cfg.groups[g_state.cfg.resources[i].group_idx].name : "";
+        const char *home_node = g_state.cfg.resources[i].home_node_idx >= 0 ?
+                                g_state.cfg.nodes[g_state.cfg.resources[i].home_node_idx].name : "";
+        const char *type = g_state.cfg.resources[i].type == LCS_RESOURCE_SERVICE ? "service" : "vip";
+        if (lcs_encode_status_resource(&w, (uint16_t)i, owner,
                                   g_state.resources[i].epoch,
                                   g_state.resources[i].lease_id,
                                   (uint8_t)g_state.resources[i].state,
-                                  g_state.cfg.vips[i].name,
-                                  g_state.cfg.vips[i].address,
-                                  g_state.cfg.vips[i].interface,
+                                  g_state.cfg.resources[i].name,
+                                  g_state.cfg.resources[i].address,
+                                  g_state.cfg.resources[i].interface,
                                   group,
-                                  g_state.cfg.vips[i].priority,
+                                  g_state.cfg.resources[i].priority,
                                   home_node,
                                   type,
-                                  g_state.cfg.vips[i].systemd_unit,
+                                  g_state.cfg.resources[i].systemd_unit,
                                   g_state.resources[i].home_blocked ? 1 : 0,
                                   g_state.resources[i].disabled ? 1 : 0,
                                   g_state.resources[i].conflict_reason) != 0)
         {
-            client_queue_error(epoll_fd, slot_idx, seq, "failed to encode status vip");
+            client_queue_error(epoll_fd, slot_idx, seq, "failed to encode status resource");
             return;
         }
     }
@@ -231,13 +231,13 @@ static void client_queue_clear_conflict(int epoll_fd,
         snprintf(message, sizeof(message), "majority quorum is not available");
     } else
     {
-        int vip_idx = lcs_config_vip_index(&g_state.cfg, vip_name);
-        if (vip_idx < 0)
+        int resource_idx = lcs_config_resource_index(&g_state.cfg, vip_name);
+        if (resource_idx < 0)
         {
             snprintf(message, sizeof(message), "unknown VIP");
         } else
         {
-            resource_runtime_t *res = &g_state.resources[vip_idx];
+            resource_runtime_t *res = &g_state.resources[resource_idx];
             if (res->state != LCS_RES_CONFLICT)
             {
                 status = 0;
@@ -256,7 +256,7 @@ static void client_queue_clear_conflict(int epoll_fd,
                 peer_broadcast_state_sync(epoll_fd);
                 status = 0;
                 snprintf(message, sizeof(message), "conflict cleared");
-                lcs_log_info("admin cleared conflict for VIP %s epoch=%llu", g_state.cfg.vips[vip_idx].name, (unsigned long long)res->epoch);
+                lcs_log_info("admin cleared conflict for resource %s epoch=%llu", g_state.cfg.resources[resource_idx].name, (unsigned long long)res->epoch);
             }
         }
     }
@@ -280,11 +280,11 @@ static void client_queue_resource_control(int epoll_fd,
         snprintf(message, sizeof(message), "majority quorum is not available");
     } else
     {
-        int vip_idx = lcs_config_vip_index(&g_state.cfg, resource_name);
-        if (vip_idx < 0)
+        int resource_idx = lcs_config_resource_index(&g_state.cfg, resource_name);
+        if (resource_idx < 0)
         {
             snprintf(message, sizeof(message), "unknown resource");
-        } else if (resources_set_disabled(vip_idx, disabled, epoll_fd,
+        } else if (resources_set_disabled(resource_idx, disabled, epoll_fd,
                                           message, sizeof(message)) == 0)
         {
             status = 0;

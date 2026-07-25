@@ -17,7 +17,7 @@ typedef struct
     uint16_t port;
 } lcs_node_config_t;
 
-// VIP group
+// Resource group
 typedef struct
 {
     char name[LCS_NAME_MAX + 1];
@@ -25,7 +25,7 @@ typedef struct
     lcs_group_mode_t mode;
 } lcs_group_config_t;
 
-// VIP
+// Resource
 typedef struct
 {
     lcs_resource_type_t type;
@@ -48,7 +48,7 @@ typedef struct
     uint32_t priority;
     bool priority_set;
     bool interface_normalized;
-} lcs_vip_config_t;
+} lcs_resource_config_t;
 
 typedef struct
 {
@@ -72,10 +72,10 @@ typedef struct
     lcs_vip_backend_t vip_backend;
     size_t node_count;
     size_t group_count;
-    size_t vip_count;
+    size_t resource_count;
     lcs_node_config_t nodes[LCS_MAX_NODES];
     lcs_group_config_t groups[LCS_MAX_GROUPS];
-    lcs_vip_config_t vips[LCS_MAX_VIPS];
+    lcs_resource_config_t resources[LCS_MAX_RESOURCES];
 } lcs_config_t;
 
 void      lcs_config_init_defaults(lcs_config_t *cfg);
@@ -83,7 +83,7 @@ int       lcs_config_load(const char *path, lcs_config_t *cfg, char *err, size_t
 int       lcs_config_self_index(const lcs_config_t *cfg);
 int       lcs_config_node_index(const lcs_config_t *cfg, const char *name);
 int       lcs_config_group_index(const lcs_config_t *cfg, const char *name);
-int       lcs_config_vip_index(const lcs_config_t *cfg, const char *name);
+int       lcs_config_resource_index(const lcs_config_t *cfg, const char *name);
 int       lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len);
 uint32_t  lcs_config_quorum(const lcs_config_t *cfg);
 

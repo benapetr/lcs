@@ -11,7 +11,7 @@
 #define LCS_VERSION "1.1.0"
 
 #define LCS_MAX_NODES 32
-#define LCS_MAX_VIPS 32
+#define LCS_MAX_RESOURCES 32
 #define LCS_MAX_GROUPS 32
 #define LCS_MAX_RESOURCE_DEPS 8
 #define LCS_NAME_MAX 63

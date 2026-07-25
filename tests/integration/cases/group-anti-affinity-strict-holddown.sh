@@ -83,7 +83,7 @@ sleep 1
 
 status_text node1 | grep -Fq "vip1 127.0.0.201/32 dev=lo state=active owner=node1" || die "vip1 not active on node1"
 status_text node1 | grep -Fq "vip2 127.0.0.202/32 dev=lo state=stopped owner=-" || die "vip2 should remain stopped"
-grep -Fq "strict anti-affinity group service has 2 VIPs but only 1 full-member nodes" "$TEST_TMP/logs/node1.log" ||
+grep -Fq "strict anti-affinity group service has 2 resources but only 1 full-member nodes" "$TEST_TMP/logs/node1.log" ||
     die "missing strict anti-affinity warning"
 
 log "group strict anti-affinity hold-down regression passed"

@@ -71,21 +71,21 @@ static int set_string(char *dst, size_t dst_len, const char *value)
     return 0;
 }
 
-static int set_vip_interface(lcs_vip_config_t *vip, const char *value)
+static int set_vip_interface(lcs_resource_config_t *resource, const char *value)
 {
     const char *at = strchr(value, '@');
     size_t len = at ? (size_t)(at - value) : strlen(value);
-    if (len == 0 || len >= sizeof(vip->interface))
+    if (len == 0 || len >= sizeof(resource->interface))
         return -1;
 
-    memcpy(vip->interface, value, len);
-    vip->interface[len] = '\0';
+    memcpy(resource->interface, value, len);
+    resource->interface[len] = '\0';
     if (at)
     {
-        if (strlen(value) >= sizeof(vip->interface_original))
+        if (strlen(value) >= sizeof(resource->interface_original))
             return -1;
-        snprintf(vip->interface_original, sizeof(vip->interface_original), "%s", value);
-        vip->interface_normalized = true;
+        snprintf(resource->interface_original, sizeof(resource->interface_original), "%s", value);
+        resource->interface_normalized = true;
     }
     return 0;
 }
@@ -245,23 +245,23 @@ static int parse_section(lcs_config_t *cfg, char *name, section_t *sec, char *er
             set_err(err, err_len, line, is_service ? "invalid service name" : "invalid vip name");
             return -1;
         }
-        if (cfg->vip_count >= LCS_MAX_VIPS)
+        if (cfg->resource_count >= LCS_MAX_RESOURCES)
         {
             set_err(err, err_len, line, "too many resources");
             return -1;
         }
-        if (lcs_config_vip_index(cfg, vip_name) >= 0)
+        if (lcs_config_resource_index(cfg, vip_name) >= 0)
         {
             set_err(err, err_len, line, "duplicate resource section");
             return -1;
         }
-        int idx = (int)cfg->vip_count++;
-        cfg->vips[idx].type = is_service ? LCS_RESOURCE_SERVICE : LCS_RESOURCE_VIP;
-        set_string(cfg->vips[idx].name, sizeof(cfg->vips[idx].name), vip_name);
-        cfg->vips[idx].group_idx = -1;
-        cfg->vips[idx].home_node_idx = -1;
+        int idx = (int)cfg->resource_count++;
+        cfg->resources[idx].type = is_service ? LCS_RESOURCE_SERVICE : LCS_RESOURCE_VIP;
+        set_string(cfg->resources[idx].name, sizeof(cfg->resources[idx].name), vip_name);
+        cfg->resources[idx].group_idx = -1;
+        cfg->resources[idx].home_node_idx = -1;
         for (size_t i = 0; i < LCS_MAX_RESOURCE_DEPS; i++)
-            cfg->vips[idx].depends_on_idx[i] = -1;
+            cfg->resources[idx].depends_on_idx[i] = -1;
         sec->type = is_service ? SEC_SERVICE : SEC_VIP;
         sec->index = idx;
         return 0;
@@ -344,33 +344,33 @@ static int valid_systemd_unit_name(const char *value)
     return strstr(value, ".service") != NULL;
 }
 
-static int parse_depends_on(lcs_vip_config_t *vip, const char *value)
+static int parse_depends_on(lcs_resource_config_t *resource, const char *value)
 {
     char buf[512];
     if (set_string(buf, sizeof(buf), value) != 0)
         return -1;
 
-    vip->depends_on_count = 0;
+    resource->depends_on_count = 0;
     char *save = NULL;
     for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
     {
         char *name = lcs_trim(tok);
         if (!lcs_valid_name(name))
             return -1;
-        if (vip->depends_on_count >= LCS_MAX_RESOURCE_DEPS)
+        if (resource->depends_on_count >= LCS_MAX_RESOURCE_DEPS)
             return -1;
-        for (size_t i = 0; i < vip->depends_on_count; i++)
+        for (size_t i = 0; i < resource->depends_on_count; i++)
         {
-            if (strcmp(vip->depends_on_names[i], name) == 0)
+            if (strcmp(resource->depends_on_names[i], name) == 0)
                 return -1;
         }
-        if (set_string(vip->depends_on_names[vip->depends_on_count],
-                       sizeof(vip->depends_on_names[vip->depends_on_count]),
+        if (set_string(resource->depends_on_names[resource->depends_on_count],
+                       sizeof(resource->depends_on_names[resource->depends_on_count]),
                        name) != 0)
             return -1;
-        vip->depends_on_count++;
+        resource->depends_on_count++;
     }
-    return vip->depends_on_count > 0 ? 0 : -1;
+    return resource->depends_on_count > 0 ? 0 : -1;
 }
 
 static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, char *err, size_t err_len, unsigned line)
@@ -457,46 +457,46 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
             return parse_group_mode(value, &group->mode);
     } else if (sec.type == SEC_VIP || sec.type == SEC_SERVICE)
     {
-        lcs_vip_config_t *vip = &cfg->vips[sec.index];
+        lcs_resource_config_t *resource = &cfg->resources[sec.index];
         if (strcmp(key, "group") == 0)
-            return set_string(vip->group_name, sizeof(vip->group_name), value);
+            return set_string(resource->group_name, sizeof(resource->group_name), value);
 
         if (strcmp(key, "home_node") == 0)
-            return set_string(vip->home_node_name, sizeof(vip->home_node_name), value);
+            return set_string(resource->home_node_name, sizeof(resource->home_node_name), value);
 
         if (strcmp(key, "priority") == 0)
         {
-            if (lcs_parse_u32(value, &vip->priority) != 0 || vip->priority == 0)
+            if (lcs_parse_u32(value, &resource->priority) != 0 || resource->priority == 0)
                 return -1;
-            vip->priority_set = true;
+            resource->priority_set = true;
             return 0;
         }
 
         if (strcmp(key, "depends_on") == 0 || strcmp(key, "depends-on") == 0)
-            return parse_depends_on(vip, value);
+            return parse_depends_on(resource, value);
 
         if (strcmp(key, "address") == 0)
-            return set_string(vip->address, sizeof(vip->address), value);
+            return set_string(resource->address, sizeof(resource->address), value);
 
         if (strcmp(key, "interface") == 0)
-            return set_vip_interface(vip, value);
+            return set_vip_interface(resource, value);
 
         if (strcmp(key, "pre_start") == 0)
-            return set_string(vip->pre_start, sizeof(vip->pre_start), value);
+            return set_string(resource->pre_start, sizeof(resource->pre_start), value);
 
         if (strcmp(key, "post_start") == 0)
-            return set_string(vip->post_start, sizeof(vip->post_start), value);
+            return set_string(resource->post_start, sizeof(resource->post_start), value);
 
         if (strcmp(key, "pre_stop") == 0)
-            return set_string(vip->pre_stop, sizeof(vip->pre_stop), value);
+            return set_string(resource->pre_stop, sizeof(resource->pre_stop), value);
 
         if (strcmp(key, "post_stop") == 0)
-            return set_string(vip->post_stop, sizeof(vip->post_stop), value);
+            return set_string(resource->post_stop, sizeof(resource->post_stop), value);
 
         if (sec.type == SEC_SERVICE)
         {
             if (strcmp(key, "systemd_unit") == 0 || strcmp(key, "unit") == 0)
-                return set_string(vip->systemd_unit, sizeof(vip->systemd_unit), value);
+                return set_string(resource->systemd_unit, sizeof(resource->systemd_unit), value);
         }
     }
     set_err(err, err_len, line, "unknown key");
@@ -519,8 +519,8 @@ static int compare_group_config(const void *a, const void *b)
 
 static int compare_vip_config(const void *a, const void *b)
 {
-    const lcs_vip_config_t *va = a;
-    const lcs_vip_config_t *vb = b;
+    const lcs_resource_config_t *va = a;
+    const lcs_resource_config_t *vb = b;
     return strcmp(va->name, vb->name);
 }
 
@@ -528,7 +528,7 @@ static void sort_config(lcs_config_t *cfg)
 {
     qsort(cfg->nodes, cfg->node_count, sizeof(cfg->nodes[0]), compare_node_config);
     qsort(cfg->groups, cfg->group_count, sizeof(cfg->groups[0]), compare_group_config);
-    qsort(cfg->vips, cfg->vip_count, sizeof(cfg->vips[0]), compare_vip_config);
+    qsort(cfg->resources, cfg->resource_count, sizeof(cfg->resources[0]), compare_vip_config);
 }
 
 static void strip_inline_comment(char *line)
@@ -629,34 +629,34 @@ int lcs_config_group_index(const lcs_config_t *cfg, const char *name)
     return -1;
 }
 
-int lcs_config_vip_index(const lcs_config_t *cfg, const char *name)
+int lcs_config_resource_index(const lcs_config_t *cfg, const char *name)
 {
-    for (size_t i = 0; i < cfg->vip_count; i++)
+    for (size_t i = 0; i < cfg->resource_count; i++)
     {
-        if (strcmp(cfg->vips[i].name, name) == 0)
+        if (strcmp(cfg->resources[i].name, name) == 0)
             return (int)i;
     }
     return -1;
 }
 
-static int validate_dependency_dfs(const lcs_config_t *cfg, int vip_idx,
+static int validate_dependency_dfs(const lcs_config_t *cfg, int resource_idx,
                                    uint8_t *visiting, uint8_t *visited,
                                    char *err, size_t err_len)
 {
-    if (visited[vip_idx])
+    if (visited[resource_idx])
         return 0;
-    if (visiting[vip_idx])
+    if (visiting[resource_idx])
     {
         set_err(err, err_len, 0, "resource dependency cycle detected");
         return -1;
     }
 
-    visiting[vip_idx] = 1;
-    const lcs_vip_config_t *vip = &cfg->vips[vip_idx];
-    for (size_t i = 0; i < vip->depends_on_count; i++)
+    visiting[resource_idx] = 1;
+    const lcs_resource_config_t *resource = &cfg->resources[resource_idx];
+    for (size_t i = 0; i < resource->depends_on_count; i++)
     {
-        int dep_idx = vip->depends_on_idx[i];
-        if (dep_idx < 0 || (size_t)dep_idx >= cfg->vip_count)
+        int dep_idx = resource->depends_on_idx[i];
+        if (dep_idx < 0 || (size_t)dep_idx >= cfg->resource_count)
         {
             set_err(err, err_len, 0, "resource references unknown dependency");
             return -1;
@@ -664,19 +664,19 @@ static int validate_dependency_dfs(const lcs_config_t *cfg, int vip_idx,
         if (validate_dependency_dfs(cfg, dep_idx, visiting, visited, err, err_len) != 0)
             return -1;
     }
-    visiting[vip_idx] = 0;
-    visited[vip_idx] = 1;
+    visiting[resource_idx] = 0;
+    visited[resource_idx] = 1;
     return 0;
 }
 
 static int validate_resource_dependencies(lcs_config_t *cfg, char *err, size_t err_len)
 {
-    for (size_t i = 0; i < cfg->vip_count; i++)
+    for (size_t i = 0; i < cfg->resource_count; i++)
     {
-        lcs_vip_config_t *vip = &cfg->vips[i];
-        for (size_t j = 0; j < vip->depends_on_count; j++)
+        lcs_resource_config_t *resource = &cfg->resources[i];
+        for (size_t j = 0; j < resource->depends_on_count; j++)
         {
-            int dep_idx = lcs_config_vip_index(cfg, vip->depends_on_names[j]);
+            int dep_idx = lcs_config_resource_index(cfg, resource->depends_on_names[j]);
             if (dep_idx < 0)
             {
                 set_err(err, err_len, 0, "resource references unknown dependency");
@@ -687,13 +687,13 @@ static int validate_resource_dependencies(lcs_config_t *cfg, char *err, size_t e
                 set_err(err, err_len, 0, "resource cannot depend on itself");
                 return -1;
             }
-            vip->depends_on_idx[j] = dep_idx;
+            resource->depends_on_idx[j] = dep_idx;
         }
     }
 
-    uint8_t visiting[LCS_MAX_VIPS] = {0};
-    uint8_t visited[LCS_MAX_VIPS] = {0};
-    for (size_t i = 0; i < cfg->vip_count; i++)
+    uint8_t visiting[LCS_MAX_RESOURCES] = {0};
+    uint8_t visited[LCS_MAX_RESOURCES] = {0};
+    for (size_t i = 0; i < cfg->resource_count; i++)
     {
         if (validate_dependency_dfs(cfg, (int)i, visiting, visited, err, err_len) != 0)
             return -1;
@@ -701,7 +701,7 @@ static int validate_resource_dependencies(lcs_config_t *cfg, char *err, size_t e
     return 0;
 }
 
-static int validate_groups_and_assign_vips(lcs_config_t *cfg, char *err, size_t err_len)
+static int validate_groups_and_assign_resources(lcs_config_t *cfg, char *err, size_t err_len)
 {
     for (size_t i = 0; i < cfg->group_count; i++)
     {
@@ -720,53 +720,53 @@ static int validate_groups_and_assign_vips(lcs_config_t *cfg, char *err, size_t 
         }
     }
 
-    for (size_t i = 0; i < cfg->vip_count; i++)
+    for (size_t i = 0; i < cfg->resource_count; i++)
     {
-        lcs_vip_config_t *vip = &cfg->vips[i];
-        if (!vip->priority_set)
-            vip->priority = (uint32_t)(cfg->vip_count - i);
-        if (*vip->group_name)
+        lcs_resource_config_t *resource = &cfg->resources[i];
+        if (!resource->priority_set)
+            resource->priority = (uint32_t)(cfg->resource_count - i);
+        if (*resource->group_name)
         {
-            int group_idx = lcs_config_group_index(cfg, vip->group_name);
+            int group_idx = lcs_config_group_index(cfg, resource->group_name);
             if (group_idx < 0)
             {
-                set_err(err, err_len, 0, "vip references unknown group");
+                set_err(err, err_len, 0, "resource references unknown group");
                 return -1;
             }
-            vip->group_idx = group_idx;
+            resource->group_idx = group_idx;
         } else {
-            vip->group_idx = -1;
+            resource->group_idx = -1;
         }
-        if (*vip->home_node_name)
+        if (*resource->home_node_name)
         {
-            int node_idx = lcs_config_node_index(cfg, vip->home_node_name);
+            int node_idx = lcs_config_node_index(cfg, resource->home_node_name);
             if (node_idx < 0)
             {
-                set_err(err, err_len, 0, "vip references unknown home node");
+                set_err(err, err_len, 0, "resource references unknown home node");
                 return -1;
             }
             if (cfg->nodes[node_idx].role != LCS_NODE_FULL)
             {
-                set_err(err, err_len, 0, "vip home node must be a full-member");
+                set_err(err, err_len, 0, "resource home node must be a full-member");
                 return -1;
             }
-            vip->home_node_idx = node_idx;
+            resource->home_node_idx = node_idx;
         } else {
-            vip->home_node_idx = -1;
+            resource->home_node_idx = -1;
         }
     }
 
-    for (size_t i = 0; i < cfg->vip_count; i++)
+    for (size_t i = 0; i < cfg->resource_count; i++)
     {
-        const lcs_vip_config_t *a = &cfg->vips[i];
+        const lcs_resource_config_t *a = &cfg->resources[i];
         if (a->group_idx < 0)
             continue;
-        for (size_t j = i + 1; j < cfg->vip_count; j++)
+        for (size_t j = i + 1; j < cfg->resource_count; j++)
         {
-            const lcs_vip_config_t *b = &cfg->vips[j];
+            const lcs_resource_config_t *b = &cfg->resources[j];
             if (a->group_idx == b->group_idx && a->priority == b->priority)
             {
-                set_err(err, err_len, 0, "duplicate vip priority in group");
+                set_err(err, err_len, 0, "duplicate resource priority in group");
                 return -1;
             }
         }
@@ -840,40 +840,40 @@ int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
             return -1;
         }
     }
-    if (validate_groups_and_assign_vips(cfg, err, err_len) != 0)
+    if (validate_groups_and_assign_resources(cfg, err, err_len) != 0)
         return -1;
 
-    for (size_t i = 0; i < cfg->vip_count; i++)
+    for (size_t i = 0; i < cfg->resource_count; i++)
     {
-        const lcs_vip_config_t *vip = &cfg->vips[i];
-        if (vip->type == LCS_RESOURCE_SERVICE)
+        const lcs_resource_config_t *resource = &cfg->resources[i];
+        if (resource->type == LCS_RESOURCE_SERVICE)
         {
-            if (!valid_systemd_unit_name(vip->systemd_unit))
+            if (!valid_systemd_unit_name(resource->systemd_unit))
             {
                 set_err(err, err_len, 0, "service systemd_unit must be a valid .service unit name");
                 return -1;
             }
-            if (*vip->address || *vip->interface)
+            if (*resource->address || *resource->interface)
             {
                 set_err(err, err_len, 0, "service resources cannot set address or interface");
                 return -1;
             }
             continue;
         }
-        if (!valid_vip_cidr(vip->address))
+        if (!valid_vip_cidr(resource->address))
         {
             set_err(err, err_len, 0, "vip address must be IPv4/IPv6 CIDR");
             return -1;
         }
-        if (!valid_interface_name(vip->interface))
+        if (!valid_interface_name(resource->interface))
         {
             set_err(err, err_len, 0, "vip interface is invalid or too long");
             return -1;
         }
-        if (!valid_pidfile_path(vip->pre_start) ||
-            !valid_pidfile_path(vip->post_start) ||
-            !valid_pidfile_path(vip->pre_stop) ||
-            !valid_pidfile_path(vip->post_stop))
+        if (!valid_pidfile_path(resource->pre_start) ||
+            !valid_pidfile_path(resource->post_start) ||
+            !valid_pidfile_path(resource->pre_stop) ||
+            !valid_pidfile_path(resource->post_stop))
         {
             set_err(err, err_len, 0, "vip hook paths must be empty or absolute");
             return -1;

@@ -382,7 +382,7 @@ static void initialize_daemon_state(void)
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
         g_state.peers[i].fd = -1;
 
-    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         g_state.resources[i].owner_node = -1;
         g_state.resources[i].owner_instance_id = 0;
@@ -411,7 +411,7 @@ static void log_startup_config(const daemon_options_t *opts, bool syslog_enabled
                  g_state.cfg.metrics_enabled ? g_state.cfg.metrics_bind_address : "-",
                  g_state.cfg.metrics_port,
                  g_state.cfg.node_count,
-                 g_state.cfg.vip_count,
+                 g_state.cfg.resource_count,
                  g_state.quorum_needed);
     lcs_log_info("startup config: lease_ms=%u renew_ms=%u peer_timeout_ms=%u probe_count=%u probe_timeout_ms=%u hook_timeout_ms=%u secret_configured=%s",
                  g_state.cfg.lease_ms,
@@ -421,13 +421,13 @@ static void log_startup_config(const daemon_options_t *opts, bool syslog_enabled
                  g_state.cfg.probe_timeout_ms,
                  g_state.cfg.hook_timeout_ms,
                  *g_state.cfg.secret ? "true" : "false");
-    for (size_t i = 0; i < g_state.cfg.vip_count; i++)
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
-        const lcs_vip_config_t *vip = &g_state.cfg.vips[i];
-        if (vip->interface_normalized)
+        const lcs_resource_config_t *resource = &g_state.cfg.resources[i];
+        if (resource->interface_normalized)
         {
             lcs_log_warn("VIP %s interface %s normalized to %s; use the kernel interface name without @parent in config",
-                         vip->name, vip->interface_original, vip->interface);
+                         resource->name, resource->interface_original, resource->interface);
         }
     }
 }

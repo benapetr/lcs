@@ -241,9 +241,9 @@ Cluster
 
 `lcs nrpe` prints a single monitoring-plugin style line and exits with Nagios-compatible status codes:
 
-- `0` OK: quorum is available, all nodes are online, and all VIPs are active.
-- `1` WARNING: quorum is available and VIPs are active, but at least one node is offline.
-- `2` CRITICAL: quorum is unavailable or at least one VIP is not active.
+- `0` OK: quorum is available, all nodes are online, and all resources are active.
+- `1` WARNING: quorum is available and resources are active, but at least one node is offline.
+- `2` CRITICAL: quorum is unavailable or at least one resource is not active.
 - `3` UNKNOWN: local status could not be read.
 
 Example:
@@ -279,13 +279,15 @@ General `lcs` exit status:
 
 # Metrics
 
-When `metrics = true`, the Prometheus endpoint includes cluster quorum, votes, node status, VIP status, and the local membership-shape timer:
+When `metrics = true`, the Prometheus endpoint includes cluster quorum, votes, node status, resource status, and the local membership-shape timer:
 
 ```
 lcs_cluster_membership_seconds{cluster="ingress"} 252
+lcs_resource_state{cluster="ingress",resource="app",type="service",state="active"} 1
+lcs_resource_owner{cluster="ingress",resource="app",type="service",node="node1"} 1
 ```
 
-This value is the number of seconds since this daemon's observed online/offline membership last changed.
+`lcs_cluster_membership_seconds` is the number of seconds since this daemon's observed online/offline membership last changed.
 
 ---
 

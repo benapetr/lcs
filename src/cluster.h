@@ -14,7 +14,7 @@ const char *cluster_node_name_or_none(int node_idx);
 int         cluster_has_quorum(void);
 void        cluster_recompute_votes(void);
 
-// Decode and merge a peer's cluster-state snapshot (mix of VIP ownership, lease epochs, conflict state, and counters)
+// Decode and merge a peer's cluster-state snapshot (mix of resource ownership, lease epochs, conflict state, and counters)
 // received over the peer network protocol.
 
 // Returns 0 on success, -1 on invalid payload or if the sender's instance ID doesn't match

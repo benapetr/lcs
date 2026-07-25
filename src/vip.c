@@ -53,7 +53,7 @@ void lcs_vip_set_backend(lcs_vip_backend_t backend)
         g_backend = backend;
 }
 
-static int run_ip_addr(const char *op, const lcs_vip_config_t *vip)
+static int run_ip_addr(const char *op, const lcs_resource_config_t *vip)
 {
     if (getenv("LCS_VIP_DRY_RUN"))
     {
@@ -121,7 +121,7 @@ static int add_rtattr(struct nlmsghdr *nlh, size_t max_len, int type, const void
     return 0;
 }
 
-static int netlink_addr_op(const char *op, const lcs_vip_config_t *vip, bool add)
+static int netlink_addr_op(const char *op, const lcs_resource_config_t *vip, bool add)
 {
     if (getenv("LCS_VIP_DRY_RUN"))
     {
@@ -216,14 +216,14 @@ static int netlink_addr_op(const char *op, const lcs_vip_config_t *vip, bool add
     return -1;
 }
 
-int lcs_vip_add(const lcs_vip_config_t *vip)
+int lcs_vip_add(const lcs_resource_config_t *vip)
 {
     if (g_backend == LCS_VIP_BACKEND_NETLINK)
         return netlink_addr_op("add", vip, true);
     return run_ip_addr("add", vip);
 }
 
-int lcs_vip_del(const lcs_vip_config_t *vip)
+int lcs_vip_del(const lcs_resource_config_t *vip)
 {
     if (g_backend == LCS_VIP_BACKEND_NETLINK)
         return netlink_addr_op("del", vip, false);
@@ -435,7 +435,7 @@ static int icmp6_advertises_target(const unsigned char *buf, ssize_t len, const 
     return memcmp(&na->nd_na_target, target, sizeof(*target)) == 0;
 }
 
-static int nd_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip, const struct in6_addr *vip_ip)
+static int nd_conflict_check(const lcs_config_t *cfg, const lcs_resource_config_t *vip, const struct in6_addr *vip_ip)
 {
     lcs_if_info_t info;
     memset(&info, 0, sizeof(info));
@@ -499,7 +499,7 @@ static int nd_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vi
     return 0;
 }
 
-static int nd_announce(const lcs_config_t *cfg, const lcs_vip_config_t *vip, const struct in6_addr *vip_ip)
+static int nd_announce(const lcs_config_t *cfg, const lcs_resource_config_t *vip, const struct in6_addr *vip_ip)
 {
     lcs_if_info_t info;
     memset(&info, 0, sizeof(info));
@@ -529,7 +529,7 @@ static int nd_announce(const lcs_config_t *cfg, const lcs_vip_config_t *vip, con
     return 0;
 }
 
-int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip)
+int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_resource_config_t *vip)
 {
     if (getenv("LCS_VIP_CONFLICT"))
     {
@@ -626,7 +626,7 @@ int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_vip_config_t *vip)
     return 0;
 }
 
-int lcs_vip_announce(const lcs_config_t *cfg, const lcs_vip_config_t *vip)
+int lcs_vip_announce(const lcs_config_t *cfg, const lcs_resource_config_t *vip)
 {
     if (getenv("LCS_VIP_DRY_RUN"))
     {

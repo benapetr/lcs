@@ -171,7 +171,7 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
         lcs_buf_put_u16(&w, (uint16_t)g_state.self_index) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.node_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.group_count) != 0 ||
-        lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.vip_count) != 0 ||
+        lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.resource_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.nodes[g_state.self_index].role) != 0 ||
         lcs_buf_put_u8(&w, mode) != 0 ||
         lcs_buf_put_u64(&w, g_state.instance_id) != 0 ||
@@ -187,7 +187,7 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx, uin
 {
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, len);
-    uint16_t proto_version, remote_idx, node_count, group_count, vip_count, role;
+    uint16_t proto_version, remote_idx, node_count, group_count, resource_count, role;
     char name[LCS_NAME_MAX + 1];
     char cluster_name[LCS_NAME_MAX + 1];
     char secret[LCS_NAME_MAX + 1];
@@ -195,7 +195,7 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx, uin
         lcs_buf_get_u16(&r, &remote_idx) != 0 ||
         lcs_buf_get_u16(&r, &node_count) != 0 ||
         lcs_buf_get_u16(&r, &group_count) != 0 ||
-        lcs_buf_get_u16(&r, &vip_count) != 0 ||
+        lcs_buf_get_u16(&r, &resource_count) != 0 ||
         lcs_buf_get_u16(&r, &role) != 0 ||
         lcs_buf_get_u8(&r, mode) != 0 ||
         lcs_buf_get_u64(&r, instance_id) != 0 ||
@@ -214,7 +214,7 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx, uin
     if (idx < 0 || idx != (int)remote_idx ||
         node_count != g_state.cfg.node_count ||
         group_count != g_state.cfg.group_count ||
-        vip_count != g_state.cfg.vip_count ||
+        resource_count != g_state.cfg.resource_count ||
         role != (uint16_t)g_state.cfg.nodes[idx].role)
         return -1;
 

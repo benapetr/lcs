@@ -97,6 +97,6 @@ log "moving follower vip2 to node2 through node1 CLI"
 
 wait_until 15 "vip1 owner node2" vip_owner_has node1 vip1 node2
 wait_until 15 "vip2 owner node2" vip_owner_has node1 vip2 node2
-wait_until 10 "follower move redirected log" log_has node1 "move request for VIP vip2 redirected to keep-together anchor VIP vip1"
+wait_until 10 "follower move redirected log" log_has node1 "move request for resource vip2 redirected to keep-together anchor resource vip1"
 
 log "group keep-together follower move regression passed"

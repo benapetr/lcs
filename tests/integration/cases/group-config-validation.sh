@@ -53,7 +53,7 @@ run_good_config_starts()
 
 prepare_cluster
 
-run_bad_config duplicate-priority "duplicate vip priority in group" <<EOF
+run_bad_config duplicate-priority "duplicate resource priority in group" <<EOF
 [cluster]
 name = integration
 node = node1
@@ -81,7 +81,7 @@ address = 127.0.0.202/32
 interface = lo
 EOF
 
-run_bad_config unknown-group "vip references unknown group" <<EOF
+run_bad_config unknown-group "resource references unknown group" <<EOF
 [cluster]
 name = integration
 node = node1
@@ -98,7 +98,7 @@ address = 127.0.0.201/32
 interface = lo
 EOF
 
-run_bad_config unknown-home-node "vip references unknown home node" <<EOF
+run_bad_config unknown-home-node "resource references unknown home node" <<EOF
 [cluster]
 name = integration
 node = node1
@@ -115,7 +115,7 @@ address = 127.0.0.201/32
 interface = lo
 EOF
 
-run_bad_config quorum-only-home-node "vip home node must be a full-member" <<EOF
+run_bad_config quorum-only-home-node "resource home node must be a full-member" <<EOF
 [cluster]
 name = integration
 node = node1

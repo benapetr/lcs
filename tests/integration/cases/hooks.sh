@@ -112,9 +112,9 @@ wait_for_owner node2 node2
 wait_until 10 "node1 post-stop hook" hook_has "node=node1 vip=vip1 event=post-stop"
 wait_until 10 "node2 post-start hook" hook_has "node=node2 vip=vip1 event=post-start"
 
-wait_until 10 "node1 pre-start hook start log" log_has node1 "started pre-start hook for VIP vip1"
-wait_until 10 "node1 post-start hook completion log" log_has node1 "post-start hook for VIP vip1 completed status=ok"
-wait_until 10 "node1 post-stop hook start log" log_has node1 "started post-stop hook for VIP vip1"
-wait_until 10 "node1 post-stop hook completion log" log_has node1 "post-stop hook for VIP vip1 completed status=ok"
+wait_until 10 "node1 pre-start hook start log" log_has node1 "started pre-start hook for resource vip1"
+wait_until 10 "node1 post-start hook completion log" log_has node1 "post-start hook for resource vip1 completed status=ok"
+wait_until 10 "node1 post-stop hook start log" log_has node1 "started post-stop hook for resource vip1"
+wait_until 10 "node1 post-stop hook completion log" log_has node1 "post-stop hook for resource vip1 completed status=ok"
 
 log "hook execution regression passed"
