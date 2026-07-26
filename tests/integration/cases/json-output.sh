@@ -47,4 +47,11 @@ nrpe_json="$("$LCS" -s "$(node_socket node1)" --json nrpe)"
 [[ "$(printf '%s\n' "$nrpe_json" | json_get 'data["state"]')" == "OK" ]] ||
     die "nrpe JSON did not report OK"
 
+version_json_a="$("$LCS" --json --version)"
+version_json_b="$("$LCS" --version --json)"
+[[ "$(printf '%s\n' "$version_json_a" | json_get 'data["build_flags"]["WITH_SYSTEMD"]')" == "$(printf '%s\n' "$version_json_b" | json_get 'data["build_flags"]["WITH_SYSTEMD"]')" ]] ||
+    die "version JSON changed with option order"
+[[ "$(printf '%s\n' "$version_json_b" | json_get 'data["version"]')" == "1.1.0" ]] ||
+    die "version JSON did not report version with --version --json"
+
 log "json output regression passed"

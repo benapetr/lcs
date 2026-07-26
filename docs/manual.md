@@ -95,7 +95,7 @@ Service resources are systemd units managed over D-Bus. They use the same placem
 |-----|----------|-------------|
 | `systemd_unit` | yes | Systemd `.service` unit name, for example `nginx.service`. |
 
-Build `lcsd` with `make WITH_SYSTEMD=1` on systems with `libsystemd` development headers installed to enable service operations. Without that build flag, service resources parse but cannot be started, stopped, or health-checked.
+Systemd service support is enabled by default on systems with `libsystemd` development headers installed. Build `lcsd` with `make WITH_SYSTEMD=0` to explicitly disable service operations. Without systemd support, service resources parse but cannot be started, stopped, or health-checked.
 
 The managed unit should not be enabled to start independently on every node. LCS should be the actor that starts and stops it, otherwise systemd may run it outside the cluster lease.
 

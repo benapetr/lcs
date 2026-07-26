@@ -63,6 +63,7 @@ if command -v dpkg-query >/dev/null 2>&1; then
     require_pkg build-essential
     require_pkg debhelper
     require_pkg dpkg-dev
+    require_pkg libsystemd-dev
 
     if [ ${#missing[@]} -gt 0 ]; then
         echo "Missing build dependencies detected."

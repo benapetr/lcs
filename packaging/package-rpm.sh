@@ -63,6 +63,7 @@ if command -v rpm >/dev/null 2>&1; then
     require_pkg rpm-build
     require_pkg gcc
     require_pkg make
+    require_pkg systemd-devel
     require_pkg tar
     require_pkg gzip
 
@@ -133,6 +134,7 @@ License:        GPL-3.0-or-later
 Source0:        %{name}-%{version}.tar.gz
 BuildRequires:  gcc
 BuildRequires:  make
+BuildRequires:  systemd-devel
 Requires:       iproute
 
 %description

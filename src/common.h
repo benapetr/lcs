@@ -10,6 +10,14 @@
 
 #define LCS_VERSION "1.1.0"
 
+#ifdef HAVE_SYSTEMD
+#define LCS_SYSTEMD_SUPPORT 1
+#define LCS_WITH_SYSTEMD_VALUE "1"
+#else
+#define LCS_SYSTEMD_SUPPORT 0
+#define LCS_WITH_SYSTEMD_VALUE "0"
+#endif
+
 #define LCS_MAX_NODES 32
 #define LCS_MAX_RESOURCES 32
 #define LCS_MAX_GROUPS 32

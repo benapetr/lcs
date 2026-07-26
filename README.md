@@ -34,7 +34,7 @@ Concepts:
 
 Just run `make`.
 
-Systemd service resources use D-Bus through sd-bus. Build with `make WITH_SYSTEMD=1` on systems with `libsystemd` development headers installed to enable service start/stop/health operations.
+Systemd service resources use D-Bus through sd-bus and are enabled by default on systems with `libsystemd` development headers installed. Build with `make WITH_SYSTEMD=0` to explicitly disable service start/stop/health operations.
 
 # Installing
 

@@ -845,6 +845,7 @@ int main(int argc, char **argv)
 {
     const char *socket_path = LCS_DEFAULT_SOCKET_PATH;
     bool json_output = false;
+    bool show_version = false;
     int opt;
     static const struct option long_opts[] = {
         { "socket", required_argument, NULL, 's' },
@@ -864,16 +865,8 @@ int main(int argc, char **argv)
                 json_output = true;
                 break;
             case 'V':
-                if (json_output)
-                {
-                    printf("{\"version\":");
-                    json_string(stdout, LCS_VERSION);
-                    printf("}\n");
-                } else
-                {
-                    printf("lcs %s\n", LCS_VERSION);
-                }
-                return 0;
+                show_version = true;
+                break;
             case 'h':
                 usage(stdout);
                 return 0;
@@ -881,6 +874,19 @@ int main(int argc, char **argv)
                 usage(stderr);
                 return 2;
         }
+    }
+    if (show_version)
+    {
+        if (json_output)
+        {
+            printf("{\"version\":");
+            json_string(stdout, LCS_VERSION);
+            printf(",\"build_flags\":{\"WITH_SYSTEMD\":%s}}\n", LCS_SYSTEMD_SUPPORT ? "true" : "false");
+        } else
+        {
+            printf("lcs %s build_flags=WITH_SYSTEMD=%s\n", LCS_VERSION, LCS_WITH_SYSTEMD_VALUE);
+        }
+        return 0;
     }
     if (optind >= argc)
     {

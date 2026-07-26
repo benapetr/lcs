@@ -5,7 +5,7 @@ CPPFLAGS += -D_GNU_SOURCE -Isrc
 CFLAGS += -MMD -MP
 LDFLAGS ?=
 LDLIBS ?=
-WITH_SYSTEMD ?= 0
+WITH_SYSTEMD ?= 1
 ifeq ($(WITH_SYSTEMD),1)
 CPPFLAGS += -DHAVE_SYSTEMD $(shell pkg-config --cflags libsystemd)
 LDLIBS += $(shell pkg-config --libs libsystemd)

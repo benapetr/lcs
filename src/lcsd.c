@@ -320,7 +320,7 @@ static void parse_daemon_args(int argc, char **argv, daemon_options_t *opts)
                 opts->verbosity++;
                 break;
             case 'V':
-                printf("lcsd %s\n", LCS_VERSION);
+                printf("lcsd %s build_flags=WITH_SYSTEMD=%s\n", LCS_VERSION, LCS_WITH_SYSTEMD_VALUE);
                 opts->exit_now = true;
                 opts->exit_code = 0;
                 return;
@@ -392,12 +392,13 @@ static void initialize_daemon_state(void)
 
 static void log_startup_config(const daemon_options_t *opts, bool syslog_enabled)
 {
-    lcs_log_info("startup config: config=%s daemonize=%s syslog=%s stdout_timestamp=%s vip_backend=%s verbosity=%d node=%s self_index=%d cluster=%s",
+    lcs_log_info("startup config: config=%s daemonize=%s syslog=%s stdout_timestamp=%s vip_backend=%s build_flags=WITH_SYSTEMD=%s verbosity=%d node=%s self_index=%d cluster=%s",
                  opts->config_path,
                  opts->daemonize ? "true" : "false",
                  syslog_enabled ? "true" : "false",
                  opts->no_timestamp ? "false" : "true",
                  g_state.cfg.vip_backend == LCS_VIP_BACKEND_NETLINK ? "netlink" : "ip",
+                 LCS_WITH_SYSTEMD_VALUE,
                  opts->verbosity,
                  g_state.cfg.self_name,
                  g_state.self_index,
