@@ -77,10 +77,11 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
     }
     resource_runtime_t *res = &g_state.resources[resource_id];
     const lcs_resource_config_t *cfg_resource = &g_state.cfg.resources[resource_id];
-    if (res->state == LCS_RES_CONFLICT)
+    if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
     {
-        lcs_log_debug("rejecting lease message type=%u for resource %s from %s: local conflict state",
-                      type, g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx));
+        lcs_log_debug("rejecting lease message type=%u for resource %s from %s: local unsafe state=%s",
+                      type, g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx),
+                      lcs_resource_state_name(res->state));
         return -1;
     }
     if (type == LCS_MSG_LEASE_RELEASE)
@@ -114,7 +115,13 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
                 res->owner_instance_id == g_state.instance_id &&
                 res->state == LCS_RES_ACTIVE)
             {
-                resources_stop_local_backend(cfg_resource);
+                if (resources_stop_local_backend(cfg_resource) != 0)
+                {
+                    resources_enter_stop_failed_state((int)resource_id, epoch + 1,
+                                                     "local resource stop failed while accepting lease release",
+                                                     -1);
+                    return -1;
+                }
             }
             res->epoch = epoch;
             res->lease_id = 0;
@@ -173,7 +180,13 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
         owner_node != (uint16_t)g_state.self_index &&
         res->state == LCS_RES_ACTIVE)
     {
-        resources_stop_local_backend(cfg_resource);
+        if (resources_stop_local_backend(cfg_resource) != 0)
+        {
+            resources_enter_stop_failed_state((int)resource_id, epoch + 1,
+                                             "local resource stop failed while accepting remote lease owner",
+                                             -1);
+            return -1;
+        }
     }
     uint64_t now = lcs_now_ms();
     res->epoch = epoch;
@@ -391,6 +404,7 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
         return;
     }
     if (res->state == LCS_RES_CONFLICT ||
+        res->state == LCS_RES_STOP_FAILED ||
         res->epoch > op->epoch ||
         (res->owner_node >= 0 &&
          (res->owner_node != op->owner_idx ||

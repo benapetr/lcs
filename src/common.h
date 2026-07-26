@@ -58,6 +58,7 @@ typedef enum
     LCS_RES_CONFLICT = 2,
     LCS_RES_STARTING = 3,
     LCS_RES_STOPPING = 4,
+    LCS_RES_STOP_FAILED = 5,
 } lcs_resource_state_t;
 
 typedef enum
@@ -74,6 +75,27 @@ static inline const char *lcs_resource_type_name(lcs_resource_type_t type)
             return "vip";
         case LCS_RESOURCE_SERVICE:
             return "service";
+        default:
+            return "unknown";
+    }
+}
+
+static inline const char *lcs_resource_state_name(lcs_resource_state_t state)
+{
+    switch (state)
+    {
+        case LCS_RES_STOPPED:
+            return "stopped";
+        case LCS_RES_ACTIVE:
+            return "active";
+        case LCS_RES_CONFLICT:
+            return "conflict";
+        case LCS_RES_STARTING:
+            return "starting";
+        case LCS_RES_STOPPING:
+            return "stopping";
+        case LCS_RES_STOP_FAILED:
+            return "stop_failed";
         default:
             return "unknown";
     }

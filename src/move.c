@@ -283,9 +283,9 @@ static void move_start_lease_acquire(int epoll_fd, move_runtime_t *move)
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
     resource_runtime_t *res = &g_state.resources[move->resource_idx];
-    if (res->state == LCS_RES_CONFLICT)
+    if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
     {
-        move_set_failed(move, "VIP is in conflict state");
+        move_set_failed(move, "resource is in unsafe state");
         move_complete(epoll_fd, move);
         return;
     }

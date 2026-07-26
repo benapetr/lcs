@@ -30,25 +30,6 @@ static int metrics_append(char *buf, size_t cap, size_t *len, const char *fmt, .
     return 0;
 }
 
-static const char *resource_state_name(lcs_resource_state_t state)
-{
-    switch (state)
-    {
-        case LCS_RES_STOPPED:
-            return "stopped";
-        case LCS_RES_ACTIVE:
-            return "active";
-        case LCS_RES_CONFLICT:
-            return "conflict";
-        case LCS_RES_STARTING:
-            return "starting";
-        case LCS_RES_STOPPING:
-            return "stopping";
-        default:
-            return "unknown";
-    }
-}
-
 static void write_best_effort(int fd, const void *buf, size_t len)
 {
     const char *p = buf;
@@ -112,6 +93,7 @@ void lcs_metrics_handle_client(int fd)
     metrics_append(body, cap, &len, "# TYPE lcs_resource_epoch gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_resource_lease_remaining_seconds gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_resource_conflict gauge\n");
+    metrics_append(body, cap, &len, "# TYPE lcs_resource_stop_failed gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_resource_priority gauge\n");
     metrics_append(body, cap, &len, "# TYPE lcs_resource_failovers_total counter\n");
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
@@ -123,7 +105,7 @@ void lcs_metrics_handle_client(int fd)
                             g_state.cfg.groups[resource->group_idx].name : "";
         metrics_append(body, cap, &len,
                        "lcs_resource_state{cluster=\"%s\",resource=\"%s\",type=\"%s\",state=\"%s\"} 1\n",
-                       cluster, resource->name, type, resource_state_name(res->state));
+                       cluster, resource->name, type, lcs_resource_state_name(res->state));
         for (size_t n = 0; n < g_state.cfg.node_count; n++)
         {
             metrics_append(body, cap, &len,
@@ -146,6 +128,10 @@ void lcs_metrics_handle_client(int fd)
                        "lcs_resource_conflict{cluster=\"%s\",resource=\"%s\",type=\"%s\"} %u\n",
                        cluster, resource->name, type,
                        res->state == LCS_RES_CONFLICT ? 1u : 0u);
+        metrics_append(body, cap, &len,
+                       "lcs_resource_stop_failed{cluster=\"%s\",resource=\"%s\",type=\"%s\"} %u\n",
+                       cluster, resource->name, type,
+                       res->state == LCS_RES_STOP_FAILED ? 1u : 0u);
         metrics_append(body, cap, &len,
                        "lcs_resource_priority{cluster=\"%s\",resource=\"%s\",type=\"%s\",group=\"%s\"} %u\n",
                        cluster, resource->name, type, group,

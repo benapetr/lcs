@@ -40,12 +40,6 @@ const char *cluster_node_name_or_none(int node_idx)
     return g_state.cfg.nodes[node_idx].name;
 }
 
-static void cluster_stop_local_resource(size_t id)
-{
-    const lcs_resource_config_t *res = &g_state.cfg.resources[id];
-    resources_stop_local_backend(res);
-}
-
 int cluster_has_quorum(void)
 {
     return g_state.votes_seen >= g_state.quorum_needed;
@@ -168,7 +162,9 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
         if (failover_count > res->failover_count)
             res->failover_count = failover_count;
         bool incoming_conflict = state == LCS_RES_CONFLICT;
-        bool local_conflict = res->state == LCS_RES_CONFLICT;
+        bool incoming_stop_failed = state == LCS_RES_STOP_FAILED;
+        bool local_unsafe = res->state == LCS_RES_CONFLICT ||
+                            res->state == LCS_RES_STOP_FAILED;
         bool newer_epoch = epoch > res->epoch;
         bool same_lease = epoch == res->epoch &&
                           lease_id != 0 &&
@@ -180,16 +176,24 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
                                          owner_instance_id == g_state.instance_id &&
                                          (res->state == LCS_RES_STARTING ||
                                           res->state == LCS_RES_STOPPING);
-        bool conflict_update = incoming_conflict && epoch >= res->epoch;
-        if (local_conflict && !incoming_conflict && epoch <= res->epoch)
+        bool unsafe_update = (incoming_conflict || incoming_stop_failed) && epoch >= res->epoch;
+        if (local_unsafe && !incoming_conflict && !incoming_stop_failed && epoch <= res->epoch)
             continue;
-        if (newer_epoch || same_lease || conflict_update)
+        if (newer_epoch || same_lease || unsafe_update)
         {
             if (res->owner_node == g_state.self_index &&
                 res->owner_instance_id == g_state.instance_id &&
                 owner != (uint16_t)g_state.self_index &&
                 res->state == LCS_RES_ACTIVE)
-                cluster_stop_local_resource(id);
+            {
+                if (resources_stop_local_backend(&g_state.cfg.resources[id]) != 0)
+                {
+                    resources_enter_stop_failed_state((int)id, epoch + 1,
+                                                     "local resource stop failed while applying state sync",
+                                                     -1);
+                    continue;
+                }
+            }
             res->epoch = epoch;
             res->lease_id = lease_id;
             res->owner_node = owner == UINT16_MAX ? -1 : (int)owner;
@@ -205,7 +209,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             } else
                 res->lease_deadline_ms = incoming_deadline_ms;
             snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",
-                     incoming_conflict ? reason : "");
+                     (incoming_conflict || incoming_stop_failed) ? reason : "");
         }
     }
     return 0;

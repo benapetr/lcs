@@ -138,7 +138,7 @@ rejects unknown dependencies, self-dependencies, and dependency cycles.
 
 # Resource control
 
-Use `lcs resource list` for a compact resource-only view. `lcs resource stop RESOURCE` marks a resource administratively stopped in cluster memory and releases it through the normal stop path, including hooks. It stays stopped until `lcs resource start RESOURCE` is called, or until the whole cluster is restarted.
+Use `lcs resource list` for a compact resource-only view. `lcs resource stop RESOURCE` marks a resource administratively stopped in cluster memory and releases it through the normal stop path, including hooks. It stays stopped until `lcs resource start RESOURCE` is called, or until the whole cluster is restarted. If local resource removal cannot be confirmed, the owner enters `stop_failed`; fix the local backend condition and run `lcs resource stop RESOURCE` again to retry, or fence/reboot the node if the resource cannot be proven stopped.
 
 # Observability
 
@@ -197,6 +197,7 @@ lcs_node_online{cluster="ingress",node="node3",role="quorum-only"} 1
 # TYPE lcs_resource_epoch gauge
 # TYPE lcs_resource_lease_remaining_seconds gauge
 # TYPE lcs_resource_conflict gauge
+# TYPE lcs_resource_stop_failed gauge
 # TYPE lcs_resource_failovers_total counter
 # TYPE lcs_resource_priority gauge
 lcs_resource_state{cluster="ingress",resource="vip1",type="vip",state="active"} 1
@@ -206,6 +207,7 @@ lcs_resource_owner{cluster="ingress",resource="vip1",type="vip",node="node3"} 0
 lcs_resource_epoch{cluster="ingress",resource="vip1",type="vip"} 11
 lcs_resource_lease_remaining_seconds{cluster="ingress",resource="vip1",type="vip"} 3.909
 lcs_resource_conflict{cluster="ingress",resource="vip1",type="vip"} 0
+lcs_resource_stop_failed{cluster="ingress",resource="vip1",type="vip"} 0
 lcs_resource_failovers_total{cluster="ingress",resource="vip1",type="vip"} 1
 lcs_resource_priority{cluster="ingress",resource="vip1",type="vip",group="service"} 1
 ```

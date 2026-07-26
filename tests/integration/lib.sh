@@ -133,8 +133,9 @@ prepare_cluster()
 start_node()
 {
     local node="$1"
+    local extra_env_var="LCS_EXTRA_ENV_${node}"
     log "starting $node"
-    LCS_VIP_DRY_RUN=1 "$LCSD" -c "$(node_config "$node")" --no-syslog --no-timestamp -vv \
+    env LCS_VIP_DRY_RUN=1 ${!extra_env_var:-} "$LCSD" -c "$(node_config "$node")" --no-syslog --no-timestamp -vv \
         >"$TEST_TMP/logs/$node.log" 2>&1 &
     LCS_PIDS+=("$!")
 }

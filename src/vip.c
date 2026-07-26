@@ -55,6 +55,15 @@ void lcs_vip_set_backend(lcs_vip_backend_t backend)
 
 static int run_ip_addr(const char *op, const lcs_resource_config_t *vip)
 {
+    bool del = strcmp(op, "del") == 0;
+    const char *fail_file = getenv("LCS_VIP_FAIL_DEL_FILE");
+    // Integration-test fault injection: force VIP delete to fail so release
+    // safety paths can be exercised without touching real interface state.
+    if (del && (getenv("LCS_VIP_FAIL_DEL") || (fail_file && *fail_file && access(fail_file, F_OK) == 0)))
+    {
+        lcs_log_warn("forced VIP del failure for %s on %s", vip->address, vip->interface);
+        return -1;
+    }
     if (getenv("LCS_VIP_DRY_RUN"))
     {
         lcs_log_info("dry-run VIP %s %s on %s", op, vip->address, vip->interface);
@@ -65,6 +74,24 @@ static int run_ip_addr(const char *op, const lcs_resource_config_t *vip)
     int rc = system(cmd);
     if (rc != 0)
     {
+        if (del)
+        {
+            char addr[LCS_ADDR_MAX + 1];
+            snprintf(addr, sizeof(addr), "%s", vip->address);
+            char *slash = strchr(addr, '/');
+            if (slash)
+                *slash = '\0';
+            snprintf(cmd, sizeof(cmd), "ip addr show dev %s >/dev/null 2>&1", vip->interface);
+            if (system(cmd) == 0)
+            {
+                snprintf(cmd, sizeof(cmd), "ip addr show dev %s | grep -Fq ' %s/' >/dev/null 2>&1", vip->interface, addr);
+                if (system(cmd) != 0)
+                {
+                    lcs_log_info("VIP del %s on %s already absent", vip->address, vip->interface);
+                    return 0;
+                }
+            }
+        }
         lcs_log_warn("VIP %s %s on %s failed with rc=%d", op, vip->address, vip->interface, rc);
         return -1;
     }
@@ -123,6 +150,15 @@ static int add_rtattr(struct nlmsghdr *nlh, size_t max_len, int type, const void
 
 static int netlink_addr_op(const char *op, const lcs_resource_config_t *vip, bool add)
 {
+    const char *fail_file = getenv("LCS_VIP_FAIL_DEL_FILE");
+    // Integration-test fault injection: force VIP delete to fail so release
+    // safety paths can be exercised without touching real interface state.
+    if (!add && (getenv("LCS_VIP_FAIL_DEL") ||
+                 (fail_file && *fail_file && access(fail_file, F_OK) == 0)))
+    {
+        lcs_log_warn("forced netlink VIP del failure for %s on %s", vip->address, vip->interface);
+        return -1;
+    }
     if (getenv("LCS_VIP_DRY_RUN"))
     {
         lcs_log_info("dry-run netlink VIP %s %s on %s", op, vip->address, vip->interface);

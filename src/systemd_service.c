@@ -143,6 +143,29 @@ int lcs_systemd_service_start(const lcs_resource_config_t *res)
 
 int lcs_systemd_service_stop(const lcs_resource_config_t *res)
 {
+    sd_bus *bus = NULL;
+    char *state = NULL;
+    int rc = sd_bus_open_system(&bus);
+    if (rc < 0)
+    {
+        lcs_log_warn("systemd D-Bus connect failed for service %s unit=%s rc=%d",
+                     res->name, res->systemd_unit, rc);
+        return -1;
+    }
+    rc = service_get_active_state(bus, res, &state);
+    if (rc == 0 &&
+        (strcmp(state, "inactive") == 0 || strcmp(state, "failed") == 0))
+    {
+        lcs_log_info("systemd service %s unit=%s already stopped state=%s",
+                     res->name, res->systemd_unit, state);
+        free(state);
+        sd_bus_unref(bus);
+        return 0;
+    }
+    free(state);
+    sd_bus_unref(bus);
+    if (rc != 0)
+        return -1;
     return service_call_unit_method(res, "StopUnit", false);
 }
 

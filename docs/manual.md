@@ -285,6 +285,7 @@ When `metrics = true`, the Prometheus endpoint includes cluster quorum, votes, n
 lcs_cluster_membership_seconds{cluster="ingress"} 252
 lcs_resource_state{cluster="ingress",resource="app",type="service",state="active"} 1
 lcs_resource_owner{cluster="ingress",resource="app",type="service",node="node1"} 1
+lcs_resource_stop_failed{cluster="ingress",resource="app",type="service"} 0
 ```
 
 `lcs_cluster_membership_seconds` is the number of seconds since this daemon's observed online/offline membership last changed.
@@ -349,6 +350,8 @@ The target node activates the VIP only after it holds a current majority lease f
 
 `lcs resource stop RESOURCE` sets an in-memory administrative stop flag for the resource and broadcasts it to the cluster. If the resource is active, the owner releases it using the same stop path as planned handoff and shutdown, including `pre_stop` and `post_stop` hooks. Automatic placement and rebalance skip the resource while the flag is set.
 
+If local removal fails, the owner enters `stop_failed` and keeps ownership visible instead of reporting a safe release. After fixing the local cause, run `lcs resource stop RESOURCE` again on that node to retry cleanup. If the resource cannot be proven stopped, fence or reboot the node before starting the resource elsewhere.
+
 `lcs resource start RESOURCE` clears that flag and allows normal placement to start the resource again. The flag is intentionally not persisted; if the whole cluster is restarted, resources start according to the configuration and normal placement rules.
 
 ---
@@ -373,6 +376,8 @@ Before activating a VIP, a node must hold a valid majority lease and pass a same
 Before activating a service resource, a node must hold a valid majority lease and successfully request `StartUnit` for the configured systemd unit over D-Bus. While the node owns the service, LCS periodically checks the unit `ActiveState`; if it is no longer active, LCS releases the resource so the cluster can place it again.
 
 If a conflict is detected—even when quorum indicates this node should own the VIP—activation is blocked. The resource enters a conflict state, `lcsd` logs the condition, and the VIP remains inactive until an administrator investigates and resolves the conflict manually.
+
+If a resource stop cannot be confirmed, LCS does not release, ACK, or locally apply ownership that would imply the resource is safely stopped. The resource enters `stop_failed`; for services this normally requires external fencing if systemd cannot stop or prove the unit is inactive.
 
 Conflict detection is synchronous: the activation decision waits for all probes to complete. The probe count and per-probe timeout are controlled by `probe_count` and `probe_timeout_ms` in the configuration.
 

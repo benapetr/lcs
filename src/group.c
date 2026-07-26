@@ -57,7 +57,9 @@ static bool group_has_waiting_higher_priority_resource(int resource_idx)
             continue;
         if (group_resource_depends_on((int)i, resource_idx))
             continue;
-        if (other_res->owner_node >= 0 || other_res->state == LCS_RES_CONFLICT)
+        if (other_res->owner_node >= 0 ||
+            other_res->state == LCS_RES_CONFLICT ||
+            other_res->state == LCS_RES_STOP_FAILED)
             continue;
         return true;
     }

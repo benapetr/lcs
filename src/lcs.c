@@ -50,25 +50,6 @@ static const char *role_name(uint16_t role)
     return role == LCS_NODE_FULL ? "full-member" : "quorum-only";
 }
 
-static const char *state_name(uint8_t state)
-{
-    switch (state)
-    {
-        case LCS_RES_STOPPED:
-            return "stopped";
-        case LCS_RES_ACTIVE:
-            return "active";
-        case LCS_RES_CONFLICT:
-            return "conflict";
-        case LCS_RES_STARTING:
-            return "starting";
-        case LCS_RES_STOPPING:
-            return "stopping";
-        default:
-            return "unknown";
-    }
-}
-
 static void json_string(FILE *out, const char *value)
 {
     fputc('"', out);
@@ -213,7 +194,7 @@ static void print_status_json(const status_snapshot_t *status)
         printf(",\"type\":");
         json_string(stdout, *resource->resource_type ? resource->resource_type : "vip");
         printf(",\"state\":");
-        json_string(stdout, state_name(resource->state));
+        json_string(stdout, lcs_resource_state_name((lcs_resource_state_t)resource->state));
         printf(",\"owner\":");
         if (owner)
             json_string(stdout, owner);
@@ -247,9 +228,10 @@ static void print_status_json(const status_snapshot_t *status)
             printf(",\"home_blocked\":%s", resource->home_blocked ? "true" : "false");
         }
         printf(",\"disabled\":%s", resource->disabled ? "true" : "false");
-        if (resource->state == LCS_RES_CONFLICT && *resource->reason)
+        if ((resource->state == LCS_RES_CONFLICT ||
+             resource->state == LCS_RES_STOP_FAILED) && *resource->reason)
         {
-            printf(",\"conflict_reason\":");
+            printf(",\"reason\":");
             json_string(stdout, resource->reason);
         }
         printf("}");
@@ -381,12 +363,12 @@ static int cmd_status(const char *socket_path, bool json_output)
         if (strcmp(resource->resource_type, "service") == 0)
         {
             printf("  %s type=service unit=%s state=%s owner=%s epoch=%llu",
-                   resource->name, resource->systemd_unit, state_name(resource->state),
+                   resource->name, resource->systemd_unit, lcs_resource_state_name((lcs_resource_state_t)resource->state),
                    owner, (unsigned long long)resource->epoch);
         } else
         {
             printf("  %s %s dev=%s state=%s owner=%s epoch=%llu",
-                   resource->name, resource->address, resource->interface, state_name(resource->state),
+                   resource->name, resource->address, resource->interface, lcs_resource_state_name((lcs_resource_state_t)resource->state),
                    owner, (unsigned long long)resource->epoch);
         }
         if (*resource->group)
@@ -396,8 +378,11 @@ static int cmd_status(const char *socket_path, bool json_output)
         if (resource->disabled)
             printf(" disabled=yes");
         printf("\n");
-        if (resource->state == LCS_RES_CONFLICT && *resource->reason) {
-            printf("    conflict: %s\n", resource->reason);
+        if ((resource->state == LCS_RES_CONFLICT ||
+             resource->state == LCS_RES_STOP_FAILED) && *resource->reason) {
+            printf("    %s: %s\n",
+                   resource->state == LCS_RES_CONFLICT ? "conflict" : "stop_failed",
+                   resource->reason);
         }
     }
     return 0;
@@ -431,7 +416,7 @@ static int cmd_resource_list(const char *socket_path, bool json_output)
             printf(",\"type\":");
             json_string(stdout, *resource->resource_type ? resource->resource_type : "vip");
             printf(",\"state\":");
-            json_string(stdout, state_name(resource->state));
+            json_string(stdout, lcs_resource_state_name((lcs_resource_state_t)resource->state));
             printf(",\"owner\":");
             if (owner)
                 json_string(stdout, owner);
@@ -462,9 +447,10 @@ static int cmd_resource_list(const char *socket_path, bool json_output)
                 json_string(stdout, resource->home_node);
                 printf(",\"home_blocked\":%s", resource->home_blocked ? "true" : "false");
             }
-            if (resource->state == LCS_RES_CONFLICT && *resource->reason)
+            if ((resource->state == LCS_RES_CONFLICT ||
+                 resource->state == LCS_RES_STOP_FAILED) && *resource->reason)
             {
-                printf(",\"conflict_reason\":");
+                printf(",\"reason\":");
                 json_string(stdout, resource->reason);
             }
             printf("}");
@@ -482,7 +468,7 @@ static int cmd_resource_list(const char *socket_path, bool json_output)
 
         printf("%s type=%s state=%s owner=%s",
                resource->name, *resource->resource_type ? resource->resource_type : "vip",
-               state_name(resource->state), owner);
+               lcs_resource_state_name((lcs_resource_state_t)resource->state), owner);
         if (*resource->address)
             printf(" address=%s dev=%s", resource->address, resource->interface);
         if (*resource->systemd_unit)
@@ -493,8 +479,9 @@ static int cmd_resource_list(const char *socket_path, bool json_output)
             printf(" group=%s priority=%u", resource->group, resource->priority);
         if (*resource->home_node)
             printf(" home=%s%s", resource->home_node, resource->home_blocked ? " home_blocked=yes" : "");
-        if (resource->state == LCS_RES_CONFLICT && *resource->reason)
-            printf(" conflict=\"%s\"", resource->reason);
+        if ((resource->state == LCS_RES_CONFLICT ||
+             resource->state == LCS_RES_STOP_FAILED) && *resource->reason)
+            printf(" reason=\"%s\"", resource->reason);
         printf("\n");
     }
     return 0;
@@ -539,7 +526,7 @@ static int cmd_nrpe(const char *socket_path, bool json_output)
         down_resources++;
         int n = snprintf(down_detail + down_len, sizeof(down_detail) - down_len,
                          "%s%s=%s", down_len ? "," : "", resource->name,
-                         state_name(resource->state));
+                         lcs_resource_state_name((lcs_resource_state_t)resource->state));
         if (n > 0 && (size_t)n < sizeof(down_detail) - down_len)
             down_len += (size_t)n;
     }

@@ -387,8 +387,18 @@ static void resources_release_local_internal(int resource_idx, int epoll_fd, boo
         lcs_log_warn("continuing resource %s stop without pre-stop hook",  g_state.cfg.resources[resource_idx].name);
     }
 
-    if (res->state == LCS_RES_ACTIVE || res->state == LCS_RES_STOPPING)
-        resources_stop_local_backend(&g_state.cfg.resources[resource_idx]);
+    if (res->state == LCS_RES_ACTIVE ||
+        res->state == LCS_RES_STOPPING ||
+        res->state == LCS_RES_STOP_FAILED)
+    {
+        if (resources_stop_local_backend(&g_state.cfg.resources[resource_idx]) != 0)
+        {
+            resources_enter_stop_failed_state(resource_idx, release_epoch,
+                                             "local resource stop failed; node may still be running resource",
+                                             epoll_fd);
+            return;
+        }
+    }
 
     lease_release_majority(resource_idx, g_state.self_index, release_epoch, old_lease_id, epoll_fd);
     resources_clear_local_lease(res, release_epoch);
@@ -411,7 +421,20 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
         bool disabled = g_state.resources[i].disabled;
         if (g_state.resources[i].owner_node == g_state.self_index &&
             g_state.resources[i].owner_instance_id == g_state.instance_id)
+        {
             resources_release_local_internal((int)i, epoll_fd, false);
+            if (g_state.resources[i].owner_node == g_state.self_index &&
+                g_state.resources[i].owner_instance_id == g_state.instance_id &&
+                g_state.resources[i].state == LCS_RES_STOP_FAILED)
+            {
+                g_state.resources[i].failover_count = failover_count;
+                g_state.resources[i].home_generation = home_generation;
+                g_state.resources[i].disabled_generation = disabled_generation;
+                g_state.resources[i].home_blocked = home_blocked;
+                g_state.resources[i].disabled = disabled;
+                continue;
+            }
+        }
         resources_cancel_hook((int)i);
         memset(&g_state.resources[i], 0, sizeof(g_state.resources[i]));
         g_state.resources[i].owner_node = -1;
@@ -468,6 +491,25 @@ void resources_enter_conflict_state(int resource_idx, uint64_t epoch, const char
                  res->conflict_reason);
 }
 
+void resources_enter_stop_failed_state(int resource_idx, uint64_t epoch, const char *reason, int epoll_fd)
+{
+    resource_runtime_t *res = &g_state.resources[resource_idx];
+    lease_cancel_operations(resource_idx);
+    resources_cancel_hook(resource_idx);
+    res->epoch = epoch > res->epoch ? epoch : res->epoch + 1;
+    res->state = LCS_RES_STOP_FAILED;
+    res->lease_deadline_ms = 0;
+    res->renew_after_ms = 0;
+    res->next_activation_attempt_ms = 0;
+    snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",
+             reason ? reason : "local resource stop failed; node may still be running resource");
+    lcs_log_warn("resource %s entered stop_failed state at epoch=%llu: %s; retry stop or fence node",
+                 g_state.cfg.resources[resource_idx].name, (unsigned long long)res->epoch,
+                 res->conflict_reason);
+    if (epoll_fd >= 0)
+        peer_broadcast_state_sync(epoll_fd);
+}
+
 int resources_activate_acquired_local(int resource_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
@@ -511,9 +553,11 @@ int resources_activate_local(int resource_idx, uint64_t epoch, int epoll_fd)
                       g_state.cfg.resources[resource_idx].name);
         return -1;
     }
-    if (res->state == LCS_RES_CONFLICT)
+    if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
     {
-        lcs_log_warn("refusing to activate resource %s because it is in conflict state", g_state.cfg.resources[resource_idx].name);
+        lcs_log_warn("refusing to activate resource %s because it is in %s state",
+                     g_state.cfg.resources[resource_idx].name,
+                     lcs_resource_state_name(res->state));
         return -1;
     }
     if (res->next_activation_attempt_ms && now < res->next_activation_attempt_ms)
@@ -554,7 +598,12 @@ int resources_release_for_handoff(int resource_idx, uint64_t epoch, uint64_t lea
 
     resources_cancel_hook(resource_idx);
     if (resources_stop_local_backend(&g_state.cfg.resources[resource_idx]) != 0)
+    {
+        resources_enter_stop_failed_state(resource_idx, epoch + 1,
+                                         "local resource stop failed during handoff; node may still be running resource",
+                                         epoll_fd);
         return -1;
+    }
 
     res->owner_node = -1;
     res->owner_instance_id = 0;
@@ -615,11 +664,21 @@ int resources_set_disabled(int resource_idx, bool disabled, int epoll_fd, char *
     }
 
     resource_runtime_t *res = &g_state.resources[resource_idx];
-    if (res->disabled == disabled)
+    bool retry_stop_failed = disabled &&
+                             res->disabled &&
+                             res->owner_node == g_state.self_index &&
+                             res->owner_instance_id == g_state.instance_id &&
+                             res->state == LCS_RES_STOP_FAILED;
+    if (res->disabled == disabled && !retry_stop_failed)
     {
         snprintf(message, message_len, "resource already %s",
                  disabled ? "stopped" : "started");
         return 0;
+    }
+    if (!disabled && res->state == LCS_RES_STOP_FAILED)
+    {
+        snprintf(message, message_len, "resource stop failed; retry stop or fence node before starting");
+        return -1;
     }
 
     uint64_t now = lcs_now_ms();
@@ -629,14 +688,18 @@ int resources_set_disabled(int resource_idx, bool disabled, int epoll_fd, char *
     res->next_activation_attempt_ms = 0;
     if (disabled)
     {
-        lcs_log_info("admin stopped resource %s", g_state.cfg.resources[resource_idx].name);
+        lcs_log_info("%s resource %s",
+                     retry_stop_failed ? "admin retrying stop for" : "admin stopped",
+                     g_state.cfg.resources[resource_idx].name);
         if (res->owner_node == g_state.self_index &&
             res->owner_instance_id == g_state.instance_id &&
             (res->state == LCS_RES_ACTIVE ||
              res->state == LCS_RES_STARTING ||
-             res->state == LCS_RES_STOPPING))
+             res->state == LCS_RES_STOPPING ||
+             res->state == LCS_RES_STOP_FAILED))
             resources_release_local(resource_idx, epoll_fd);
-        snprintf(message, message_len, "resource stop requested");
+        snprintf(message, message_len, "%s",
+                 retry_stop_failed ? "resource stop retry requested" : "resource stop requested");
     } else
     {
         lcs_log_info("admin started resource %s", g_state.cfg.resources[resource_idx].name);
@@ -677,10 +740,11 @@ void resources_auto_place(int epoll_fd)
                            (unsigned long long)res->epoch);
             continue;
         }
-        if (res->state == LCS_RES_CONFLICT)
+        if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
         {
-            lcs_log_debug4("auto-place skip resource %s: resource is in conflict state epoch=%llu",
-                           g_state.cfg.resources[i].name, (unsigned long long)res->epoch);
+            lcs_log_debug4("auto-place skip resource %s: resource is in %s state epoch=%llu",
+                           g_state.cfg.resources[i].name, lcs_resource_state_name(res->state),
+                           (unsigned long long)res->epoch);
             continue;
         }
         if (lease_operation_active((int)i))
