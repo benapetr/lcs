@@ -93,6 +93,9 @@ typedef struct
     uint32_t *resp_len;
     peer_rpc_callback_t callback;
     void *callback_ctx;
+    bool detached;
+    unsigned char detached_resp[LCS_LEASE_RESP_PAYLOAD_SIZE];
+    uint32_t detached_resp_len;
 } peer_rpc_runtime_t;
 
 typedef struct
@@ -244,6 +247,10 @@ typedef struct lease_runtime
     uint64_t deadline_ms;
     int votes;
     int pending_rpcs;
+    bool release_notify;
+    bool release_notified;
+    int release_response_node;
+    uint32_t release_response_seq;
     bool rpc_done[LCS_MAX_NODES];
     int rpc_status[LCS_MAX_NODES];
     bool acked[LCS_MAX_NODES];

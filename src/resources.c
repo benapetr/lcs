@@ -610,9 +610,6 @@ int resources_release_for_handoff(int resource_idx, uint64_t epoch, uint64_t lea
         return -1;
     }
 
-    lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id,
-                           epoll_fd);
-
     res->owner_node = -1;
     res->owner_instance_id = 0;
     res->state = LCS_RES_STOPPED;

@@ -216,7 +216,8 @@ static void move_start_owner_release(int epoll_fd, move_runtime_t *move)
                        &move->rpc_ctx[move->old_owner_idx]) != 0)
     {
         move->phase = LCS_MOVE_PHASE_WAIT_OLD_LEASE_EXPIRY;
-        move->wait_until_ms = g_state.resources[move->resource_idx].lease_deadline_ms;
+        if (!move->wait_until_ms)
+            move->wait_until_ms = g_state.resources[move->resource_idx].lease_deadline_ms;
         lcs_log_info("old owner %s did not accept release request for resource %s; waiting for lease expiry",
                      cluster_node_name_or_none(move->old_owner_idx),
                      g_state.cfg.resources[move->resource_idx].name);
@@ -627,13 +628,11 @@ static void move_process_target(move_runtime_t *move, int epoll_fd, uint64_t now
             lcs_log_info("old owner %s confirmed release of resource %s",
                          g_state.cfg.nodes[move->old_owner_idx].name,
                          g_state.cfg.resources[move->resource_idx].name);
-            if (!move->wait_until_ms || now >= move->wait_until_ms)
-                move_start_lease_acquire(epoll_fd, move);
-            else
-                move->phase = LCS_MOVE_PHASE_WAIT_OLD_LEASE_EXPIRY;
+            move_start_lease_acquire(epoll_fd, move);
             return;
         }
-        move->wait_until_ms = g_state.resources[move->resource_idx].lease_deadline_ms;
+        if (!move->wait_until_ms)
+            move->wait_until_ms = g_state.resources[move->resource_idx].lease_deadline_ms;
         if (!move->wait_until_ms)
         {
             move_set_failed(move, "old owner did not release and lease expiry is unknown");

@@ -20,6 +20,7 @@ int peer_rpc_async(int epoll_fd, int node_idx, uint16_t req_type,
                    uint16_t expected_type, unsigned char *resp_payload,
                    size_t resp_cap, uint32_t *resp_len, uint32_t timeout_ms,
                    peer_rpc_callback_t callback, void *callback_ctx);
+void peer_detach_rpcs_by_context(void *callback_ctx);
 int peer_queue_simple_resp(int epoll_fd, int node_idx,
                            uint32_t seq, uint16_t type, int32_t status,
                            const char *message);

@@ -581,6 +581,28 @@ static void peer_clear_rpc(peer_rpc_runtime_t *rpc)
     memset(rpc, 0, sizeof(*rpc));
 }
 
+void peer_detach_rpcs_by_context(void *callback_ctx)
+{
+    if (!callback_ctx)
+        return;
+    for (size_t node = 0; node < g_state.cfg.node_count; node++)
+    {
+        for (size_t i = 0; i < LCS_MAX_PEER_RPC_INFLIGHT; i++)
+        {
+            peer_rpc_runtime_t *rpc = &g_state.peers[node].in_flight[i];
+            if (!rpc->active || rpc->callback_ctx != callback_ctx)
+                continue;
+            rpc->callback = NULL;
+            rpc->callback_ctx = NULL;
+            rpc->detached = true;
+            rpc->resp_payload = rpc->detached_resp;
+            rpc->resp_cap = sizeof(rpc->detached_resp);
+            rpc->detached_resp_len = 0;
+            rpc->resp_len = &rpc->detached_resp_len;
+        }
+    }
+}
+
 static void peer_complete_rpc(peer_rpc_runtime_t *rpc, int status)
 {
     rpc->status = status;
@@ -590,7 +612,8 @@ static void peer_complete_rpc(peer_rpc_runtime_t *rpc, int status)
         uint32_t len = rpc->resp_len ? *rpc->resp_len : 0;
         rpc->callback(rpc->callback_ctx, status, rpc->resp_payload, len);
         peer_clear_rpc(rpc);
-    }
+    } else if (rpc->detached)
+        peer_clear_rpc(rpc);
 }
 
 static peer_rpc_runtime_t *peer_find_rpc_by_seq(peer_runtime_t *peer, uint32_t seq)
@@ -733,10 +756,17 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx,
         case LCS_MSG_LEASE_COMMIT:
             return lease_apply_commit(payload, hdr->length, source_node_idx, epoll_fd);
         case LCS_MSG_OWNER_RELEASE_REQ:
-            if (lease_handle_owner_release_request(payload, hdr->length, source_node_idx, epoll_fd) == 0)
+        {
+            int release_rc = lease_handle_owner_release_request(payload, hdr->length,
+                                                                 source_node_idx,
+                                                                 hdr->seq, epoll_fd);
+            if (release_rc > 0)
+                return 0;
+            if (release_rc == 0)
                 return peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_OWNER_RELEASE_RESP, 0, "ok");
 
             return peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_OWNER_RELEASE_RESP, -1, "owner release rejected");
+        }
         case LCS_MSG_MOVE_REQ:
             move_start_peer_request(epoll_fd, source_node_idx, hdr->seq, payload, hdr->length);
             return 0;

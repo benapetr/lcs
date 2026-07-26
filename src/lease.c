@@ -276,9 +276,12 @@ void lease_broadcast_commit(int epoll_fd, int resource_idx, int owner_idx, uint6
 
 static void lease_op_clear(lease_runtime_t *op)
 {
+    for (size_t i = 0; i < LCS_MAX_NODES; i++)
+        peer_detach_rpcs_by_context(&op->rpc_ctx[i]);
     memset(op, 0, sizeof(*op));
     op->resource_idx = -1;
     op->owner_idx = -1;
+    op->release_response_node = -1;
 }
 
 static lease_runtime_t *lease_op_alloc(int resource_idx, lease_op_type_t type)
@@ -421,7 +424,7 @@ static int lease_start_operation(int epoll_fd, lease_op_type_t type, int resourc
     op->owner_idx = owner_idx;
     op->epoch = epoch;
     op->lease_id = lease_id;
-    op->votes = type == LCS_LEASE_OP_RELEASE ? 0 : 1;
+    op->votes = 1;
     uint64_t now = lcs_now_ms();
     op->grant_deadline_ms = type == LCS_LEASE_OP_RELEASE ? 0 : now + g_state.cfg.lease_ms;
     op->deadline_ms = now + g_state.cfg.peer_timeout_ms;
@@ -440,8 +443,6 @@ static int lease_start_operation(int epoll_fd, lease_op_type_t type, int resourc
             continue;
         (void)lease_op_send_to_peer(epoll_fd, op, (int)i);
     }
-    if (op->pending_rpcs == 0 && type == LCS_LEASE_OP_RELEASE)
-        lease_op_clear(op);
     return 0;
 }
 
@@ -470,8 +471,7 @@ static void lease_process_result(lease_runtime_t *op)
         if (op->rpc_status[i] == 0 && lcs_decode_simple_resp(op->rpc_resp[i], op->rpc_resp_len[i], &status, msg, sizeof(msg)) == 0 && status == 0)
         {
             op->acked[i] = true;
-            if (op->type != LCS_LEASE_OP_RELEASE)
-                op->votes++;
+            op->votes++;
         }
     }
 }
@@ -613,6 +613,40 @@ static void lease_finish_renew(int epoll_fd, lease_runtime_t *op)
     lease_op_clear(op);
 }
 
+static void lease_finish_release(int epoll_fd, lease_runtime_t *op,
+                                 bool operation_finished)
+{
+    if (op->release_notify && !op->release_notified &&
+        (uint32_t)op->votes >= g_state.quorum_needed)
+    {
+        if (peer_queue_simple_resp(epoll_fd, op->release_response_node,
+                                   op->release_response_seq,
+                                   LCS_MSG_OWNER_RELEASE_RESP, 0,
+                                   "release quorum confirmed") == 0)
+            lcs_log_info("release quorum confirmed for resource %s epoch=%llu votes=%d need=%u",
+                         g_state.cfg.resources[op->resource_idx].name,
+                         (unsigned long long)op->epoch, op->votes,
+                         g_state.quorum_needed);
+        op->release_notified = true;
+    }
+
+    if (!operation_finished)
+        return;
+
+    if (op->release_notify && !op->release_notified)
+    {
+        (void)peer_queue_simple_resp(epoll_fd, op->release_response_node,
+                                     op->release_response_seq,
+                                     LCS_MSG_OWNER_RELEASE_RESP, -1,
+                                     "release quorum not reached");
+        lcs_log_warn("release quorum failed for resource %s epoch=%llu votes=%d need=%u",
+                     g_state.cfg.resources[op->resource_idx].name,
+                     (unsigned long long)op->epoch, op->votes,
+                     g_state.quorum_needed);
+    }
+    lease_op_clear(op);
+}
+
 void lease_process_operations(int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
@@ -622,6 +656,11 @@ void lease_process_operations(int epoll_fd)
         if (!op->active)
             continue;
         lease_process_result(op);
+
+        if (op->type == LCS_LEASE_OP_RELEASE && op->release_notify &&
+            !op->release_notified &&
+            (uint32_t)op->votes >= g_state.quorum_needed)
+            lease_finish_release(epoll_fd, op, false);
 
         // if there are still waiting for RPC results from other cluster members and we haven't reached the deadline, wait longer
         if (op->pending_rpcs > 0 && op->deadline_ms && now < op->deadline_ms)
@@ -633,7 +672,7 @@ void lease_process_operations(int epoll_fd)
         else if (op->type == LCS_LEASE_OP_RENEW)
             lease_finish_renew(epoll_fd, op);
         else
-            lease_op_clear(op);
+            lease_finish_release(epoll_fd, op, true);
     }
 }
 
@@ -667,7 +706,9 @@ void lease_release_majority(int resource_idx, int owner_idx, uint64_t epoch, uin
     (void)lease_start_operation(epoll_fd, LCS_LEASE_OP_RELEASE, resource_idx, owner_idx, epoch, lease_id);
 }
 
-int lease_handle_owner_release_request(const void *payload, size_t len, int source_node_idx, int epoll_fd)
+int lease_handle_owner_release_request(const void *payload, size_t len,
+                                       int source_node_idx, uint32_t response_seq,
+                                       int epoll_fd)
 {
     uint16_t resource_id, owner_node;
     uint64_t epoch, lease_id, sender_instance_id;
@@ -683,9 +724,6 @@ int lease_handle_owner_release_request(const void *payload, size_t len, int sour
         return -1;
 
     resource_runtime_t *res = &g_state.resources[resource_id];
-    if (res->owner_node == -1 && res->state == LCS_RES_STOPPED && res->epoch >= epoch)
-        return 0;
-
     if (res->owner_node != g_state.self_index ||
         res->owner_instance_id != g_state.instance_id ||
         res->state != LCS_RES_ACTIVE ||
@@ -695,8 +733,31 @@ int lease_handle_owner_release_request(const void *payload, size_t len, int sour
 
     if (resources_release_for_handoff((int)resource_id, epoch, lease_id, epoll_fd) != 0)
         return -1;
-    lcs_log_info("released resource %s for controlled handoff at epoch=%llu", g_state.cfg.resources[resource_id].name, (unsigned long long)epoch);
-    return 0;
+
+    if (lease_start_operation(epoll_fd, LCS_LEASE_OP_RELEASE,
+                              (int)resource_id, g_state.self_index,
+                              epoch, lease_id) != 0)
+        return -1;
+    lease_runtime_t *release = NULL;
+    for (size_t i = 0; i < LCS_LEASE_OP_MAX; i++)
+    {
+        if (g_state.lease_ops[i].active &&
+            g_state.lease_ops[i].type == LCS_LEASE_OP_RELEASE &&
+            g_state.lease_ops[i].resource_idx == (int)resource_id)
+        {
+            release = &g_state.lease_ops[i];
+            break;
+        }
+    }
+    if (!release)
+        return -1;
+    release->release_notify = true;
+    release->release_response_node = source_node_idx;
+    release->release_response_seq = response_seq;
+    lcs_log_info("resource %s stopped for controlled handoff; waiting for release quorum at epoch=%llu",
+                 g_state.cfg.resources[resource_id].name,
+                 (unsigned long long)epoch);
+    return 1;
 }
 
 void lease_expire_remote(void)
