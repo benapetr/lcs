@@ -409,3 +409,11 @@ After successful activation, `lcsd` announces the VIP with a gratuitous ARP repl
 # Availability
 
 The cluster remains operational whenever majority quorum is available. In a standard 3-node deployment any single node can be down and the cluster continues to manage VIPs normally. No single node is a point of failure.
+
+---
+
+# Conflict resolution
+
+Automatic placement is deterministic. In a healthy cluster with synchronized state, all nodes should calculate the same target full-member for a stopped resource, so only that selected node attempts to acquire the lease. Group placement and rebalance use deterministic rules as well, with a single coordinator selected from the first online full-member by sorted node name.
+
+If two nodes still race for the same resource because of simultaneous manual moves, transient state divergence, or unstable connectivity, lease epochs and majority quorum prevent both from winning. A node that fails to obtain a majority releases any partial grants and retries later. Retry scheduling includes randomized jitter, so contenders are unlikely to keep retrying in lockstep forever.

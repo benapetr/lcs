@@ -328,7 +328,7 @@ static int resources_complete_local_activation(int resource_idx, uint64_t epoch,
         lcs_log_warn("auto-place failed %s %s: conflict probe failed", resource_kind(resource), resource->name);
         lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
-        res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
+        res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
         return -1;
     }
     if (resource_start_local(resource) != 0)
@@ -337,7 +337,7 @@ static int resources_complete_local_activation(int resource_idx, uint64_t epoch,
                      resource_kind(resource), resource->name);
         lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
-        res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
+        res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
         return -1;
     }
     res->state = LCS_RES_ACTIVE;
@@ -521,7 +521,7 @@ int resources_activate_acquired_local(int resource_idx, uint64_t epoch, uint64_t
                      g_state.cfg.resources[resource_idx].name);
         lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
-        res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
+        res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
         return -1;
     }
     if (*g_state.cfg.resources[resource_idx].pre_start)
@@ -532,7 +532,7 @@ int resources_activate_acquired_local(int resource_idx, uint64_t epoch, uint64_t
         lcs_log_warn("auto-place failed resource %s: failed to start pre-start hook", g_state.cfg.resources[resource_idx].name);
         lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
-        res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
+        res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
         return -1;
     }
     return resources_complete_local_activation(resource_idx, epoch, lease_id, epoll_fd);
@@ -578,7 +578,7 @@ int resources_activate_local(int resource_idx, uint64_t epoch, int epoll_fd)
     {
         lcs_log_debug2("auto-place failed resource %s: could not start majority lease acquire for epoch=%llu",
                        g_state.cfg.resources[resource_idx].name, (unsigned long long)epoch);
-        res->next_activation_attempt_ms = now + g_state.cfg.renew_ms;
+        res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
         return -1;
     }
     return 0;
@@ -612,7 +612,7 @@ int resources_release_for_handoff(int resource_idx, uint64_t epoch, uint64_t lea
     res->lease_deadline_ms = 0;
     res->renew_after_ms = 0;
     res->conflict_reason[0] = '\0';
-    res->next_activation_attempt_ms = lcs_now_ms() + g_state.cfg.lease_ms;
+    res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
     lease_cancel_operations(resource_idx);
     resources_start_hook(resource_idx, LCS_HOOK_POST_STOP, epoch, lease_id);
     return 0;
@@ -936,7 +936,7 @@ void resources_process_hooks(int epoll_fd)
                 {
                     lease_release_majority((int)i, g_state.self_index, hook_epoch, hook_lease_id, epoll_fd);
                     resources_clear_local_lease(res, hook_epoch);
-                    res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
+                    res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
                 }
                 continue;
             }

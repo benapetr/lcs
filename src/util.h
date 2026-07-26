@@ -14,6 +14,7 @@ int lcs_parse_u16(const char *s, uint16_t *out);
 int lcs_valid_name(const char *s);
 int lcs_mkdir_parent(const char *path, mode_t mode);
 uint64_t lcs_random_u64(void);
+uint64_t lcs_jittered_delay_ms(uint32_t base_ms);
 uint64_t lcs_now_ms(void);
 void lcs_format_duration(uint64_t seconds, char *buf, size_t len);
 

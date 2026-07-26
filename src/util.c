@@ -85,6 +85,19 @@ uint64_t lcs_random_u64(void)
     return ((uint64_t)getpid() << 32) ^ (uint64_t)time(NULL);
 }
 
+uint64_t lcs_jittered_delay_ms(uint32_t base_ms)
+{
+    if (!base_ms)
+        return 0;
+
+    uint64_t jitter_max = base_ms / 2u;
+    if (!jitter_max)
+        jitter_max = 1;
+    if (jitter_max > 1000u)
+        jitter_max = 1000u;
+    return (uint64_t)base_ms + (lcs_random_u64() % (jitter_max + 1u));
+}
+
 uint64_t lcs_now_ms(void)
 {
     struct timespec ts;

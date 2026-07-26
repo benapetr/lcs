@@ -411,7 +411,7 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                      g_state.cfg.resources[op->resource_idx].name,
                      (unsigned long long)op->epoch);
         lease_op_send_release_to_acked(epoll_fd, op);
-        res->next_activation_attempt_ms = lcs_now_ms() + g_state.cfg.renew_ms;
+        res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
         if (op->pending_rpcs > 0)
             return;
         lease_op_clear(op);
@@ -446,7 +446,7 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                          g_state.cfg.resources[op->resource_idx].name,
                          (unsigned long long)op->epoch);
             lease_op_send_release_to_acked(epoll_fd, op);
-            res->next_activation_attempt_ms = now + g_state.cfg.renew_ms;
+            res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
             if (op->pending_rpcs > 0)
                 return;
             lease_op_clear(op);
@@ -465,7 +465,7 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                       (unsigned long long)op->epoch, op->votes,
                       g_state.quorum_needed);
         if (resources_activate_acquired_local(op->resource_idx, op->epoch, op->lease_id, epoll_fd) != 0)
-            res->next_activation_attempt_ms = now + g_state.cfg.lease_ms;
+            res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
         if (op->type == LCS_LEASE_OP_RELEASE)
             return;
     } else
@@ -475,7 +475,7 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                       (unsigned long long)op->epoch, op->votes,
                       g_state.quorum_needed);
         lease_op_send_release_to_acked(epoll_fd, op);
-        res->next_activation_attempt_ms = lcs_now_ms() + g_state.cfg.renew_ms;
+        res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
         if (op->pending_rpcs > 0)
             return;
     }
