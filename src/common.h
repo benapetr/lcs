@@ -53,6 +53,13 @@ typedef enum
 
 typedef enum
 {
+    LCS_NODE_OFFLINE = 0,
+    LCS_NODE_RECOVERING = 1,
+    LCS_NODE_ONLINE = 2,
+} lcs_node_state_t;
+
+typedef enum
+{
     LCS_RES_STOPPED = 0,
     LCS_RES_ACTIVE = 1,
     LCS_RES_CONFLICT = 2,

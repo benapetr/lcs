@@ -152,7 +152,7 @@ static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
     {
         if (lcs_encode_status_node(&w, (uint16_t)i,
                                    (uint16_t)g_state.cfg.nodes[i].role,
-                                   cluster_node_is_online(i) ? 1 : 0,
+                                   (uint8_t)cluster_node_state(i),
                                    i == (size_t)g_state.self_index ? 1 : 0,
                                    g_state.cfg.nodes[i].name) != 0)
         {

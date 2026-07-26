@@ -264,20 +264,20 @@ int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
            lcs_buf_get_u64(r, membership_seconds) ? -1 : 0;
 }
 
-int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role, uint8_t online, uint8_t self, const char *name)
+int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role, uint8_t state, uint8_t self, const char *name)
 {
     return lcs_buf_put_u16(w, id) ||
            lcs_buf_put_u16(w, role) ||
-           lcs_buf_put_u8(w, online) ||
+           lcs_buf_put_u8(w, state) ||
            lcs_buf_put_u8(w, self) ||
            lcs_buf_put_fixed_string(w, name, LCS_NAME_MAX + 1) ? -1 : 0;
 }
 
-int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role, uint8_t *online, uint8_t *self, char *name, size_t name_len)
+int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role, uint8_t *state, uint8_t *self, char *name, size_t name_len)
 {
     return lcs_buf_get_u16(r, id) ||
            lcs_buf_get_u16(r, role) ||
-           lcs_buf_get_u8(r, online) ||
+           lcs_buf_get_u8(r, state) ||
            lcs_buf_get_u8(r, self) ||
            lcs_buf_get_fixed_string(r, name, name_len, LCS_NAME_MAX + 1) ? -1 : 0;
 }

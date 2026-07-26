@@ -34,6 +34,8 @@ wait_for_owner node1 node1
 status_json="$("$LCS" --json -s "$(node_socket node1)" status)"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["quorum"]')" == "true" ]] ||
     die "status JSON did not report quorum"
+[[ "$(printf '%s\n' "$status_json" | json_get 'data["nodes"][0]["state"]')" == "online" ]] ||
+    die "status JSON did not report node state"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["resources"][0]["name"]')" == "vip1" ]] ||
     die "status JSON missing vip1"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["resources"][0]["owner"]')" == "node1" ]] ||

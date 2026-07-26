@@ -232,6 +232,10 @@ Commands:
 
 `lcs status` shows how long the observed cluster membership has stayed in the current shape. This timer resets whenever any node changes between online and offline, including `3/3 -> 2/3`, `2/3 -> 3/3`, or `2/3` with one offline node changing to `2/3` with a different offline node.
 
+Each node is reported with one state: `offline` when it is unreachable,
+`recovering` when it is reachable but not yet eligible to vote after a restart,
+or `online` when it is reachable and voting-ready.
+
 Example:
 
 ```
@@ -242,7 +246,7 @@ Cluster
 `lcs nrpe` prints a single monitoring-plugin style line and exits with Nagios-compatible status codes:
 
 - `0` OK: quorum is available, all nodes are online, and all resources are active.
-- `1` WARNING: quorum is available and resources are active, but at least one node is offline.
+- `1` WARNING: quorum is available and resources are active, but at least one node is offline or recovering.
 - `2` CRITICAL: quorum is unavailable or at least one resource is not active.
 - `3` UNKNOWN: local status could not be read.
 
@@ -302,11 +306,24 @@ The optional `secret` key in `[cluster]` enables a shared secret that is verifie
 
 # Leases
 
-VIP ownership is controlled by a short-lived lease granted and renewed by majority quorum. Only a full-member node that holds a valid lease may activate a VIP. The owning node continuously renews the lease with a majority of all voting members. If it loses quorum, it drops the VIP immediately.
+VIP ownership is controlled by a short-lived lease granted and renewed by majority quorum. Only a full-member node that holds a valid lease may activate a VIP. The owning node continuously renews the lease with a majority of all voting members. If it detects that quorum has been lost, it drops the VIP.
 
 If a node crashes or becomes unresponsive without releasing the lease cleanly, the lease expires after `lease_ms` milliseconds. Only after expiry can another eligible full-member acquire a new lease and take over the VIP. This ensures no two nodes intentionally activate the same VIP simultaneously.
 
 Lease authority is always the current voting majority. There is no designated lease master.
+
+A newly started daemon is online but temporarily ineligible to vote. It remains
+in recovery for `lease_ms + peer_timeout_ms` and must complete initial state
+synchronization with enough currently reachable peers to form a quorum including
+itself. This guarantees that any lease grant forgotten by a restart has expired
+before the node can grant a conflicting lease. Recovery state is held only in
+memory; no lease or epoch files are written to disk.
+
+Because recovery is intentionally diskless, `lease_ms` and `peer_timeout_ms`
+must not be reduced during a rolling restart. To reduce either value, stop all
+cluster daemons first, update every configuration, and then start the cluster.
+Increasing either value during a rolling restart is safe. All nodes in a running
+cluster should use identical lease timing settings.
 
 ## Lease timing
 
@@ -320,7 +337,11 @@ Each resource carries a monotonically increasing epoch number held in memory. Ep
 
 Every lease grant, renewal, ownership change, and move request includes the epoch it applies to. Nodes reject any claim, renewal, or move request referencing an epoch older than the highest epoch they have already accepted for that resource. This prevents stale packets, delayed messages, or restarted daemons from reactivating an obsolete owner.
 
-On startup, `lcsd` does not activate any VIP immediately. It first connects to peers, retrieves the current resource state and epochs, and adopts the highest epoch accepted by majority quorum. If majority quorum is unavailable, the node does not own any VIPs.
+On startup, `lcsd` does not activate any VIP immediately. It first connects to
+peers and merges their current resource state and epochs. It cannot vote or own
+a resource until its restart recovery quarantine and initial synchronization
+requirements have both completed. If majority quorum is unavailable, the node
+does not own any VIPs.
 
 Each daemon start generates a fresh random instance ID. Peers use the combination of node ID, instance ID, epoch, and lease ID to detect and discard stale messages from old daemon instances or lingering connections.
 

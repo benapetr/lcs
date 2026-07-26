@@ -148,9 +148,9 @@ lcs tool can be used to display cluster status, list resources, run simple monit
 Cluster
   quorum: yes (3 votes, need 2, membership for 2h 13m 04s)
 Nodes
-  node1 role=full-member online=yes (self)
-  node2 role=full-member online=yes
-  node3 role=quorum-only online=yes
+  node1 role=full-member state=online (self)
+  node2 role=full-member state=online
+  node3 role=quorum-only state=online
 Resources
   vip1 192.168.6.70/24 dev=enX0 state=active owner=node1 epoch=11 group=service priority=1
 ```
@@ -159,7 +159,7 @@ Use `--json` with CLI commands when integrating with automation:
 
 ```
 # lcs --json status
-{"cluster":{"quorum":true,"votes_seen":3,"quorum_needed":2,"membership_seconds":7984},"nodes":[{"id":0,"name":"node1","role":"full-member","online":true,"self":true}],"resources":[{"id":0,"name":"vip1","type":"vip","state":"active","owner":"node1","epoch":11,"lease_id":42,"address":"192.168.6.70/24","interface":"enX0","group":"service","priority":1,"disabled":false}]}
+{"cluster":{"quorum":true,"votes_seen":3,"quorum_needed":2,"membership_seconds":7984},"nodes":[{"id":0,"name":"node1","role":"full-member","state":"online","self":true}],"resources":[{"id":0,"name":"vip1","type":"vip","state":"active","owner":"node1","epoch":11,"lease_id":42,"address":"192.168.6.70/24","interface":"enX0","group":"service","priority":1,"disabled":false}]}
 
 # lcs --json resource list
 {"resources":[{"name":"vip1","type":"vip","state":"active","owner":"node1","address":"192.168.6.70/24","interface":"enX0","disabled":false}]}
@@ -189,9 +189,13 @@ lcs_cluster_votes_needed{cluster="ingress"} 2
 # TYPE lcs_cluster_membership_seconds gauge
 lcs_cluster_membership_seconds{cluster="ingress"} 7984
 # TYPE lcs_node_online gauge
+# TYPE lcs_node_voting_ready gauge
 lcs_node_online{cluster="ingress",node="node1",role="full-member"} 1
+lcs_node_voting_ready{cluster="ingress",node="node1",role="full-member"} 1
 lcs_node_online{cluster="ingress",node="node2",role="full-member"} 1
+lcs_node_voting_ready{cluster="ingress",node="node2",role="full-member"} 1
 lcs_node_online{cluster="ingress",node="node3",role="quorum-only"} 1
+lcs_node_voting_ready{cluster="ingress",node="node3",role="quorum-only"} 1
 # TYPE lcs_resource_state gauge
 # TYPE lcs_resource_owner gauge
 # TYPE lcs_resource_epoch gauge

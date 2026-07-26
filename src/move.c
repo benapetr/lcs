@@ -238,7 +238,7 @@ static void move_apply_local_lease(move_runtime_t *move)
     res->owner_node = g_state.self_index;
     res->owner_instance_id = g_state.instance_id;
     res->state = LCS_RES_ACTIVE;
-    res->lease_deadline_ms = now + g_state.cfg.lease_ms;
+    res->lease_deadline_ms = move->grant_deadline_ms;
     res->renew_after_ms = now + g_state.cfg.renew_ms;
     res->conflict_reason[0] = '\0';
 }
@@ -283,6 +283,12 @@ static void move_start_lease_acquire(int epoll_fd, move_runtime_t *move)
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
     resource_runtime_t *res = &g_state.resources[move->resource_idx];
+    if (!cluster_local_voting_ready())
+    {
+        move_set_failed(move, "target node is still recovering and cannot vote");
+        move_complete(epoll_fd, move);
+        return;
+    }
     if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
     {
         move_set_failed(move, "resource is in unsafe state");
@@ -291,6 +297,7 @@ static void move_start_lease_acquire(int epoll_fd, move_runtime_t *move)
     }
     move->epoch = res->epoch + 1;
     move->lease_id = lcs_random_u64();
+    move->grant_deadline_ms = lcs_now_ms() + g_state.cfg.lease_ms;
     move->votes = 1;
     move->pending_rpcs = 0;
     memset(move->lease_acked, 0, sizeof(move->lease_acked));
@@ -663,6 +670,12 @@ static void move_process_lease(move_runtime_t *move, int epoll_fd)
     }
     if ((uint32_t)move->votes >= g_state.quorum_needed)
     {
+        if (!move->grant_deadline_ms || lcs_now_ms() >= move->grant_deadline_ms)
+        {
+            move_set_failed(move, "majority lease grants expired before activation");
+            move_start_failed_release(epoll_fd, move);
+            return;
+        }
         lcs_log_debug("lease acquired for resource %s epoch=%llu votes=%d need=%u",
                       g_state.cfg.resources[move->resource_idx].name,
                       (unsigned long long)move->epoch, move->votes,

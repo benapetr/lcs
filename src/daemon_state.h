@@ -86,6 +86,8 @@ typedef struct
 typedef struct
 {
     bool online;
+    bool voting_ready;
+    bool initial_sync_complete;
     int fd;
     peer_conn_state_t conn_state;
     bool outbound;
@@ -119,6 +121,7 @@ typedef struct
     size_t out_len;
     int node_idx;
     uint64_t instance_id;
+    bool voting_ready;
 } inbound_handshake_t;
 
 typedef struct
@@ -182,6 +185,7 @@ typedef struct move_runtime
     uint64_t old_lease_id;
     uint64_t epoch;
     uint64_t lease_id;
+    uint64_t grant_deadline_ms;
     int votes;
     int pending_rpcs;
     bool peer_done;
@@ -224,6 +228,7 @@ typedef struct lease_runtime
     int owner_idx;
     uint64_t epoch;
     uint64_t lease_id;
+    uint64_t grant_deadline_ms;
     uint64_t deadline_ms;
     int votes;
     int pending_rpcs;
@@ -240,6 +245,8 @@ typedef struct
     lcs_config_t cfg;
     int self_index;
     uint64_t instance_id;
+    bool voting_ready;
+    uint64_t voting_not_before_ms;
     uint32_t quorum_needed;
     uint32_t votes_seen;
     uint64_t started_ms;

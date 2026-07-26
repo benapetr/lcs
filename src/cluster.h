@@ -9,9 +9,12 @@
 #include <stddef.h>
 
 bool        cluster_node_is_online(size_t node_idx);
+lcs_node_state_t cluster_node_state(size_t node_idx);
 int         cluster_first_online_full_member(void);
 const char *cluster_node_name_or_none(int node_idx);
 int         cluster_has_quorum(void);
+bool        cluster_local_voting_ready(void);
+void        cluster_update_recovery_state(void);
 void        cluster_recompute_votes(void);
 
 // Decode and merge a peer's cluster-state snapshot (mix of resource ownership, lease epochs, conflict state, and counters)

@@ -375,8 +375,12 @@ static void initialize_daemon_state(void)
     lcs_vip_set_backend(g_state.cfg.vip_backend);
     g_state.self_index = lcs_config_self_index(&g_state.cfg);
     g_state.instance_id = lcs_random_u64();
+    g_state.voting_ready = false;
+    g_state.voting_not_before_ms = lcs_now_ms() +
+                                   (uint64_t)g_state.cfg.lease_ms +
+                                   (uint64_t)g_state.cfg.peer_timeout_ms;
     g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
-    g_state.votes_seen = 1;
+    g_state.votes_seen = 0;
     g_state.started_ms = lcs_now_ms();
 
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
@@ -491,6 +495,10 @@ static void log_daemon_started(void)
                  g_metrics_fd >= 0 ? g_state.cfg.metrics_bind_address : "-",
                  g_metrics_fd >= 0 ? g_state.cfg.metrics_port : 0,
                  g_state.quorum_needed, g_state.cfg.node_count);
+    lcs_log_info("restart recovery active; lease voting disabled for %llu ms and until state sync reaches %u votes",
+                 (unsigned long long)((uint64_t)g_state.cfg.lease_ms +
+                                      (uint64_t)g_state.cfg.peer_timeout_ms),
+                 g_state.quorum_needed);
 }
 
 static void run_daemon_loop(int epoll_fd)

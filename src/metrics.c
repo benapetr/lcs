@@ -78,6 +78,7 @@ void lcs_metrics_handle_client(int fd)
                    cluster, (unsigned long long)membership_seconds);
 
     metrics_append(body, cap, &len, "# TYPE lcs_node_online gauge\n");
+    metrics_append(body, cap, &len, "# TYPE lcs_node_voting_ready gauge\n");
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         const char *role = g_state.cfg.nodes[i].role == LCS_NODE_FULL ?
@@ -86,6 +87,10 @@ void lcs_metrics_handle_client(int fd)
                        "lcs_node_online{cluster=\"%s\",node=\"%s\",role=\"%s\"} %u\n",
                        cluster, g_state.cfg.nodes[i].name, role,
                        cluster_node_is_online(i) ? 1u : 0u);
+        metrics_append(body, cap, &len,
+                       "lcs_node_voting_ready{cluster=\"%s\",node=\"%s\",role=\"%s\"} %u\n",
+                       cluster, g_state.cfg.nodes[i].name, role,
+                       cluster_node_state(i) == LCS_NODE_ONLINE ? 1u : 0u);
     }
 
     metrics_append(body, cap, &len, "# TYPE lcs_resource_state gauge\n");

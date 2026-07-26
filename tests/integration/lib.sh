@@ -212,7 +212,7 @@ wait_for_node_offline()
     local observer="$1"
     local node="$2"
     wait_until 12 "$node offline as seen by $observer" \
-        node_status_has "$observer" "$node role=full-member online=no"
+        node_status_has "$observer" "$node role=full-member state=offline"
 }
 
 assert_no_vip_ops_in_log()

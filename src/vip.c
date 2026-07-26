@@ -153,8 +153,7 @@ static int netlink_addr_op(const char *op, const lcs_resource_config_t *vip, boo
     const char *fail_file = getenv("LCS_VIP_FAIL_DEL_FILE");
     // Integration-test fault injection: force VIP delete to fail so release
     // safety paths can be exercised without touching real interface state.
-    if (!add && (getenv("LCS_VIP_FAIL_DEL") ||
-                 (fail_file && *fail_file && access(fail_file, F_OK) == 0)))
+    if (!add && (getenv("LCS_VIP_FAIL_DEL") || (fail_file && *fail_file && access(fail_file, F_OK) == 0)))
     {
         lcs_log_warn("forced netlink VIP del failure for %s on %s", vip->address, vip->interface);
         return -1;
@@ -383,7 +382,7 @@ static int arp_packet_claims_ip(const unsigned char *buf, ssize_t len, const str
         ntohs(pkt->ptype) != ETH_P_IP ||
         pkt->hlen != ETH_ALEN ||
         pkt->plen != 4)
-        {
+    {
         return 0;
     }
     if (memcmp(pkt->sha, own_mac, ETH_ALEN) == 0)

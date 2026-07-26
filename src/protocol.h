@@ -102,9 +102,9 @@ int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
                              uint8_t *has_quorum,
                              uint64_t *membership_seconds);
 int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role,
-                           uint8_t online, uint8_t self, const char *name);
+                           uint8_t state, uint8_t self, const char *name);
 int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role,
-                           uint8_t *online, uint8_t *self,
+                           uint8_t *state, uint8_t *self,
                            char *name, size_t name_len);
 int lcs_encode_status_resource(lcs_buf_writer_t *w, uint16_t id, uint16_t owner_node,
                           uint64_t epoch, uint64_t lease_id, uint8_t state,

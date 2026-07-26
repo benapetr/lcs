@@ -20,6 +20,15 @@ bool cluster_node_is_online(size_t node_idx)
     return lcs_now_ms() - g_state.peers[node_idx].last_seen_ms <= g_state.cfg.peer_timeout_ms;
 }
 
+lcs_node_state_t cluster_node_state(size_t node_idx)
+{
+    if (!cluster_node_is_online(node_idx))
+        return LCS_NODE_OFFLINE;
+    if ((int)node_idx == g_state.self_index)
+        return g_state.voting_ready ? LCS_NODE_ONLINE : LCS_NODE_RECOVERING;
+    return g_state.peers[node_idx].voting_ready ? LCS_NODE_ONLINE : LCS_NODE_RECOVERING;
+}
+
 int cluster_first_online_full_member(void)
 {
     int best = -1;
@@ -45,6 +54,37 @@ int cluster_has_quorum(void)
     return g_state.votes_seen >= g_state.quorum_needed;
 }
 
+bool cluster_local_voting_ready(void)
+{
+    return g_state.voting_ready;
+}
+
+void cluster_update_recovery_state(void)
+{
+    if (g_state.voting_ready || lcs_now_ms() < g_state.voting_not_before_ms)
+        return;
+
+    uint32_t synchronized_votes = 1;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index)
+            continue;
+        if (g_state.peers[i].initial_sync_complete && cluster_node_is_online(i))
+            synchronized_votes++;
+    }
+    if (synchronized_votes < g_state.quorum_needed)
+        return;
+
+    g_state.voting_ready = true;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i != g_state.self_index && g_state.peers[i].fd >= 0)
+            g_state.peers[i].next_heartbeat_ms = 0;
+    }
+    lcs_log_info("recovery complete; node is now eligible to vote after synchronizing %u/%u votes",
+                 synchronized_votes, g_state.quorum_needed);
+}
+
 void cluster_recompute_votes(void)
 {
     uint32_t votes = 0;
@@ -53,12 +93,15 @@ void cluster_recompute_votes(void)
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         bool online = false;
+        bool voting_ready = false;
         if ((int)i == g_state.self_index)
         {
             online = true;
+            voting_ready = g_state.voting_ready;
         } else if (g_state.peers[i].online && now - g_state.peers[i].last_seen_ms <= g_state.cfg.peer_timeout_ms)
         {
             online = true;
+            voting_ready = g_state.peers[i].voting_ready;
         } else
         {
             if (g_state.peers[i].online)
@@ -67,8 +110,9 @@ void cluster_recompute_votes(void)
         }
         if (online)
         {
-            votes++;
             membership_mask |= 1ull << i;
+            if (voting_ready)
+                votes++;
         }
     }
     if (!g_state.membership_since_ms || membership_mask != g_state.membership_mask)

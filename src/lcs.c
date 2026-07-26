@@ -50,6 +50,19 @@ static const char *role_name(uint16_t role)
     return role == LCS_NODE_FULL ? "full-member" : "quorum-only";
 }
 
+static const char *node_state_name(uint8_t state)
+{
+    switch ((lcs_node_state_t)state)
+    {
+        case LCS_NODE_ONLINE:
+            return "online";
+        case LCS_NODE_RECOVERING:
+            return "recovering";
+        default:
+            return "offline";
+    }
+}
+
 static void json_string(FILE *out, const char *value)
 {
     fputc('"', out);
@@ -100,7 +113,7 @@ typedef struct
 {
     uint16_t id;
     uint16_t role;
-    uint8_t online;
+    uint8_t state;
     uint8_t self;
     char name[LCS_NAME_MAX + 1];
 } status_node_t;
@@ -178,9 +191,9 @@ static void print_status_json(const status_snapshot_t *status)
         json_string(stdout, node->name);
         printf(",\"role\":");
         json_string(stdout, role_name(node->role));
-        printf(",\"online\":%s,\"self\":%s}",
-               node->online ? "true" : "false",
-               node->self ? "true" : "false");
+        printf(",\"state\":");
+        json_string(stdout, node_state_name(node->state));
+        printf(",\"self\":%s}", node->self ? "true" : "false");
     }
     printf("],\"resources\":[");
     for (uint16_t i = 0; i < status->resource_count; i++)
@@ -285,9 +298,10 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
     {
         status_node_t *node = &status->nodes[i];
         if (lcs_decode_status_node(&r, &node->id, &node->role,
-                                   &node->online, &node->self,
+                                   &node->state, &node->self,
                                    node->name, sizeof(node->name)) != 0 ||
-            node->id >= status->node_count)
+            node->id >= status->node_count ||
+            node->state > LCS_NODE_ONLINE)
         {
             fprintf(stderr, "lcs: invalid status node entry\n");
             return 1;
@@ -349,8 +363,8 @@ static int cmd_status(const char *socket_path, bool json_output)
     {
         status_node_t *node = &status.nodes[i];
         snprintf(node_names[node->id], sizeof(node_names[node->id]), "%s", node->name);
-        printf("  %s role=%s online=%s%s\n", node->name, role_name(node->role),
-               node->online ? "yes" : "no", node->self ? " (self)" : "");
+        printf("  %s role=%s state=%s%s\n", node->name, role_name(node->role),
+               node_state_name(node->state), node->self ? " (self)" : "");
     }
     printf("Resources\n");
     for (uint16_t i = 0; i < status.resource_count; i++)
@@ -507,7 +521,7 @@ static int cmd_nrpe(const char *socket_path, bool json_output)
     size_t down_len = 0;
     for (uint16_t i = 0; i < status.node_count; i++)
     {
-        if (status.nodes[i].online)
+        if (status.nodes[i].state == LCS_NODE_ONLINE)
             online_nodes++;
     }
     for (uint16_t i = 0; i < status.resource_count; i++)

@@ -174,6 +174,7 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.resource_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.nodes[g_state.self_index].role) != 0 ||
         lcs_buf_put_u8(&w, mode) != 0 ||
+        lcs_buf_put_u8(&w, g_state.voting_ready ? 1 : 0) != 0 ||
         lcs_buf_put_u64(&w, g_state.instance_id) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.nodes[g_state.self_index].name, LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.cluster_name, LCS_NAME_MAX + 1) != 0 ||
@@ -183,11 +184,14 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
     return 0;
 }
 
-static int peer_decode_hello(const void *payload, size_t len, int *node_idx, uint64_t *instance_id, uint8_t *mode)
+static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
+                             uint64_t *instance_id, uint8_t *mode,
+                             bool *voting_ready)
 {
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, len);
     uint16_t proto_version, remote_idx, node_count, group_count, resource_count, role;
+    uint8_t ready;
     char name[LCS_NAME_MAX + 1];
     char cluster_name[LCS_NAME_MAX + 1];
     char secret[LCS_NAME_MAX + 1];
@@ -198,10 +202,12 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx, uin
         lcs_buf_get_u16(&r, &resource_count) != 0 ||
         lcs_buf_get_u16(&r, &role) != 0 ||
         lcs_buf_get_u8(&r, mode) != 0 ||
+        lcs_buf_get_u8(&r, &ready) != 0 ||
         lcs_buf_get_u64(&r, instance_id) != 0 ||
         lcs_buf_get_fixed_string(&r, name, sizeof(name), LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_get_fixed_string(&r, cluster_name, sizeof(cluster_name), LCS_NAME_MAX + 1) != 0 ||
-        lcs_buf_get_fixed_string(&r, secret, sizeof(secret), LCS_NAME_MAX + 1) != 0)
+        lcs_buf_get_fixed_string(&r, secret, sizeof(secret), LCS_NAME_MAX + 1) != 0 ||
+        r.off != r.len || ready > 1)
         return -1;
 
     if (proto_version != LCS_PEER_PROTO_VERSION)
@@ -228,6 +234,7 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx, uin
         return -1;
         
     *node_idx = idx;
+    *voting_ready = ready != 0;
     return 0;
 }
 
@@ -388,6 +395,7 @@ static int handshake_promote(int epoll_fd, int slot_idx)
     int fd = hs->fd;
     int node_idx = hs->node_idx;
     uint64_t instance_id = hs->instance_id;
+    bool voting_ready = hs->voting_ready;
     if (fd < 0 || node_idx < 0)
         return -1;
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
@@ -403,6 +411,7 @@ static int handshake_promote(int epoll_fd, int slot_idx)
         close(fd);
         return -1;
     }
+    g_state.peers[node_idx].voting_ready = voting_ready;
     return 0;
 }
 
@@ -437,7 +446,9 @@ static int handshake_process_frame(int epoll_fd, int slot_idx, const lcs_frame_h
     int node_idx = -1;
     uint64_t instance_id = 0;
     uint8_t mode = 0;
-    if (peer_decode_hello(payload, hdr->length, &node_idx, &instance_id, &mode) != 0)
+    bool voting_ready = false;
+    if (peer_decode_hello(payload, hdr->length, &node_idx, &instance_id,
+                          &mode, &voting_ready) != 0)
     {
         lcs_log_debug("invalid inbound peer HELLO");
         return -1;
@@ -466,6 +477,7 @@ static int handshake_process_frame(int epoll_fd, int slot_idx, const lcs_frame_h
         return -1;
     hs->node_idx = node_idx;
     hs->instance_id = instance_id;
+    hs->voting_ready = voting_ready;
     lcs_log_debug3("inbound HELLO accepted from %s slot=%d seq=%u", g_state.cfg.nodes[node_idx].name, slot_idx, hdr->seq);
     return handshake_flush_output(epoll_fd, slot_idx);
 }
@@ -687,13 +699,23 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx,
     switch (hdr->type)
     {
         case LCS_MSG_HEARTBEAT:
+        {
+            lcs_buf_reader_t reader;
+            uint8_t voting_ready = 0;
+            lcs_buf_reader_init(&reader, payload, hdr->length);
+            if (lcs_buf_get_u8(&reader, &voting_ready) != 0 ||
+                reader.off != reader.len || voting_ready > 1)
+                return -1;
+            g_state.peers[source_node_idx].voting_ready = voting_ready != 0;
             return 0;
+        }
         case LCS_MSG_STATE_SYNC_REQ:
-            if (hdr->length && cluster_apply_state(payload, hdr->length, source_node_idx) != 0)
+            if (!hdr->length || cluster_apply_state(payload, hdr->length, source_node_idx) != 0)
             {
                 peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "failed to apply state");
                 return -1;
             }
+            g_state.peers[source_node_idx].initial_sync_complete = true;
             if (cluster_encode_state(payload, LCS_MAX_FRAME, &len) != 0)
             {
                 peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "failed to encode state");
@@ -728,7 +750,11 @@ static void peer_mark_seen(int node_idx, uint64_t instance_id)
 
     bool was_online = g_state.peers[node_idx].online;
     if (g_state.peers[node_idx].instance_id != 0 && g_state.peers[node_idx].instance_id != instance_id)
+    {
         peer_reset_sequence_cache(&g_state.peers[node_idx]);
+        g_state.peers[node_idx].voting_ready = false;
+        g_state.peers[node_idx].initial_sync_complete = false;
+    }
 
     g_state.peers[node_idx].online = true;
     g_state.peers[node_idx].instance_id = instance_id;
@@ -796,6 +822,8 @@ void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const 
     peer->out_len = 0;
     peer->next_heartbeat_ms = 0;
     peer->state_sync_pending = false;
+    peer->initial_sync_complete = false;
+    peer->voting_ready = false;
     if (mark_offline && peer->online)
     {
         peer->online = false;
@@ -825,6 +853,7 @@ static int peer_register_connection(int epoll_fd, int node_idx, int fd, bool out
     peer->connect_deadline_ms = 0;
     peer->hello_seq = 0;
     peer->state_sync_pending = true;
+    peer->initial_sync_complete = false;
     peer->next_heartbeat_ms = lcs_now_ms() + peer_heartbeat_interval_ms();
     lcs_log_debug("peer %s persistent connection established direction=%s", g_state.cfg.nodes[node_idx].name, outbound ? "outbound" : "inbound");
     return 0;
@@ -869,7 +898,9 @@ static int peer_complete_outbound_hello(int epoll_fd, int node_idx,
     int remote_idx = -1;
     uint64_t instance_id = 0;
     uint8_t mode = 0;
-    if (peer_decode_hello(payload, hdr->length, &remote_idx, &instance_id, &mode) != 0 ||
+    bool voting_ready = false;
+    if (peer_decode_hello(payload, hdr->length, &remote_idx, &instance_id,
+                          &mode, &voting_ready) != 0 ||
         peer_validate_instance_for_hello(remote_idx, instance_id) != 0 ||
         mode != LCS_HELLO_MODE_PERSISTENT ||
         remote_idx != node_idx)
@@ -881,6 +912,7 @@ static int peer_complete_outbound_hello(int epoll_fd, int node_idx,
     peer->hello_seq = 0;
     peer->connect_deadline_ms = 0;
     peer_mark_seen(node_idx, instance_id);
+    peer->voting_ready = voting_ready;
     if (peer_update_epoll(epoll_fd, node_idx) != 0)
         return -1;
 
@@ -936,7 +968,10 @@ static int peer_send_state_sync(int epoll_fd, int node_idx)
 
 static int peer_send_heartbeat(int epoll_fd, int node_idx)
 {
-    return peer_queue_frame(epoll_fd, node_idx, LCS_MSG_HEARTBEAT, lcs_next_seq(), NULL, 0);
+    unsigned char payload[1];
+    payload[0] = g_state.voting_ready ? 1 : 0;
+    return peer_queue_frame(epoll_fd, node_idx, LCS_MSG_HEARTBEAT,
+                            lcs_next_seq(), payload, sizeof(payload));
 }
 
 static int peer_process_frame(int epoll_fd, int node_idx, const lcs_frame_header_t *hdr, unsigned char *payload)
@@ -990,7 +1025,12 @@ static int peer_process_frame(int epoll_fd, int node_idx, const lcs_frame_header
         return -1;
     }
     if (hdr->type == LCS_MSG_STATE_SYNC_RESP)
-        return cluster_apply_state(payload, hdr->length, node_idx);
+    {
+        if (cluster_apply_state(payload, hdr->length, node_idx) != 0)
+            return -1;
+        peer->initial_sync_complete = true;
+        return 0;
+    }
 
     lcs_log_warn("peer %s unexpected response frame: type=%u seq=%u length=%u inflight=%zu",
                  g_state.cfg.nodes[node_idx].name, hdr->type, hdr->seq, hdr->length,
@@ -1338,6 +1378,7 @@ void peer_poll(int epoll_fd)
             g_state.peers[i].next_heartbeat_ms = now + peer_heartbeat_interval_ms();
         }
     }
+    cluster_update_recovery_state();
     cluster_recompute_votes();
 }
 

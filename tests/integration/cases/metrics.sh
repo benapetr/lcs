@@ -87,6 +87,8 @@ metrics_out="$TEST_TMP/metrics.out"
 fetch_metrics node1 >"$metrics_out"
 grep -Fq 'lcs_resource_owner{cluster="integration",resource="app",type="service",node="node1"}' "$metrics_out" ||
     die "metrics missing service owner series"
+grep -Fq 'lcs_node_voting_ready{cluster="integration",node="node1",role="full-member"} 0' "$metrics_out" ||
+    die "metrics missing recovering node voting-readiness series"
 if grep -Fq 'lcs_vip_' "$metrics_out"; then
     die "metrics still contains old lcs_vip_* series"
 fi

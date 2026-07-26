@@ -77,6 +77,15 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
     }
     resource_runtime_t *res = &g_state.resources[resource_id];
     const lcs_resource_config_t *cfg_resource = &g_state.cfg.resources[resource_id];
+    if ((type == LCS_MSG_LEASE_REQ && !cluster_local_voting_ready()) ||
+        ((type == LCS_MSG_LEASE_REQ || type == LCS_MSG_LEASE_RENEW) &&
+         lease_ms != g_state.cfg.lease_ms))
+    {
+        lcs_log_debug("rejecting lease message type=%u for resource %s from %s: local voter cannot grant it or lease duration differs",
+                      type, g_state.cfg.resources[resource_id].name,
+                      cluster_node_name_or_none(source_node_idx));
+        return -1;
+    }
     if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
     {
         lcs_log_debug("rejecting lease message type=%u for resource %s from %s: local unsafe state=%s",
@@ -336,6 +345,9 @@ static void lease_op_send_release_to_acked(int epoll_fd, lease_runtime_t *op)
 
 static int lease_start_operation(int epoll_fd, lease_op_type_t type, int resource_idx, int owner_idx, uint64_t epoch, uint64_t lease_id)
 {
+    if (type != LCS_LEASE_OP_RELEASE && !cluster_local_voting_ready())
+        return -1;
+
     lease_runtime_t *op = lease_op_alloc(resource_idx, type);
     
     if (!op)
@@ -345,7 +357,9 @@ static int lease_start_operation(int epoll_fd, lease_op_type_t type, int resourc
     op->epoch = epoch;
     op->lease_id = lease_id;
     op->votes = type == LCS_LEASE_OP_RELEASE ? 0 : 1;
-    op->deadline_ms = lcs_now_ms() + g_state.cfg.peer_timeout_ms;
+    uint64_t now = lcs_now_ms();
+    op->grant_deadline_ms = type == LCS_LEASE_OP_RELEASE ? 0 : now + g_state.cfg.lease_ms;
+    op->deadline_ms = now + g_state.cfg.peer_timeout_ms;
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         if ((int)i == g_state.self_index)
@@ -426,12 +440,24 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
     if ((uint32_t)op->votes >= g_state.quorum_needed)
     {
         uint64_t now = lcs_now_ms();
+        if (!op->grant_deadline_ms || now >= op->grant_deadline_ms)
+        {
+            lcs_log_warn("discarding expired lease acquire result for resource %s epoch=%llu",
+                         g_state.cfg.resources[op->resource_idx].name,
+                         (unsigned long long)op->epoch);
+            lease_op_send_release_to_acked(epoll_fd, op);
+            res->next_activation_attempt_ms = now + g_state.cfg.renew_ms;
+            if (op->pending_rpcs > 0)
+                return;
+            lease_op_clear(op);
+            return;
+        }
         res->epoch = op->epoch;
         res->lease_id = op->lease_id;
         res->owner_node = op->owner_idx;
         res->owner_instance_id = g_state.instance_id;
         res->state = LCS_RES_ACTIVE;
-        res->lease_deadline_ms = now + g_state.cfg.lease_ms;
+        res->lease_deadline_ms = op->grant_deadline_ms;
         res->renew_after_ms = now + g_state.cfg.renew_ms;
         res->conflict_reason[0] = '\0';
         lcs_log_debug("lease acquired for resource %s epoch=%llu votes=%d need=%u",
@@ -481,11 +507,19 @@ static void lease_finish_renew(int epoll_fd, lease_runtime_t *op)
     }
     if ((uint32_t)op->votes >= g_state.quorum_needed)
     {
-        res->lease_deadline_ms = now + g_state.cfg.lease_ms;
-        res->renew_after_ms = now + g_state.cfg.renew_ms;
-        lcs_log_debug("renewed resource %s lease epoch=%llu votes=%d",
-                      g_state.cfg.resources[op->resource_idx].name,
-                      (unsigned long long)op->epoch, op->votes);
+        if (op->grant_deadline_ms && now < op->grant_deadline_ms)
+        {
+            res->lease_deadline_ms = op->grant_deadline_ms;
+            res->renew_after_ms = now + g_state.cfg.renew_ms;
+            lcs_log_debug("renewed resource %s lease epoch=%llu votes=%d",
+                          g_state.cfg.resources[op->resource_idx].name,
+                          (unsigned long long)op->epoch, op->votes);
+        } else
+        {
+            lcs_log_warn("dropping resource %s because renewed grants expired before completion",
+                         g_state.cfg.resources[op->resource_idx].name);
+            resources_drop_local(op->resource_idx, epoll_fd);
+        }
     } else if (now + g_state.cfg.renew_ms >= res->lease_deadline_ms)
     {
         lcs_log_warn("dropping resource %s because lease renewal failed", g_state.cfg.resources[op->resource_idx].name);
