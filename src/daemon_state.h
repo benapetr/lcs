@@ -56,6 +56,8 @@ typedef struct
     bool failover_pending;
     bool home_blocked;
     bool disabled;
+    bool shutdown_release_required;
+    bool shutdown_release_confirmed;
     pid_t hook_pid;
     resource_hook_type_t hook_type;
     uint64_t hook_deadline_ms;

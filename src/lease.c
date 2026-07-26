@@ -429,8 +429,11 @@ static int lease_start_operation(int epoll_fd, lease_op_type_t type, int resourc
     op->grant_deadline_ms = type == LCS_LEASE_OP_RELEASE ? 0 : now + g_state.cfg.lease_ms;
     op->deadline_ms = now + g_state.cfg.peer_timeout_ms;
     if (type == LCS_LEASE_OP_RELEASE)
+    {
         lease_grant_local_release(resource_idx, owner_idx, epoch, lease_id);
-    else if (lease_grant_local_acquire(resource_idx, owner_idx, epoch, lease_id,
+        if (g_state.resources[resource_idx].shutdown_release_required)
+            g_state.resources[resource_idx].shutdown_release_confirmed = false;
+    } else if (lease_grant_local_acquire(resource_idx, owner_idx, epoch, lease_id,
                                        op->grant_deadline_ms) != 0)
     {
         lease_op_clear(op);
@@ -616,6 +619,17 @@ static void lease_finish_renew(int epoll_fd, lease_runtime_t *op)
 static void lease_finish_release(int epoll_fd, lease_runtime_t *op,
                                  bool operation_finished)
 {
+    resource_runtime_t *res = &g_state.resources[op->resource_idx];
+    if ((uint32_t)op->votes >= g_state.quorum_needed &&
+        res->shutdown_release_required &&
+        !res->shutdown_release_confirmed)
+    {
+        res->shutdown_release_confirmed = true;
+        lcs_log_info("shutdown release quorum confirmed for resource %s epoch=%llu votes=%d need=%u",
+                     g_state.cfg.resources[op->resource_idx].name,
+                     (unsigned long long)op->epoch, op->votes,
+                     g_state.quorum_needed);
+    }
     if (op->release_notify && !op->release_notified &&
         (uint32_t)op->votes >= g_state.quorum_needed)
     {
@@ -684,12 +698,28 @@ void lease_release_majority(int resource_idx, int owner_idx, uint64_t epoch, uin
         lease_runtime_t *op = &g_state.lease_ops[i];
         if (!op->active || op->resource_idx != resource_idx)
             continue;
+        for (size_t n = 0; n < LCS_MAX_NODES; n++)
+            peer_detach_rpcs_by_context(&op->rpc_ctx[n]);
         op->type = LCS_LEASE_OP_RELEASE;
+        op->id = ++g_state.next_lease_op_id;
+        if (!op->id)
+            op->id = ++g_state.next_lease_op_id;
         op->owner_idx = owner_idx;
         op->epoch = epoch;
         op->lease_id = lease_id;
+        op->votes = 1;
         op->pending_rpcs = 0;
+        op->release_notify = false;
+        op->release_notified = false;
+        op->release_response_node = -1;
+        op->release_response_seq = 0;
+        memset(op->rpc_done, 0, sizeof(op->rpc_done));
+        memset(op->rpc_status, 0, sizeof(op->rpc_status));
+        memset(op->acked, 0, sizeof(op->acked));
+        memset(op->rpc_resp_len, 0, sizeof(op->rpc_resp_len));
         op->deadline_ms = lcs_now_ms() + g_state.cfg.peer_timeout_ms;
+        if (g_state.resources[resource_idx].shutdown_release_required)
+            g_state.resources[resource_idx].shutdown_release_confirmed = false;
         for (size_t n = 0; n < g_state.cfg.node_count; n++)
         {
             if ((int)n == g_state.self_index)

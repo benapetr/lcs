@@ -109,3 +109,30 @@ int scheduler_run_once(const scheduler_t *sched)
     scheduler_exec_subsystems(sched);
     return 0;
 }
+
+int scheduler_run_shutdown_once(const scheduler_t *sched)
+{
+    struct epoll_event events[64];
+    int rc = epoll_wait(sched->epoll_fd, events, 64,
+                        LCS_DEFAULT_LOOP_TIMEOUT_MS);
+    if (rc < 0)
+    {
+        if (errno == EINTR)
+            return 0;
+        lcs_log_error("shutdown epoll_wait failed: %s", strerror(errno));
+        return -1;
+    }
+    for (int i = 0; i < rc; i++)
+    {
+        if (scheduler_is_peer_event(events[i].data.u32))
+            scheduler_dispatch_event(sched, &events[i]);
+    }
+
+    peer_poll(sched->epoll_fd);
+    handshake_expire(sched->epoll_fd);
+    lease_process_operations(sched->epoll_fd);
+    resources_process_hooks(sched->epoll_fd);
+    resources_progress_graceful_shutdown(sched->epoll_fd);
+    resources_maintain_owned_leases(sched->epoll_fd);
+    return 0;
+}

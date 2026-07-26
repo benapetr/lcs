@@ -520,7 +520,24 @@ static void run_daemon_loop(int epoll_fd)
 
 static void shutdown_daemon(int epoll_fd)
 {
-    resources_graceful_shutdown(epoll_fd);
+    scheduler_t sched = {
+        .epoll_fd = epoll_fd,
+        .local_fd = g_local_fd,
+        .metrics_fd = g_metrics_fd,
+    };
+    resources_begin_graceful_shutdown(epoll_fd);
+    uint64_t shutdown_deadline_ms = lcs_now_ms() +
+                                    ((uint64_t)g_state.cfg.hook_timeout_ms * 2u) +
+                                    g_state.cfg.peer_timeout_ms + 100u;
+    while (!resources_graceful_shutdown_complete() &&
+           lcs_now_ms() < shutdown_deadline_ms)
+    {
+        if (scheduler_run_shutdown_once(&sched) != 0)
+            break;
+    }
+    if (!resources_graceful_shutdown_complete())
+        lcs_log_warn("graceful shutdown drain timed out; local resources are stopped where possible but release quorum was not confirmed");
+    resources_finish_graceful_shutdown();
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         if ((int)i != g_state.self_index && g_state.peers[i].fd >= 0)

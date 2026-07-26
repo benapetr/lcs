@@ -16,6 +16,8 @@ wait_for_quorum node3
 wait_for_owner node2 node1
 
 stop_node node1
+grep -Fq "shutdown release quorum confirmed for resource vip1" "$TEST_TMP/logs/node1.log" ||
+    die "graceful owner shutdown did not confirm release quorum"
 wait_for_node_offline node2 node1
 wait_for_owner node2 node2
 wait_for_owner node3 node2

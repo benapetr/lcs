@@ -14,6 +14,7 @@ typedef struct
 } scheduler_t;
 
 int scheduler_run_once(const scheduler_t *sched);
+int scheduler_run_shutdown_once(const scheduler_t *sched);
 void scheduler_exec_subsystems(const scheduler_t *sched);
 
 #endif

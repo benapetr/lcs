@@ -628,34 +628,59 @@ void resources_drop_local(int resource_idx, int epoll_fd)
     resources_release_local_internal(resource_idx, epoll_fd, false);
 }
 
-void resources_graceful_shutdown(int epoll_fd)
+void resources_begin_graceful_shutdown(int epoll_fd)
 {
-    uint64_t deadline = lcs_now_ms() + g_state.cfg.hook_timeout_ms + 100u;
-    for (;;)
+    move_cancel_all(epoll_fd, "daemon is shutting down");
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
-        bool pending = false;
-        for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+        resource_runtime_t *res = &g_state.resources[i];
+        if (res->owner_node == g_state.self_index &&
+            res->owner_instance_id == g_state.instance_id)
         {
-            resource_runtime_t *res = &g_state.resources[i];
-            if (res->owner_node == g_state.self_index &&
-                res->owner_instance_id == g_state.instance_id)
-            {
-                lcs_log_info("releasing resource %s before shutdown", g_state.cfg.resources[i].name);
-                resources_release_local((int)i, epoll_fd);
-            }
+            res->shutdown_release_required = true;
+            res->shutdown_release_confirmed = false;
         }
-        resources_process_hooks(epoll_fd);
-        for (size_t i = 0; i < g_state.cfg.resource_count; i++)
-        {
-            if (g_state.resources[i].hook_pid > 0 ||
-                (g_state.resources[i].owner_node == g_state.self_index &&
-                 g_state.resources[i].owner_instance_id == g_state.instance_id))
-                pending = true;
-        }
-        if (!pending || lcs_now_ms() >= deadline)
-            break;
-        usleep(10000);
     }
+    resources_progress_graceful_shutdown(epoll_fd);
+}
+
+void resources_progress_graceful_shutdown(int epoll_fd)
+{
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+    {
+        resource_runtime_t *res = &g_state.resources[i];
+        if (res->shutdown_release_required &&
+            res->owner_node == g_state.self_index &&
+            res->owner_instance_id == g_state.instance_id &&
+            res->hook_pid <= 0 &&
+            res->state != LCS_RES_STOPPING &&
+            res->state != LCS_RES_STOP_FAILED)
+        {
+            lcs_log_info("releasing resource %s before shutdown",
+                         g_state.cfg.resources[i].name);
+            resources_release_local((int)i, epoll_fd);
+        }
+    }
+}
+
+bool resources_graceful_shutdown_complete(void)
+{
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+    {
+        const resource_runtime_t *res = &g_state.resources[i];
+        if (!res->shutdown_release_required)
+            continue;
+        if (res->hook_pid > 0 ||
+            (res->owner_node == g_state.self_index &&
+             res->owner_instance_id == g_state.instance_id) ||
+            !res->shutdown_release_confirmed)
+            return false;
+    }
+    return true;
+}
+
+void resources_finish_graceful_shutdown(void)
+{
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
         resources_cancel_hook((int)i);
 }
