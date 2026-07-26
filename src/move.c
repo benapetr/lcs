@@ -150,16 +150,12 @@ static void move_rpc_callback(void *ctx, int status, const unsigned char *payloa
         move->pending_rpcs--;
 }
 
-static void move_fail_immediate_local(int epoll_fd,
-                                      int local_slot, uint64_t local_client_id,
-                                      uint32_t client_seq, const char *message)
+static void move_fail_immediate_local(int epoll_fd, int local_slot, uint64_t local_client_id, uint32_t client_seq, const char *message)
 {
     client_complete_move(epoll_fd, local_slot, local_client_id, client_seq, -1, message);
 }
 
-static int move_validate_request(const void *payload,
-                                 uint32_t len, int *resource_idx, int *target_idx,
-                                 char *message, size_t message_len)
+static int move_validate_request(const void *payload, uint32_t len, int *resource_idx, int *target_idx, char *message, size_t message_len)
 {
     char vip_name[LCS_NAME_MAX + 1];
     char target_name[LCS_NAME_MAX + 1];
@@ -206,6 +202,7 @@ static void move_start_owner_release(int epoll_fd, move_runtime_t *move)
     move->rpc_ctx[move->old_owner_idx].move = move;
     move->rpc_ctx[move->old_owner_idx].move_id = move->id;
     move->rpc_ctx[move->old_owner_idx].node_idx = move->old_owner_idx;
+    move->wait_until_ms = g_state.resources[move->resource_idx].lease_deadline_ms;
     if (lease_encode_msg(req, sizeof(req), &req_len, (uint16_t)move->resource_idx,
                          (uint16_t)move->old_owner_idx, move->old_epoch,
                          move->old_lease_id, 0, g_state.instance_id) != 0 ||
@@ -248,6 +245,8 @@ static void move_start_failed_release(int epoll_fd, move_runtime_t *move)
     unsigned char req[LCS_MAX_FRAME];
     size_t req_len = 0;
     move->pending_rpcs = 0;
+    lease_grant_local_release(move->resource_idx, g_state.self_index,
+                              move->epoch, move->lease_id);
     if (lease_encode_msg(req, sizeof(req), &req_len, (uint16_t)move->resource_idx,
                          (uint16_t)g_state.self_index, move->epoch, move->lease_id,
                          g_state.cfg.lease_ms, g_state.instance_id) != 0)
@@ -301,10 +300,20 @@ static void move_start_lease_acquire(int epoll_fd, move_runtime_t *move)
     move->votes = 1;
     move->pending_rpcs = 0;
     memset(move->lease_acked, 0, sizeof(move->lease_acked));
+    if (lease_grant_local_acquire(move->resource_idx, g_state.self_index,
+                                  move->epoch, move->lease_id,
+                                  move->grant_deadline_ms) != 0)
+    {
+        move_set_failed(move, "local voter rejected lease request");
+        move_complete(epoll_fd, move);
+        return;
+    }
     if (lease_encode_msg(req, sizeof(req), &req_len, (uint16_t)move->resource_idx,
                          (uint16_t)g_state.self_index, move->epoch, move->lease_id,
                          g_state.cfg.lease_ms, g_state.instance_id) != 0)
     {
+        lease_grant_local_release(move->resource_idx, g_state.self_index,
+                                  move->epoch, move->lease_id);
         move_set_failed(move, "failed to encode lease request");
         move_complete(epoll_fd, move);
         return;
@@ -332,6 +341,9 @@ static void move_start_lease_acquire(int epoll_fd, move_runtime_t *move)
 static void move_finish_activation(int epoll_fd, move_runtime_t *move)
 {
     move_apply_local_lease(move);
+    lease_broadcast_commit(epoll_fd, move->resource_idx, g_state.self_index,
+                           move->epoch, move->lease_id,
+                           move->grant_deadline_ms);
     if (resources_activate_acquired_local(move->resource_idx, move->epoch, move->lease_id, epoll_fd) == 0)
     {
         move->final_status = 0;
@@ -384,10 +396,7 @@ static void move_start_target(int epoll_fd, move_runtime_t *move)
     move_start_lease_acquire(epoll_fd, move);
 }
 
-static int move_start_remote_target(int epoll_fd,
-                                    int local_slot, uint32_t client_seq,
-                                    const void *payload, uint32_t len,
-                                    int resource_idx, int target_idx)
+static int move_start_remote_target(int epoll_fd, int local_slot, uint32_t client_seq, const void *payload, uint32_t len, int resource_idx, int target_idx)
 {
     uint64_t local_client_id = g_state.local_clients[local_slot].id;
     move_runtime_t *move = move_alloc();
@@ -453,8 +462,7 @@ bool move_active_for_resource(int resource_idx)
     return false;
 }
 
-int move_start_internal(int epoll_fd, int resource_idx, int target_idx,
-                        const char *reason)
+int move_start_internal(int epoll_fd, int resource_idx, int target_idx, const char *reason)
 {
     if (resource_idx < 0 || (size_t)resource_idx >= g_state.cfg.resource_count ||
         target_idx < 0 || (size_t)target_idx >= g_state.cfg.node_count)
@@ -518,9 +526,7 @@ int move_start_internal(int epoll_fd, int resource_idx, int target_idx,
     return 0;
 }
 
-int move_start_local_client(int epoll_fd, int local_slot,
-                            uint32_t client_seq, const void *payload,
-                            uint32_t len)
+int move_start_local_client(int epoll_fd, int local_slot, uint32_t client_seq, const void *payload, uint32_t len)
 {
     int resource_idx = -1;
     int target_idx = -1;
@@ -572,9 +578,7 @@ int move_start_local_client(int epoll_fd, int local_slot,
     return 0;
 }
 
-int move_start_peer_request(int epoll_fd, int source_node_idx,
-                            uint32_t peer_seq, const void *payload,
-                            uint32_t len)
+int move_start_peer_request(int epoll_fd, int source_node_idx, uint32_t peer_seq, const void *payload, uint32_t len)
 {
     int resource_idx = -1;
     int target_idx = -1;
@@ -623,7 +627,10 @@ static void move_process_target(move_runtime_t *move, int epoll_fd, uint64_t now
             lcs_log_info("old owner %s confirmed release of resource %s",
                          g_state.cfg.nodes[move->old_owner_idx].name,
                          g_state.cfg.resources[move->resource_idx].name);
-            move_start_lease_acquire(epoll_fd, move);
+            if (!move->wait_until_ms || now >= move->wait_until_ms)
+                move_start_lease_acquire(epoll_fd, move);
+            else
+                move->phase = LCS_MOVE_PHASE_WAIT_OLD_LEASE_EXPIRY;
             return;
         }
         move->wait_until_ms = g_state.resources[move->resource_idx].lease_deadline_ms;

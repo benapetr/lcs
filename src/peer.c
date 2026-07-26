@@ -101,6 +101,7 @@ static bool peer_is_request_type(uint16_t type)
         case LCS_MSG_LEASE_REQ:
         case LCS_MSG_LEASE_RENEW:
         case LCS_MSG_LEASE_RELEASE:
+        case LCS_MSG_LEASE_COMMIT:
         case LCS_MSG_OWNER_RELEASE_REQ:
         case LCS_MSG_MOVE_REQ:
             return true;
@@ -729,6 +730,8 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx,
                 return peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_LEASE_ACK, 0, "ok");
 
             return peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_LEASE_ACK, -1, "lease rejected");
+        case LCS_MSG_LEASE_COMMIT:
+            return lease_apply_commit(payload, hdr->length, source_node_idx, epoll_fd);
         case LCS_MSG_OWNER_RELEASE_REQ:
             if (lease_handle_owner_release_request(payload, hdr->length, source_node_idx, epoll_fd) == 0)
                 return peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_OWNER_RELEASE_RESP, 0, "ok");
@@ -1296,6 +1299,19 @@ void peer_broadcast_state_sync(int epoll_fd)
             lcs_log_debug("state sync broadcast to %s failed", g_state.cfg.nodes[i].name);
         else
             g_state.peers[i].state_sync_pending = false;
+    }
+}
+
+void peer_broadcast_lease_commit(int epoll_fd, const void *payload, uint32_t len)
+{
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index || g_state.peers[i].fd < 0)
+            continue;
+        if (peer_queue_frame(epoll_fd, (int)i, LCS_MSG_LEASE_COMMIT,
+                             lcs_next_seq(), payload, len) != 0)
+            lcs_log_debug("lease commit broadcast to %s failed",
+                          g_state.cfg.nodes[i].name);
     }
 }
 

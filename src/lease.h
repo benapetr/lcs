@@ -19,6 +19,19 @@ int lease_decode_msg(const void *payload, size_t len,
                      uint64_t *sender_instance_id);
 
 int  lease_accept_message(uint16_t type, const void *payload, size_t len, int source_node_idx);
+int  lease_apply_commit(const void *payload, size_t len, int source_node_idx, int epoll_fd);
+
+// Record/release this daemon's own voter promise.  Move operations use the
+// same grant rules as normal automatic acquisition.
+int  lease_grant_local_acquire(int resource_idx, int owner_idx, uint64_t epoch,
+                               uint64_t lease_id, uint64_t deadline_ms);
+void lease_grant_local_release(int resource_idx, int owner_idx, uint64_t epoch,
+                               uint64_t lease_id);
+
+// Announce ownership only after a majority acquisition or renewal completes.
+void lease_broadcast_commit(int epoll_fd, int resource_idx, int owner_idx,
+                            uint64_t epoch, uint64_t lease_id,
+                            uint64_t deadline_ms);
 
 // Begin an asynchronous majority lease acquisition for a resource. The caller
 // provides the proposed owner, new epoch, and lease ID; the lease subsystem

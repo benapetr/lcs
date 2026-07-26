@@ -192,10 +192,7 @@ static void client_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
     client_queue_frame(epoll_fd, slot_idx, LCS_MSG_STATUS_RESP, seq, payload, (uint32_t)w.len);
 }
 
-static void client_queue_simple_response(int epoll_fd,
-                                         int slot_idx, uint16_t type,
-                                         uint32_t seq, int32_t status,
-                                         const char *message)
+static void client_queue_simple_response(int epoll_fd, int slot_idx, uint16_t type, uint32_t seq, int32_t status, const char *message)
 {
     unsigned char payload[256];
     size_t len = 0;
@@ -203,9 +200,7 @@ static void client_queue_simple_response(int epoll_fd,
         client_queue_frame(epoll_fd, slot_idx, type, seq, payload, (uint32_t)len);
 }
 
-void client_complete_move(int epoll_fd, int slot_idx,
-                          uint64_t client_id, uint32_t seq, int32_t status,
-                          const char *message)
+void client_complete_move(int epoll_fd, int slot_idx, uint64_t client_id, uint32_t seq, int32_t status, const char *message)
 {
     if (slot_idx < 0 || slot_idx >= LCS_LOCAL_CLIENT_MAX)
         return;
@@ -216,9 +211,7 @@ void client_complete_move(int epoll_fd, int slot_idx,
     client->close_after_flush = true;
 }
 
-static void client_queue_clear_conflict(int epoll_fd,
-                                        int slot_idx, uint32_t seq,
-                                        const void *payload, uint32_t len)
+static void client_queue_clear_conflict(int epoll_fd, int slot_idx, uint32_t seq, const void *payload, uint32_t len)
 {
     char vip_name[LCS_NAME_MAX + 1];
     int32_t status = -1;
@@ -293,9 +286,7 @@ static void client_queue_resource_control(int epoll_fd,
     client_queue_simple_response(epoll_fd, slot_idx, resp_type, seq, status, message);
 }
 
-static int client_process_frame(int epoll_fd, int slot_idx,
-                                const lcs_frame_header_t *hdr,
-                                const unsigned char *payload)
+static int client_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
 {
     local_client_runtime_t *client = &g_state.local_clients[slot_idx];
     switch (hdr->type)
@@ -310,12 +301,10 @@ static int client_process_frame(int epoll_fd, int slot_idx,
             client_queue_clear_conflict(epoll_fd, slot_idx, hdr->seq, payload, hdr->length);
             break;
         case LCS_MSG_RESOURCE_START_REQ:
-            client_queue_resource_control(epoll_fd, slot_idx, LCS_MSG_RESOURCE_START_RESP,
-                                          hdr->seq, payload, hdr->length, false);
+            client_queue_resource_control(epoll_fd, slot_idx, LCS_MSG_RESOURCE_START_RESP, hdr->seq, payload, hdr->length, false);
             break;
         case LCS_MSG_RESOURCE_STOP_REQ:
-            client_queue_resource_control(epoll_fd, slot_idx, LCS_MSG_RESOURCE_STOP_RESP,
-                                          hdr->seq, payload, hdr->length, true);
+            client_queue_resource_control(epoll_fd, slot_idx, LCS_MSG_RESOURCE_STOP_RESP, hdr->seq, payload, hdr->length, true);
             break;
         default:
             client_queue_error(epoll_fd, slot_idx, hdr->seq, "unsupported local CLI message");

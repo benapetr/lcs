@@ -81,8 +81,7 @@ void cluster_update_recovery_state(void)
         if ((int)i != g_state.self_index && g_state.peers[i].fd >= 0)
             g_state.peers[i].next_heartbeat_ms = 0;
     }
-    lcs_log_info("recovery complete; node is now eligible to vote after synchronizing %u/%u votes",
-                 synchronized_votes, g_state.quorum_needed);
+    lcs_log_info("recovery complete; node is now eligible to vote after synchronizing %u/%u votes", synchronized_votes, g_state.quorum_needed);
 }
 
 void cluster_recompute_votes(void)
@@ -223,6 +222,14 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
         bool unsafe_update = (incoming_conflict || incoming_stop_failed) && epoch >= res->epoch;
         if (local_unsafe && !incoming_conflict && !incoming_stop_failed && epoch <= res->epoch)
             continue;
+        bool local_owner = res->owner_node == g_state.self_index &&
+                           res->owner_instance_id == g_state.instance_id &&
+                           res->state != LCS_RES_STOPPED;
+        if (local_owner && !same_lease && !unsafe_update)
+        {
+            lcs_log_debug3("ignoring state sync that would replace locally owned resource %s epoch=%llu", g_state.cfg.resources[id].name, (unsigned long long)res->epoch);
+            continue;
+        }
         if (newer_epoch || same_lease || unsafe_update)
         {
             if (res->owner_node == g_state.self_index &&
@@ -232,9 +239,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             {
                 if (resources_stop_local_backend(&g_state.cfg.resources[id]) != 0)
                 {
-                    resources_enter_stop_failed_state((int)id, epoch + 1,
-                                                     "local resource stop failed while applying state sync",
-                                                     -1);
+                    resources_enter_stop_failed_state((int)id, epoch + 1, "local resource stop failed while applying state sync", -1);
                     continue;
                 }
             }
@@ -244,16 +249,14 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             res->owner_instance_id = owner == UINT16_MAX ? 0 : owner_instance_id;
             if (!preserve_local_transition)
                 res->state = (lcs_resource_state_t)state;
-            uint64_t incoming_deadline_ms = remaining_ms ? lcs_now_ms() + remaining_ms : 0;
-            if (same_lease && incoming_deadline_ms && res->lease_deadline_ms &&
-                incoming_deadline_ms < res->lease_deadline_ms)
+            if (!same_lease)
             {
-                lcs_log_debug3("state sync for resource %s kept later local deadline for same lease epoch=%llu",
-                               g_state.cfg.resources[id].name, (unsigned long long)epoch);
-            } else
-                res->lease_deadline_ms = incoming_deadline_ms;
-            snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",
-                     (incoming_conflict || incoming_stop_failed) ? reason : "");
+                if (remaining_ms > g_state.cfg.lease_ms)
+                    remaining_ms = g_state.cfg.lease_ms;
+                res->lease_deadline_ms = remaining_ms ?
+                                         lcs_now_ms() + remaining_ms : 0;
+            }
+            snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s", (incoming_conflict || incoming_stop_failed) ? reason : "");
         }
     }
     return 0;

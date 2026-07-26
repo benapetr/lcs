@@ -391,6 +391,7 @@ static void initialize_daemon_state(void)
         g_state.resources[i].owner_node = -1;
         g_state.resources[i].owner_instance_id = 0;
         g_state.resources[i].state = LCS_RES_STOPPED;
+        g_state.lease_grants[i].owner_node = -1;
     }
 }
 

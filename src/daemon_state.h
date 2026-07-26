@@ -64,6 +64,18 @@ typedef struct
     char conflict_reason[LCS_REASON_MAX + 1];
 } resource_runtime_t;
 
+/* Private voter promise.  This must never be serialized as resource state. */
+typedef struct
+{
+    bool active;
+    int owner_node;
+    uint64_t owner_instance_id;
+    uint64_t epoch;
+    uint64_t lease_id;
+    uint64_t deadline_ms;
+    uint64_t promised_epoch;
+} lease_grant_t;
+
 typedef void (*peer_rpc_callback_t)(void *ctx, int status, const unsigned char *payload, uint32_t len);
 
 typedef struct
@@ -264,6 +276,7 @@ typedef struct
     uint64_t next_lease_op_id;
     lease_runtime_t lease_ops[LCS_LEASE_OP_MAX];
     resource_runtime_t resources[LCS_MAX_RESOURCES];
+    lease_grant_t lease_grants[LCS_MAX_RESOURCES];
 } daemon_state_t;
 
 extern daemon_state_t g_state;

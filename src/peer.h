@@ -24,6 +24,7 @@ int peer_queue_simple_resp(int epoll_fd, int node_idx,
                            uint32_t seq, uint16_t type, int32_t status,
                            const char *message);
 void peer_broadcast_state_sync(int epoll_fd);
+void peer_broadcast_lease_commit(int epoll_fd, const void *payload, uint32_t len);
 void peer_pump_epoll_event(int epoll_fd, const struct epoll_event *ev);
 void peer_poll(int epoll_fd);
 

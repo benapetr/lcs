@@ -53,161 +53,225 @@ int lease_decode_msg(const void *payload, size_t len,
     return 0;
 }
 
+static bool lease_identity_matches(const lease_grant_t *grant, int owner_node,
+                                   uint64_t owner_instance_id, uint64_t epoch,
+                                   uint64_t lease_id)
+{
+    return grant->active && grant->owner_node == owner_node &&
+           grant->owner_instance_id == owner_instance_id &&
+           grant->epoch == epoch && grant->lease_id == lease_id;
+}
+
+static void lease_expire_grant(lease_grant_t *grant, uint64_t now)
+{
+    if (grant->active && grant->deadline_ms && now >= grant->deadline_ms)
+    {
+        grant->active = false;
+        grant->owner_node = -1;
+        grant->owner_instance_id = 0;
+        grant->lease_id = 0;
+        grant->deadline_ms = 0;
+    }
+}
+
+static int lease_grant_acquire(int resource_idx, int owner_idx,
+                               uint64_t owner_instance_id, uint64_t epoch,
+                               uint64_t lease_id, uint64_t deadline_ms)
+{
+    resource_runtime_t *res = &g_state.resources[resource_idx];
+    lease_grant_t *grant = &g_state.lease_grants[resource_idx];
+    uint64_t now = lcs_now_ms();
+    lease_expire_grant(grant, now);
+
+    if (epoch < grant->promised_epoch || epoch < res->epoch)
+        return -1;
+    if (grant->active)
+        return lease_identity_matches(grant, owner_idx, owner_instance_id, epoch, lease_id) ? 0 : -1;
+    if (epoch == res->epoch && res->owner_node >= 0 && (res->owner_node != owner_idx || res->owner_instance_id != owner_instance_id || res->lease_id != lease_id))
+        return -1;
+    if (res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id && res->state != LCS_RES_STOPPED && owner_idx != g_state.self_index)
+        return -1;
+
+    grant->active = true;
+    grant->owner_node = owner_idx;
+    grant->owner_instance_id = owner_instance_id;
+    grant->epoch = epoch;
+    grant->lease_id = lease_id;
+    grant->deadline_ms = deadline_ms;
+    if (epoch > grant->promised_epoch)
+        grant->promised_epoch = epoch;
+    return 0;
+}
+
+int lease_grant_local_acquire(int resource_idx, int owner_idx, uint64_t epoch, uint64_t lease_id, uint64_t deadline_ms)
+{
+    if (resource_idx < 0 || (size_t)resource_idx >= g_state.cfg.resource_count || owner_idx != g_state.self_index || !cluster_local_voting_ready())
+        return -1;
+    return lease_grant_acquire(resource_idx, owner_idx, g_state.instance_id, epoch, lease_id, deadline_ms);
+}
+
+void lease_grant_local_release(int resource_idx, int owner_idx, uint64_t epoch, uint64_t lease_id)
+{
+    if (resource_idx < 0 || (size_t)resource_idx >= g_state.cfg.resource_count)
+        return;
+
+    lease_grant_t *grant = &g_state.lease_grants[resource_idx];
+    if (lease_identity_matches(grant, owner_idx, g_state.instance_id, epoch, lease_id))
+    {
+        grant->active = false;
+        grant->owner_node = -1;
+        grant->owner_instance_id = 0;
+        grant->lease_id = 0;
+        grant->deadline_ms = 0;
+        if (epoch != UINT64_MAX && epoch + 1 > grant->promised_epoch)
+            grant->promised_epoch = epoch + 1;
+    }
+}
+
 int lease_accept_message(uint16_t type, const void *payload, size_t len, int source_node_idx)
 {
     uint16_t resource_id, owner_node;
     uint64_t epoch, lease_id, sender_instance_id;
     uint32_t lease_ms;
-    if (lease_decode_msg(payload, len, &resource_id, &owner_node, &epoch, &lease_id, &lease_ms, &sender_instance_id) != 0)
-    {
-        lcs_log_debug("rejecting lease message type=%u from %s: invalid payload length=%zu",
-                      type, cluster_node_name_or_none(source_node_idx), len);
+    if (lease_decode_msg(payload, len, &resource_id, &owner_node, &epoch,
+                         &lease_id, &lease_ms, &sender_instance_id) != 0 ||
+        source_node_idx < 0 || owner_node != (uint16_t)source_node_idx ||
+        (size_t)source_node_idx >= g_state.cfg.node_count ||
+        sender_instance_id != g_state.peers[source_node_idx].instance_id)
         return -1;
-    }
-    if (source_node_idx >= 0 &&
-        ((size_t)source_node_idx >= g_state.cfg.node_count ||
-         sender_instance_id != g_state.peers[source_node_idx].instance_id))
-    {
-        lcs_log_debug("rejecting lease message type=%u from %s: instance mismatch sender=%llu expected=%llu",
-                      type, cluster_node_name_or_none(source_node_idx),
-                      (unsigned long long)sender_instance_id,
-                      source_node_idx >= 0 && (size_t)source_node_idx < g_state.cfg.node_count ?
-                      (unsigned long long)g_state.peers[source_node_idx].instance_id : 0ull);
-        return -1;
-    }
+
     resource_runtime_t *res = &g_state.resources[resource_id];
-    const lcs_resource_config_t *cfg_resource = &g_state.cfg.resources[resource_id];
-    if ((type == LCS_MSG_LEASE_REQ && !cluster_local_voting_ready()) ||
-        ((type == LCS_MSG_LEASE_REQ || type == LCS_MSG_LEASE_RENEW) &&
-         lease_ms != g_state.cfg.lease_ms))
-    {
-        lcs_log_debug("rejecting lease message type=%u for resource %s from %s: local voter cannot grant it or lease duration differs",
-                      type, g_state.cfg.resources[resource_id].name,
-                      cluster_node_name_or_none(source_node_idx));
-        return -1;
-    }
+    lease_grant_t *grant = &g_state.lease_grants[resource_id];
+    uint64_t now = lcs_now_ms();
+    lease_expire_grant(grant, now);
+
     if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
-    {
-        lcs_log_debug("rejecting lease message type=%u for resource %s from %s: local unsafe state=%s",
-                      type, g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx),
-                      lcs_resource_state_name(res->state));
         return -1;
-    }
+
     if (type == LCS_MSG_LEASE_RELEASE)
     {
-        if (epoch < res->epoch)
+        if (lease_identity_matches(grant, owner_node, sender_instance_id, epoch, lease_id))
         {
-            lcs_log_debug("rejecting lease release for resource %s from %s: stale epoch=%llu local_epoch=%llu",
-                          g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx),
-                          (unsigned long long)epoch, (unsigned long long)res->epoch);
-            return -1;
+            grant->active = false;
+            grant->owner_node = -1;
+            grant->owner_instance_id = 0;
+            grant->lease_id = 0;
+            grant->deadline_ms = 0;
+            if (epoch != UINT64_MAX && epoch + 1 > grant->promised_epoch)
+                grant->promised_epoch = epoch + 1;
         }
-        if (epoch == res->epoch && res->lease_id != 0 && lease_id != res->lease_id)
+        if (res->owner_node == (int)owner_node &&
+            res->owner_instance_id == sender_instance_id &&
+            res->epoch == epoch && res->lease_id == lease_id)
         {
-            lcs_log_debug("rejecting lease release for resource %s from %s: lease_id mismatch got=%llu local=%llu",
-                          g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx),
-                          (unsigned long long)lease_id, (unsigned long long)res->lease_id);
-            return -1;
-        }
-        if (epoch == res->epoch && res->owner_instance_id != 0 &&
-            sender_instance_id != res->owner_instance_id)
-        {
-            lcs_log_debug("rejecting lease release for resource %s from %s: owner instance mismatch got=%llu local=%llu",
-                          g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx),
-                          (unsigned long long)sender_instance_id,
-                          (unsigned long long)res->owner_instance_id);
-            return -1;
-        }
-        if (res->owner_node == (int)owner_node || epoch > res->epoch)
-        {
-            if (res->owner_node == g_state.self_index &&
-                res->owner_instance_id == g_state.instance_id &&
-                res->state == LCS_RES_ACTIVE)
-            {
-                if (resources_stop_local_backend(cfg_resource) != 0)
-                {
-                    resources_enter_stop_failed_state((int)resource_id, epoch + 1,
-                                                     "local resource stop failed while accepting lease release",
-                                                     -1);
-                    return -1;
-                }
-            }
-            res->epoch = epoch;
-            res->lease_id = 0;
             res->owner_node = -1;
             res->owner_instance_id = 0;
             res->state = LCS_RES_STOPPED;
+            res->lease_id = 0;
             res->lease_deadline_ms = 0;
             res->renew_after_ms = 0;
-            res->conflict_reason[0] = '\0';
         }
         return 0;
     }
+
+    if (lease_ms != g_state.cfg.lease_ms)
+        return -1;
+
+    if (type == LCS_MSG_LEASE_REQ)
+    {
+        if (!cluster_local_voting_ready())
+            return -1;
+        return lease_grant_acquire((int)resource_id, owner_node,
+                                   sender_instance_id, epoch, lease_id,
+                                   now + lease_ms);
+    }
+
     if (type == LCS_MSG_LEASE_RENEW)
     {
-        if (epoch != res->epoch || lease_id != res->lease_id ||
-            res->owner_node != (int)owner_node ||
-            sender_instance_id != res->owner_instance_id)
+        bool matching_observation = res->owner_node == (int)owner_node &&
+                                    res->owner_instance_id == sender_instance_id &&
+                                    res->epoch == epoch && res->lease_id == lease_id &&
+                                    res->state != LCS_RES_STOPPED;
+        if (!lease_identity_matches(grant, owner_node, sender_instance_id,
+                                    epoch, lease_id))
         {
-            lcs_log_debug("rejecting lease renew for resource %s from %s: got epoch=%llu lease=%llu owner=%s instance=%llu local epoch=%llu lease=%llu owner=%s instance=%llu",
-                          g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx),
-                          (unsigned long long)epoch, (unsigned long long)lease_id,
-                          cluster_node_name_or_none(owner_node),
-                          (unsigned long long)sender_instance_id,
-                          (unsigned long long)res->epoch, (unsigned long long)res->lease_id,
-                          cluster_node_name_or_none(res->owner_node),
-                          (unsigned long long)res->owner_instance_id);
-            return -1;
+            if (grant->active || !matching_observation ||
+                lease_grant_acquire((int)resource_id, owner_node,
+                                    sender_instance_id, epoch, lease_id,
+                                    now + lease_ms) != 0)
+                return -1;
         }
-    } else if (type == LCS_MSG_LEASE_REQ)
-    {
-        if (epoch < res->epoch)
-        {
-            lcs_log_debug("rejecting lease request for resource %s from %s: stale epoch=%llu local_epoch=%llu",
-                          g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx),
-                          (unsigned long long)epoch, (unsigned long long)res->epoch);
-            return -1;
-        }
-        if (epoch == res->epoch && res->owner_node >= 0 &&
-            (res->owner_node != (int)owner_node || res->lease_id != lease_id ||
-             res->owner_instance_id != sender_instance_id))
-        {
-            lcs_log_debug("rejecting lease request for resource %s from %s: epoch collision got owner=%s lease=%llu instance=%llu local owner=%s lease=%llu instance=%llu",
-                          g_state.cfg.resources[resource_id].name, cluster_node_name_or_none(source_node_idx),
-                          cluster_node_name_or_none(owner_node), (unsigned long long)lease_id,
-                          (unsigned long long)sender_instance_id,
-                          cluster_node_name_or_none(res->owner_node), (unsigned long long)res->lease_id,
-                          (unsigned long long)res->owner_instance_id);
-            return -1;
-        }
-    } else
-    {
+        grant->deadline_ms = now + lease_ms;
+        return 0;
+    }
+    return -1;
+}
+
+int lease_apply_commit(const void *payload, size_t len, int source_node_idx, int epoll_fd)
+{
+    uint16_t resource_id, owner_node;
+    uint64_t epoch, lease_id, sender_instance_id;
+    uint32_t remaining_ms;
+    if (lease_decode_msg(payload, len, &resource_id, &owner_node, &epoch,
+                         &lease_id, &remaining_ms, &sender_instance_id) != 0 ||
+        source_node_idx < 0 || owner_node != (uint16_t)source_node_idx ||
+        (size_t)source_node_idx >= g_state.cfg.node_count ||
+        sender_instance_id != g_state.peers[source_node_idx].instance_id ||
+        remaining_ms == 0 || remaining_ms > g_state.cfg.lease_ms)
         return -1;
-    }
+
+    resource_runtime_t *res = &g_state.resources[resource_id];
+    lease_grant_t *grant = &g_state.lease_grants[resource_id];
+    lease_expire_grant(grant, lcs_now_ms());
+    if (grant->active && !lease_identity_matches(grant, owner_node,
+                                                  sender_instance_id,
+                                                  epoch, lease_id))
+        return -1;
+    if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED ||
+        epoch < res->epoch)
+        return -1;
+
+    bool same_lease = res->owner_node == (int)owner_node &&
+                      res->owner_instance_id == sender_instance_id &&
+                      res->epoch == epoch && res->lease_id == lease_id;
+    if (epoch == res->epoch && res->owner_node >= 0 && !same_lease)
+        return -1;
     if (res->owner_node == g_state.self_index &&
-        res->owner_instance_id == g_state.instance_id &&
-        owner_node != (uint16_t)g_state.self_index &&
-        res->state == LCS_RES_ACTIVE)
+        res->owner_instance_id == g_state.instance_id && !same_lease &&
+        res->state != LCS_RES_STOPPED)
     {
-        if (resources_stop_local_backend(cfg_resource) != 0)
+        if (resources_stop_local_backend(&g_state.cfg.resources[resource_id]) != 0)
         {
-            resources_enter_stop_failed_state((int)resource_id, epoch + 1,
-                                             "local resource stop failed while accepting remote lease owner",
-                                             -1);
+            resources_enter_stop_failed_state((int)resource_id, epoch + 1, "local resource stop failed while applying lease commit", epoll_fd);
             return -1;
         }
     }
-    uint64_t now = lcs_now_ms();
+
     res->epoch = epoch;
     res->lease_id = lease_id;
     res->owner_node = owner_node;
     res->owner_instance_id = sender_instance_id;
-    if (type != LCS_MSG_LEASE_RENEW || (res->state != LCS_RES_STARTING && res->state != LCS_RES_STOPPING))
-        res->state = LCS_RES_ACTIVE;
-    res->lease_deadline_ms = now + lease_ms;
-    res->renew_after_ms = now + (lease_ms / 2u);
+    res->state = LCS_RES_ACTIVE;
+    res->lease_deadline_ms = lcs_now_ms() + remaining_ms;
+    res->renew_after_ms = 0;
     res->conflict_reason[0] = '\0';
     return 0;
+}
+
+void lease_broadcast_commit(int epoll_fd, int resource_idx, int owner_idx, uint64_t epoch, uint64_t lease_id, uint64_t deadline_ms)
+{
+    uint64_t now = lcs_now_ms();
+    if (deadline_ms <= now)
+        return;
+    uint64_t remaining = deadline_ms - now;
+    if (remaining > g_state.cfg.lease_ms)
+        remaining = g_state.cfg.lease_ms;
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t len = 0;
+    if (lease_encode_msg(payload, sizeof(payload), &len, (uint16_t)resource_idx,
+                         (uint16_t)owner_idx, epoch, lease_id,
+                         (uint32_t)remaining, g_state.instance_id) == 0)
+        peer_broadcast_lease_commit(epoll_fd, payload, (uint32_t)len);
 }
 
 static void lease_op_clear(lease_runtime_t *op)
@@ -330,6 +394,7 @@ static int lease_op_send_to_peer(int epoll_fd, lease_runtime_t *op, int node_idx
 
 static void lease_op_send_release_to_acked(int epoll_fd, lease_runtime_t *op)
 {
+    lease_grant_local_release(op->resource_idx, op->owner_idx, op->epoch, op->lease_id);
     op->type = LCS_LEASE_OP_RELEASE;
     op->pending_rpcs = 0;
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
@@ -360,6 +425,15 @@ static int lease_start_operation(int epoll_fd, lease_op_type_t type, int resourc
     uint64_t now = lcs_now_ms();
     op->grant_deadline_ms = type == LCS_LEASE_OP_RELEASE ? 0 : now + g_state.cfg.lease_ms;
     op->deadline_ms = now + g_state.cfg.peer_timeout_ms;
+    if (type == LCS_LEASE_OP_RELEASE)
+        lease_grant_local_release(resource_idx, owner_idx, epoch, lease_id);
+    else if (lease_grant_local_acquire(resource_idx, owner_idx, epoch, lease_id,
+                                       op->grant_deadline_ms) != 0)
+    {
+        lease_op_clear(op);
+        return -1;
+    } else if (type == LCS_LEASE_OP_RENEW)
+        g_state.lease_grants[resource_idx].deadline_ms = op->grant_deadline_ms;
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         if ((int)i == g_state.self_index)
@@ -407,9 +481,9 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
     resource_runtime_t *res = &g_state.resources[op->resource_idx];
     if (!cluster_has_quorum())
     {
-        lcs_log_warn("discarding lease acquire for resource %s epoch=%llu because quorum is lost",
-                     g_state.cfg.resources[op->resource_idx].name,
-                     (unsigned long long)op->epoch);
+        lcs_log_warn("discarding lease acquire for resource %s epoch=%llu because quorum is lost", g_state.cfg.resources[op->resource_idx].name, (unsigned long long)op->epoch);
+        if (op->epoch > res->epoch)
+            res->epoch = op->epoch;
         lease_op_send_release_to_acked(epoll_fd, op);
         res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
         if (op->pending_rpcs > 0)
@@ -431,6 +505,8 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                      (unsigned long long)op->epoch, (unsigned)res->state,
                      cluster_node_name_or_none(res->owner_node),
                      (unsigned long long)res->epoch);
+        if (op->epoch > res->epoch)
+            res->epoch = op->epoch;
         lease_op_send_release_to_acked(epoll_fd, op);
         if (op->pending_rpcs > 0)
             return;
@@ -445,6 +521,8 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
             lcs_log_warn("discarding expired lease acquire result for resource %s epoch=%llu",
                          g_state.cfg.resources[op->resource_idx].name,
                          (unsigned long long)op->epoch);
+            if (op->epoch > res->epoch)
+                res->epoch = op->epoch;
             lease_op_send_release_to_acked(epoll_fd, op);
             res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
             if (op->pending_rpcs > 0)
@@ -464,6 +542,8 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                       g_state.cfg.resources[op->resource_idx].name,
                       (unsigned long long)op->epoch, op->votes,
                       g_state.quorum_needed);
+        lease_broadcast_commit(epoll_fd, op->resource_idx, op->owner_idx,
+                               op->epoch, op->lease_id, op->grant_deadline_ms);
         if (resources_activate_acquired_local(op->resource_idx, op->epoch, op->lease_id, epoll_fd) != 0)
             res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
         if (op->type == LCS_LEASE_OP_RELEASE)
@@ -474,6 +554,8 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                       g_state.cfg.resources[op->resource_idx].name,
                       (unsigned long long)op->epoch, op->votes,
                       g_state.quorum_needed);
+        if (op->epoch > res->epoch)
+            res->epoch = op->epoch;
         lease_op_send_release_to_acked(epoll_fd, op);
         res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
         if (op->pending_rpcs > 0)
@@ -514,10 +596,10 @@ static void lease_finish_renew(int epoll_fd, lease_runtime_t *op)
             lcs_log_debug("renewed resource %s lease epoch=%llu votes=%d",
                           g_state.cfg.resources[op->resource_idx].name,
                           (unsigned long long)op->epoch, op->votes);
+            lease_broadcast_commit(epoll_fd, op->resource_idx, op->owner_idx, op->epoch, op->lease_id, op->grant_deadline_ms);
         } else
         {
-            lcs_log_warn("dropping resource %s because renewed grants expired before completion",
-                         g_state.cfg.resources[op->resource_idx].name);
+            lcs_log_warn("dropping resource %s because renewed grants expired before completion", g_state.cfg.resources[op->resource_idx].name);
             resources_drop_local(op->resource_idx, epoll_fd);
         }
     } else if (now + g_state.cfg.renew_ms >= res->lease_deadline_ms)
@@ -557,6 +639,7 @@ void lease_process_operations(int epoll_fd)
 
 void lease_release_majority(int resource_idx, int owner_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
+    lease_grant_local_release(resource_idx, owner_idx, epoch, lease_id);
     for (size_t i = 0; i < LCS_LEASE_OP_MAX; i++)
     {
         lease_runtime_t *op = &g_state.lease_ops[i];
@@ -622,6 +705,7 @@ void lease_expire_remote(void)
     uint64_t grace_ms = g_state.cfg.renew_ms ? g_state.cfg.renew_ms : 1000u;
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
+        lease_expire_grant(&g_state.lease_grants[i], now);
         resource_runtime_t *res = &g_state.resources[i];
         if ((res->state != LCS_RES_ACTIVE &&
              res->state != LCS_RES_STARTING &&

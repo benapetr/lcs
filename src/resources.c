@@ -362,7 +362,8 @@ static int resources_complete_local_activation(int resource_idx, uint64_t epoch,
 static void resources_release_local_internal(int resource_idx, int epoll_fd, bool allow_hooks)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
-    uint64_t release_epoch = res->epoch + 1;
+    uint64_t old_epoch = res->epoch;
+    uint64_t release_epoch = old_epoch + 1;
     uint64_t old_lease_id = res->lease_id;
     bool locally_owned = res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id;
 
@@ -400,7 +401,7 @@ static void resources_release_local_internal(int resource_idx, int epoll_fd, boo
         }
     }
 
-    lease_release_majority(resource_idx, g_state.self_index, release_epoch, old_lease_id, epoll_fd);
+    lease_release_majority(resource_idx, g_state.self_index, old_epoch, old_lease_id, epoll_fd);
     resources_clear_local_lease(res, release_epoch);
     if (allow_hooks)
         resources_start_hook(resource_idx, LCS_HOOK_POST_STOP, release_epoch, old_lease_id);
@@ -414,6 +415,9 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
 
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
+        uint64_t epoch = g_state.resources[i].epoch;
+        if (g_state.lease_grants[i].promised_epoch > epoch)
+            epoch = g_state.lease_grants[i].promised_epoch;
         uint64_t failover_count = g_state.resources[i].failover_count;
         uint64_t home_generation = g_state.resources[i].home_generation;
         uint64_t disabled_generation = g_state.resources[i].disabled_generation;
@@ -439,6 +443,7 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
         memset(&g_state.resources[i], 0, sizeof(g_state.resources[i]));
         g_state.resources[i].owner_node = -1;
         g_state.resources[i].state = LCS_RES_STOPPED;
+        g_state.resources[i].epoch = epoch;
         g_state.resources[i].failover_count = failover_count;
         g_state.resources[i].home_generation = home_generation;
         g_state.resources[i].disabled_generation = disabled_generation;
@@ -604,6 +609,9 @@ int resources_release_for_handoff(int resource_idx, uint64_t epoch, uint64_t lea
                                          epoll_fd);
         return -1;
     }
+
+    lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id,
+                           epoll_fd);
 
     res->owner_node = -1;
     res->owner_instance_id = 0;

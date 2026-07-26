@@ -151,17 +151,14 @@ typedef struct
     status_resource_t resources[LCS_MAX_RESOURCES];
 } status_snapshot_t;
 
-static const char *status_owner_name(const status_snapshot_t *status,
-                                     const status_resource_t *resource,
-                                     char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1])
+static const char *status_owner_name(const status_snapshot_t *status, const status_resource_t *resource, char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1])
 {
     if (resource->owner_node != UINT16_MAX && resource->owner_node < status->node_count)
         return node_names[resource->owner_node];
     return NULL;
 }
 
-static void status_node_names(const status_snapshot_t *status,
-                              char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1])
+static void status_node_names(const status_snapshot_t *status, char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1])
 {
     memset(node_names, 0, sizeof(char) * LCS_MAX_NODES * (LCS_NAME_MAX + 1));
     for (uint16_t i = 0; i < status->node_count; i++)
@@ -213,9 +210,7 @@ static void print_status_json(const status_snapshot_t *status)
             json_string(stdout, owner);
         else
             printf("null");
-        printf(",\"epoch\":%llu,\"lease_id\":%llu",
-               (unsigned long long)resource->epoch,
-               (unsigned long long)resource->lease_id);
+        printf(",\"epoch\":%llu,\"lease_id\":%llu", (unsigned long long)resource->epoch, (unsigned long long)resource->lease_id);
         if (*resource->address)
         {
             printf(",\"address\":");
@@ -297,11 +292,7 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
     for (uint16_t i = 0; i < status->node_count; i++)
     {
         status_node_t *node = &status->nodes[i];
-        if (lcs_decode_status_node(&r, &node->id, &node->role,
-                                   &node->state, &node->self,
-                                   node->name, sizeof(node->name)) != 0 ||
-            node->id >= status->node_count ||
-            node->state > LCS_NODE_ONLINE)
+        if (lcs_decode_status_node(&r, &node->id, &node->role, &node->state, &node->self, node->name, sizeof(node->name)) != 0 || node->id >= status->node_count || node->state > LCS_NODE_ONLINE)
         {
             fprintf(stderr, "lcs: invalid status node entry\n");
             return 1;
@@ -350,8 +341,7 @@ static int cmd_status(const char *socket_path, bool json_output)
     }
 
     char membership_for[64];
-    lcs_format_duration(status.membership_seconds, membership_for,
-                        sizeof(membership_for));
+    lcs_format_duration(status.membership_seconds, membership_for, sizeof(membership_for));
     printf("Cluster\n");
     printf("  quorum: %s (%u votes, need %u, membership for %s)\n",
            status.has_quorum ? "yes" : "no", status.votes_seen,
@@ -363,8 +353,7 @@ static int cmd_status(const char *socket_path, bool json_output)
     {
         status_node_t *node = &status.nodes[i];
         snprintf(node_names[node->id], sizeof(node_names[node->id]), "%s", node->name);
-        printf("  %s role=%s state=%s%s\n", node->name, role_name(node->role),
-               node_state_name(node->state), node->self ? " (self)" : "");
+        printf("  %s role=%s state=%s%s\n", node->name, role_name(node->role), node_state_name(node->state), node->self ? " (self)" : "");
     }
     printf("Resources\n");
     for (uint16_t i = 0; i < status.resource_count; i++)
@@ -392,12 +381,9 @@ static int cmd_status(const char *socket_path, bool json_output)
         if (resource->disabled)
             printf(" disabled=yes");
         printf("\n");
-        if ((resource->state == LCS_RES_CONFLICT ||
-             resource->state == LCS_RES_STOP_FAILED) && *resource->reason) {
-            printf("    %s: %s\n",
-                   resource->state == LCS_RES_CONFLICT ? "conflict" : "stop_failed",
-                   resource->reason);
-        }
+
+        if ((resource->state == LCS_RES_CONFLICT || resource->state == LCS_RES_STOP_FAILED) && *resource->reason)
+            printf("    %s: %s\n", resource->state == LCS_RES_CONFLICT ? "conflict" : "stop_failed", resource->reason);
     }
     return 0;
 }
@@ -493,8 +479,7 @@ static int cmd_resource_list(const char *socket_path, bool json_output)
             printf(" group=%s priority=%u", resource->group, resource->priority);
         if (*resource->home_node)
             printf(" home=%s%s", resource->home_node, resource->home_blocked ? " home_blocked=yes" : "");
-        if ((resource->state == LCS_RES_CONFLICT ||
-             resource->state == LCS_RES_STOP_FAILED) && *resource->reason)
+        if ((resource->state == LCS_RES_CONFLICT || resource->state == LCS_RES_STOP_FAILED) && *resource->reason)
             printf(" reason=\"%s\"", resource->reason);
         printf("\n");
     }
@@ -651,10 +636,7 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip, bool jso
     return 0;
 }
 
-static int cmd_resource_control(const char *socket_path, const char *resource,
-                                uint16_t req_type, uint16_t resp_type,
-                                const char *action,
-                                bool json_output)
+static int cmd_resource_control(const char *socket_path, const char *resource, uint16_t req_type, uint16_t resp_type, const char *action, bool json_output)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
@@ -686,8 +668,7 @@ static int cmd_resource_control(const char *socket_path, const char *resource,
     }
     if (hdr.type != resp_type && hdr.type != LCS_MSG_ERROR)
     {
-        fprintf(stderr, "lcs: invalid resource %s response: got message type %u, expected %u or %u\n",
-                action, hdr.type, resp_type, LCS_MSG_ERROR);
+        fprintf(stderr, "lcs: invalid resource %s response: got message type %u, expected %u or %u\n", action, hdr.type, resp_type, LCS_MSG_ERROR);
         close(fd);
         return 1;
     }
@@ -714,8 +695,7 @@ static int cmd_resource_control(const char *socket_path, const char *resource,
     return 0;
 }
 
-static int cmd_move(const char *socket_path, const char *vip, const char *node,
-                    bool json_output)
+static int cmd_move(const char *socket_path, const char *vip, const char *node, bool json_output)
 {
     int fd = connect_socket(socket_path);
     if (fd < 0)
@@ -774,8 +754,7 @@ static int cmd_move(const char *socket_path, const char *vip, const char *node,
     return 0;
 }
 
-static int cmd_resource(const char *socket_path, int argc, char **argv, int optind,
-                        bool json_output)
+static int cmd_resource(const char *socket_path, int argc, char **argv, int optind, bool json_output)
 {
     if (optind >= argc)
     {
@@ -809,11 +788,7 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
             usage(stderr);
             return 2;
         }
-        return cmd_resource_control(socket_path, argv[optind],
-                                    LCS_MSG_RESOURCE_START_REQ,
-                                    LCS_MSG_RESOURCE_START_RESP,
-                                    "start",
-                                    json_output);
+        return cmd_resource_control(socket_path, argv[optind], LCS_MSG_RESOURCE_START_REQ, LCS_MSG_RESOURCE_START_RESP, "start", json_output);
     }
     if (strcmp(cmd, "stop") == 0)
     {
