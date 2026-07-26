@@ -12,6 +12,8 @@ RuntimeDirectory=lcs
 RuntimeDirectoryMode=0755
 ConfigurationDirectory=lcs
 KillSignal=SIGTERM
+# Let lcsd handle SIGTERM first so VIP removal and hook helpers are not
+# killed before shutdown cleanup finishes; remaining processes are killed later.
 KillMode=mixed
 TimeoutStopSec=15s
 
