@@ -4,7 +4,7 @@
 #include "cluster.h"
 
 #include "log.h"
-#include "systemd_service.h"
+#include "resources.h"
 #include "util.h"
 #include "vip.h"
 
@@ -43,10 +43,7 @@ const char *cluster_node_name_or_none(int node_idx)
 static void cluster_stop_local_resource(size_t id)
 {
     const lcs_resource_config_t *res = &g_state.cfg.resources[id];
-    if (res->type == LCS_RESOURCE_SERVICE)
-        lcs_systemd_service_stop(res);
-    else
-        lcs_vip_del(res);
+    resources_stop_local_backend(res);
 }
 
 int cluster_has_quorum(void)

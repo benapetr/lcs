@@ -59,45 +59,94 @@ static const char *resources_hook_path(const lcs_resource_config_t *resource, re
 
 static const char *resource_kind(const lcs_resource_config_t *res)
 {
-    return res->type == LCS_RESOURCE_SERVICE ? "service" : "VIP";
+    switch (res->type)
+    {
+        case LCS_RESOURCE_VIP:
+            return "VIP";
+        case LCS_RESOURCE_SERVICE:
+            return "service";
+        default:
+            return "unknown resource";
+    }
 }
 
 static int resource_start_local(const lcs_resource_config_t *res)
 {
-    if (res->type == LCS_RESOURCE_SERVICE)
-        return lcs_systemd_service_start(res);
-    return lcs_vip_add(res);
+    switch (res->type)
+    {
+        case LCS_RESOURCE_VIP:
+            return lcs_vip_add(res);
+        case LCS_RESOURCE_SERVICE:
+            return lcs_systemd_service_start(res);
+        default:
+            lcs_log_warn("cannot start resource %s: unknown resource type %u",
+                         res->name, (unsigned)res->type);
+            return -1;
+    }
 }
 
-static int resource_stop_local(const lcs_resource_config_t *res)
+int resources_stop_local_backend(const lcs_resource_config_t *res)
 {
-    if (res->type == LCS_RESOURCE_SERVICE)
-        return lcs_systemd_service_stop(res);
-    return lcs_vip_del(res);
+    switch (res->type)
+    {
+        case LCS_RESOURCE_VIP:
+            return lcs_vip_del(res);
+        case LCS_RESOURCE_SERVICE:
+            return lcs_systemd_service_stop(res);
+        default:
+            lcs_log_warn("cannot stop resource %s: unknown resource type %u",
+                         res->name, (unsigned)res->type);
+            return -1;
+    }
 }
 
 static int resource_is_local_active(const lcs_resource_config_t *res)
 {
-    if (res->type == LCS_RESOURCE_SERVICE)
-        return lcs_systemd_service_is_active(res);
-    return 1;
+    switch (res->type)
+    {
+        case LCS_RESOURCE_VIP:
+            return 1;
+        case LCS_RESOURCE_SERVICE:
+            return lcs_systemd_service_is_active(res);
+        default:
+            lcs_log_warn("cannot inspect resource %s: unknown resource type %u",
+                         res->name, (unsigned)res->type);
+            return -1;
+    }
 }
 
 static int resource_conflict_check(const lcs_resource_config_t *res)
 {
-    if (res->type == LCS_RESOURCE_SERVICE)
-        return 0;
-    return lcs_vip_conflict_check(&g_state.cfg, res);
+    switch (res->type)
+    {
+        case LCS_RESOURCE_VIP:
+            return lcs_vip_conflict_check(&g_state.cfg, res);
+        case LCS_RESOURCE_SERVICE:
+            return 0;
+        default:
+            lcs_log_warn("cannot conflict-check resource %s: unknown resource type %u",
+                         res->name, (unsigned)res->type);
+            return -1;
+    }
 }
 
 static void resource_announce(const lcs_resource_config_t *res)
 {
-    if (res->type == LCS_RESOURCE_SERVICE)
-        return;
-    if (lcs_vip_announce(&g_state.cfg, res) != 0)
+    switch (res->type)
     {
-        lcs_log_warn("failed to send VIP announcement for %s on %s",
-                     res->address, res->interface);
+        case LCS_RESOURCE_VIP:
+            if (lcs_vip_announce(&g_state.cfg, res) != 0)
+            {
+                lcs_log_warn("failed to send VIP announcement for %s on %s",
+                             res->address, res->interface);
+            }
+            return;
+        case LCS_RESOURCE_SERVICE:
+            return;
+        default:
+            lcs_log_warn("cannot announce resource %s: unknown resource type %u",
+                         res->name, (unsigned)res->type);
+            return;
     }
 }
 
@@ -157,7 +206,7 @@ static int resources_start_hook(int resource_idx, resource_hook_type_t type, uin
         setenv("LCS_CLUSTER", g_state.cfg.cluster_name, 1);
         setenv("LCS_NODE", g_state.cfg.nodes[g_state.self_index].name, 1);
         setenv("LCS_RESOURCE", resource->name, 1);
-        setenv("LCS_RESOURCE_TYPE", resource->type == LCS_RESOURCE_SERVICE ? "service" : "vip", 1);
+        setenv("LCS_RESOURCE_TYPE", lcs_resource_type_name(resource->type), 1);
         setenv("LCS_SYSTEMD_UNIT", resource->systemd_unit, 1);
         setenv("LCS_VIP", resource->name, 1);
         setenv("LCS_ADDRESS", resource->address, 1);
@@ -339,7 +388,7 @@ static void resources_release_local_internal(int resource_idx, int epoll_fd, boo
     }
 
     if (res->state == LCS_RES_ACTIVE || res->state == LCS_RES_STOPPING)
-        resource_stop_local(&g_state.cfg.resources[resource_idx]);
+        resources_stop_local_backend(&g_state.cfg.resources[resource_idx]);
 
     lease_release_majority(resource_idx, g_state.self_index, release_epoch, old_lease_id, epoll_fd);
     resources_clear_local_lease(res, release_epoch);
@@ -387,10 +436,12 @@ void resources_cleanup_local_vips_without_lease(void)
     }
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
+        if (g_state.cfg.resources[i].type != LCS_RESOURCE_VIP)
+            continue;
         if (g_state.resources[i].owner_node != g_state.self_index ||
             g_state.resources[i].owner_instance_id != g_state.instance_id ||
             g_state.resources[i].state != LCS_RES_ACTIVE)
-            resource_stop_local(&g_state.cfg.resources[i]);
+            resources_stop_local_backend(&g_state.cfg.resources[i]);
     }
 }
 
@@ -401,7 +452,7 @@ void resources_enter_conflict_state(int resource_idx, uint64_t epoch, const char
     if (res->owner_node == g_state.self_index &&
         res->owner_instance_id == g_state.instance_id &&
         res->state == LCS_RES_ACTIVE)
-        resource_stop_local(&g_state.cfg.resources[resource_idx]);
+        resources_stop_local_backend(&g_state.cfg.resources[resource_idx]);
     res->epoch = epoch > res->epoch ? epoch : res->epoch + 1;
     res->owner_node = -1;
     res->owner_instance_id = 0;
@@ -502,7 +553,7 @@ int resources_release_for_handoff(int resource_idx, uint64_t epoch, uint64_t lea
         return -1;
 
     resources_cancel_hook(resource_idx);
-    if (resource_stop_local(&g_state.cfg.resources[resource_idx]) != 0)
+    if (resources_stop_local_backend(&g_state.cfg.resources[resource_idx]) != 0)
         return -1;
 
     res->owner_node = -1;

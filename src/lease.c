@@ -114,10 +114,7 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
                 res->owner_instance_id == g_state.instance_id &&
                 res->state == LCS_RES_ACTIVE)
             {
-                if (cfg_resource->type == LCS_RESOURCE_SERVICE)
-                    lcs_systemd_service_stop(cfg_resource);
-                else
-                    lcs_vip_del(cfg_resource);
+                resources_stop_local_backend(cfg_resource);
             }
             res->epoch = epoch;
             res->lease_id = 0;
@@ -176,10 +173,7 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
         owner_node != (uint16_t)g_state.self_index &&
         res->state == LCS_RES_ACTIVE)
     {
-        if (cfg_resource->type == LCS_RESOURCE_SERVICE)
-            lcs_systemd_service_stop(cfg_resource);
-        else
-            lcs_vip_del(cfg_resource);
+        resources_stop_local_backend(cfg_resource);
     }
     uint64_t now = lcs_now_ms();
     res->epoch = epoch;

@@ -49,18 +49,6 @@ static const char *resource_state_name(lcs_resource_state_t state)
     }
 }
 
-static const char *resource_type_name(lcs_resource_type_t type)
-{
-    switch (type)
-    {
-        case LCS_RESOURCE_SERVICE:
-            return "service";
-        case LCS_RESOURCE_VIP:
-        default:
-            return "vip";
-    }
-}
-
 static void write_best_effort(int fd, const void *buf, size_t len)
 {
     const char *p = buf;
@@ -130,7 +118,7 @@ void lcs_metrics_handle_client(int fd)
     {
         const lcs_resource_config_t *resource = &g_state.cfg.resources[i];
         const resource_runtime_t *res = &g_state.resources[i];
-        const char *type = resource_type_name(resource->type);
+        const char *type = lcs_resource_type_name(resource->type);
         const char *group = resource->group_idx >= 0 ?
                             g_state.cfg.groups[resource->group_idx].name : "";
         metrics_append(body, cap, &len,

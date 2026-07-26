@@ -74,11 +74,9 @@ metrics_has()
 
 trap cleanup_cluster EXIT
 
-start_cluster
+prepare_cluster
+start_node node1
 wait_for_socket node1
-wait_for_socket node2
-wait_for_socket node3
-wait_for_quorum node1
 
 wait_until 10 "vip resource metrics" \
     metrics_has node1 'lcs_resource_state{cluster="integration",resource="vip1",type="vip",state='

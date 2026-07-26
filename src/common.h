@@ -66,6 +66,19 @@ typedef enum
     LCS_RESOURCE_SERVICE = 2,
 } lcs_resource_type_t;
 
+static inline const char *lcs_resource_type_name(lcs_resource_type_t type)
+{
+    switch (type)
+    {
+        case LCS_RESOURCE_VIP:
+            return "vip";
+        case LCS_RESOURCE_SERVICE:
+            return "service";
+        default:
+            return "unknown";
+    }
+}
+
 typedef enum
 {
     LCS_VIP_BACKEND_IP = 1,

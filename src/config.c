@@ -846,37 +846,43 @@ int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
     for (size_t i = 0; i < cfg->resource_count; i++)
     {
         const lcs_resource_config_t *resource = &cfg->resources[i];
-        if (resource->type == LCS_RESOURCE_SERVICE)
+        switch (resource->type)
         {
-            if (!valid_systemd_unit_name(resource->systemd_unit))
-            {
-                set_err(err, err_len, 0, "service systemd_unit must be a valid .service unit name");
+            case LCS_RESOURCE_SERVICE:
+                if (!valid_systemd_unit_name(resource->systemd_unit))
+                {
+                    set_err(err, err_len, 0, "service systemd_unit must be a valid .service unit name");
+                    return -1;
+                }
+                if (*resource->address || *resource->interface)
+                {
+                    set_err(err, err_len, 0, "service resources cannot set address or interface");
+                    return -1;
+                }
+                break;
+            case LCS_RESOURCE_VIP:
+                if (!valid_vip_cidr(resource->address))
+                {
+                    set_err(err, err_len, 0, "vip address must be IPv4/IPv6 CIDR");
+                    return -1;
+                }
+                if (!valid_interface_name(resource->interface))
+                {
+                    set_err(err, err_len, 0, "vip interface is invalid or too long");
+                    return -1;
+                }
+                if (!valid_pidfile_path(resource->pre_start) ||
+                    !valid_pidfile_path(resource->post_start) ||
+                    !valid_pidfile_path(resource->pre_stop) ||
+                    !valid_pidfile_path(resource->post_stop))
+                {
+                    set_err(err, err_len, 0, "vip hook paths must be empty or absolute");
+                    return -1;
+                }
+                break;
+            default:
+                set_err(err, err_len, 0, "resource type is invalid");
                 return -1;
-            }
-            if (*resource->address || *resource->interface)
-            {
-                set_err(err, err_len, 0, "service resources cannot set address or interface");
-                return -1;
-            }
-            continue;
-        }
-        if (!valid_vip_cidr(resource->address))
-        {
-            set_err(err, err_len, 0, "vip address must be IPv4/IPv6 CIDR");
-            return -1;
-        }
-        if (!valid_interface_name(resource->interface))
-        {
-            set_err(err, err_len, 0, "vip interface is invalid or too long");
-            return -1;
-        }
-        if (!valid_pidfile_path(resource->pre_start) ||
-            !valid_pidfile_path(resource->post_start) ||
-            !valid_pidfile_path(resource->pre_stop) ||
-            !valid_pidfile_path(resource->post_stop))
-        {
-            set_err(err, err_len, 0, "vip hook paths must be empty or absolute");
-            return -1;
         }
     }
     if (cfg->hook_timeout_ms == 0)

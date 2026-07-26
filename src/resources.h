@@ -7,6 +7,7 @@
 #include "daemon_state.h"
 
 void resources_cleanup_local_vips_without_lease(void);
+int  resources_stop_local_backend(const lcs_resource_config_t *res);
 void resources_enter_conflict_state(int resource_idx, uint64_t epoch, const char *reason);
 int  resources_activate_acquired_local(int resource_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd);
 int  resources_activate_local(int resource_idx, uint64_t epoch, int epoll_fd);
