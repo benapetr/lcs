@@ -20,20 +20,20 @@ int lease_decode_msg(const void *payload, size_t len,
 
 int  lease_accept_message(uint16_t type, const void *payload, size_t len, int source_node_idx);
 
-// Begin an asynchronous majority lease acquisition for a VIP. The caller
+// Begin an asynchronous majority lease acquisition for a resource. The caller
 // provides the proposed owner, new epoch, and lease ID; the lease subsystem
-// asks peers for LCS_MSG_LEASE_REQ votes and later activates the VIP only if a
-// quorum acknowledges the same lease.
+// asks peers for LCS_MSG_LEASE_REQ votes and later activates the resource only
+// if a quorum acknowledges the same lease.
 int  lease_start_acquire(int resource_idx, int owner_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd);
 
-// Begin an asynchronous lease renewal for a VIP currently owned by this daemon
+// Begin an asynchronous lease renewal for a resource currently owned by this daemon
 // instance. Peers must acknowledge the existing epoch and lease ID before the
 // local lease deadline is extended.
 int  lease_start_renew(int resource_idx, int epoll_fd);
 
 bool lease_operation_active(int resource_idx);
 
-// Drop any in-flight acquire, renew, or release operation for the VIP. Used
+// Drop any in-flight acquire, renew, or release operation for the resource. Used
 // when higher-level resource state changes make the outstanding operation stale.
 void lease_cancel_operations(int resource_idx);
 void lease_cancel_all_operations(void);
@@ -47,12 +47,12 @@ void lease_release_majority(int resource_idx, int owner_idx, uint64_t epoch, uin
 
 // Handle a controlled handoff request from the target node. The current owner
 // validates that the request matches its active epoch and lease ID, removes the
-// VIP locally, and confirms release before the target is allowed to activate.
+// resource locally, and confirms release before the target is allowed to activate.
 int  lease_handle_owner_release_request(const void *payload, size_t len, int source_node_idx, int epoll_fd);
 
 // Expire remote ownership records whose lease deadline has passed. This only
 // clears local cluster state for leases owned by other daemon instances; it does
-// not remove local VIPs.
+// not remove local resources.
 void lease_expire_remote(void);
 
 #endif
