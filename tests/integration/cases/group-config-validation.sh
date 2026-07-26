@@ -243,7 +243,7 @@ EOF
 
 run_good_config_starts interface-display-name \
     "interface bond1.3675@bond1 normalized to bond1.3675" \
-    "dry-run VIP del 127.0.0.201/32 on bond1.3675" <<EOF
+    "dry-run netlink VIP del 127.0.0.201/32 on bond1.3675" <<EOF
 [cluster]
 name = integration
 node = node1

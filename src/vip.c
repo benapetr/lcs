@@ -45,7 +45,7 @@ typedef struct
     unsigned int flags;
 } lcs_if_info_t;
 
-static lcs_vip_backend_t g_backend = LCS_VIP_BACKEND_IP;
+static lcs_vip_backend_t g_backend = LCS_VIP_BACKEND_NETLINK;
 
 void lcs_vip_set_backend(lcs_vip_backend_t backend)
 {

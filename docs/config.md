@@ -79,8 +79,8 @@ syslog = true
 
 # OPTIONAL: VIP address management backend.
 # Allowed values: ip, netlink.
-# Default: ip.
-vip_backend = ip
+# Default: netlink.
+vip_backend = netlink
 
 # OPTIONAL: enable Prometheus metrics HTTP endpoint.
 # Default: true.

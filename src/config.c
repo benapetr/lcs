@@ -56,7 +56,7 @@ void lcs_config_init_defaults(lcs_config_t *cfg)
     cfg->hook_timeout_ms = LCS_DEFAULT_HOOK_TIMEOUT_MS;
     cfg->syslog_enabled = true;
     cfg->metrics_enabled = true;
-    cfg->vip_backend = LCS_VIP_BACKEND_IP;
+    cfg->vip_backend = LCS_VIP_BACKEND_NETLINK;
     snprintf(cfg->metrics_bind_address, sizeof(cfg->metrics_bind_address), "%s", LCS_DEFAULT_METRICS_BIND);
     snprintf(cfg->socket_path, sizeof(cfg->socket_path), "%s", LCS_DEFAULT_SOCKET_PATH);
     snprintf(cfg->pidfile_path, sizeof(cfg->pidfile_path), "%s", LCS_DEFAULT_PIDFILE_PATH);

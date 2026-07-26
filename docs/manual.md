@@ -40,7 +40,7 @@ Configuration uses an INI-style file. The same format is used on every node; onl
 | `probe_timeout_ms` | no | `300` | Per-probe conflict-detection wait in milliseconds. |
 | `hook_timeout_ms` | no | `5000` | Maximum time in milliseconds allowed for each VIP hook to complete. |
 | `syslog` | no | `true` | Send log output to syslog. |
-| `vip_backend` | no | `ip` | VIP address management backend: `ip` or `netlink`. |
+| `vip_backend` | no | `netlink` | VIP address management backend: `netlink` or `ip`. |
 | `metrics` | no | `true` | Enable the Prometheus metrics HTTP endpoint. |
 | `metrics_bind` | no | `127.0.0.1` | Bind address for the metrics endpoint. |
 | `metrics_port` | no | `9120` | TCP port for the metrics endpoint. |

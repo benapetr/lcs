@@ -12,6 +12,7 @@ RuntimeDirectory=lcs
 RuntimeDirectoryMode=0755
 ConfigurationDirectory=lcs
 KillSignal=SIGTERM
+KillMode=mixed
 TimeoutStopSec=15s
 
 # lcsd manages VIP addresses and sends ARP probes/announcements.
