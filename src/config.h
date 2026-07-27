@@ -86,5 +86,7 @@ int       lcs_config_group_index(const lcs_config_t *cfg, const char *name);
 int       lcs_config_resource_index(const lcs_config_t *cfg, const char *name);
 int       lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len);
 uint32_t  lcs_config_quorum(const lcs_config_t *cfg);
+uint64_t  lcs_config_voting_fingerprint(const lcs_config_t *cfg);
+uint64_t  lcs_config_full_fingerprint(const lcs_config_t *cfg);
 
 #endif

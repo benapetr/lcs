@@ -4,7 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GRANT_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-quorum-grants.XXXXXX")"
 SYNC_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-state-sync.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$SYNC_BIN"' EXIT
+CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-fingerprint.XXXXXX")"
+trap 'rm -f "$GRANT_BIN" "$SYNC_BIN" "$CONFIG_BIN"' EXIT
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
+    "$ROOT_DIR/tests/unit/config_fingerprint.c" \
+    "$ROOT_DIR/src/config.c" \
+    -Wl,--gc-sections -o "$CONFIG_BIN"
+"$CONFIG_BIN"
+echo "configuration fingerprint unit tests passed"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \

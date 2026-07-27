@@ -177,6 +177,8 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
         lcs_buf_put_u8(&w, mode) != 0 ||
         lcs_buf_put_u8(&w, g_state.voting_ready ? 1 : 0) != 0 ||
         lcs_buf_put_u64(&w, g_state.instance_id) != 0 ||
+        lcs_buf_put_u64(&w, lcs_config_voting_fingerprint(&g_state.cfg)) != 0 ||
+        lcs_buf_put_u64(&w, lcs_config_full_fingerprint(&g_state.cfg)) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.nodes[g_state.self_index].name, LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.cluster_name, LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.secret, LCS_NAME_MAX + 1) != 0)
@@ -187,11 +189,12 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
 
 static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
                              uint64_t *instance_id, uint8_t *mode,
-                             bool *voting_ready)
+                             bool *voting_ready, char *error, size_t error_len)
 {
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, len);
     uint16_t proto_version, remote_idx, node_count, group_count, resource_count, role;
+    uint64_t voting_fingerprint, full_fingerprint;
     uint8_t ready;
     char name[LCS_NAME_MAX + 1];
     char cluster_name[LCS_NAME_MAX + 1];
@@ -205,34 +208,85 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
         lcs_buf_get_u8(&r, mode) != 0 ||
         lcs_buf_get_u8(&r, &ready) != 0 ||
         lcs_buf_get_u64(&r, instance_id) != 0 ||
+        lcs_buf_get_u64(&r, &voting_fingerprint) != 0 ||
+        lcs_buf_get_u64(&r, &full_fingerprint) != 0 ||
         lcs_buf_get_fixed_string(&r, name, sizeof(name), LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_get_fixed_string(&r, cluster_name, sizeof(cluster_name), LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_get_fixed_string(&r, secret, sizeof(secret), LCS_NAME_MAX + 1) != 0 ||
         r.off != r.len || ready > 1)
+    {
+        snprintf(error, error_len, "invalid HELLO payload");
         return -1;
+    }
 
     if (proto_version != LCS_PEER_PROTO_VERSION)
     {
         lcs_log_debug("rejecting HELLO with peer protocol version %u, expected %u", proto_version, LCS_PEER_PROTO_VERSION);
+        snprintf(error, error_len, "peer protocol mismatch (local=%u remote=%u)",
+                 LCS_PEER_PROTO_VERSION, proto_version);
         return -1;
     }
 
     int idx = lcs_config_node_index(&g_state.cfg, name);
-    if (idx < 0 || idx != (int)remote_idx ||
-        node_count != g_state.cfg.node_count ||
-        group_count != g_state.cfg.group_count ||
-        resource_count != g_state.cfg.resource_count ||
-        role != (uint16_t)g_state.cfg.nodes[idx].role)
+    if (idx < 0)
+    {
+        snprintf(error, error_len, "configuration mismatch: node '%s' is not in the local cluster membership", name);
         return -1;
+    }
+    if (idx != (int)remote_idx || node_count != g_state.cfg.node_count ||
+        resource_count != g_state.cfg.resource_count || role != (uint16_t)g_state.cfg.nodes[idx].role)
+    {
+        snprintf(error, error_len,
+                 "configuration mismatch with node %s: membership or resource schema differs", name);
+        return -1;
+    }
 
     if (strcmp(cluster_name, g_state.cfg.cluster_name) != 0)
+    {
+        snprintf(error, error_len, "cluster name mismatch (local=%s remote=%s)",
+                 g_state.cfg.cluster_name, cluster_name);
         return -1;
+    }
 
     if (*g_state.cfg.secret && strcmp(secret, g_state.cfg.secret) != 0)
+    {
+        snprintf(error, error_len, "cluster secret mismatch");
         return -1;
+    }
 
     if (*mode != LCS_HELLO_MODE_PERSISTENT)
+    {
+        snprintf(error, error_len, "unsupported HELLO mode %u", *mode);
         return -1;
+    }
+
+    uint64_t local_voting = lcs_config_voting_fingerprint(&g_state.cfg);
+    if (voting_fingerprint != local_voting)
+    {
+        snprintf(error, error_len,
+                 "configuration mismatch: quorum settings differ; check lease_ms/renew_ms/peer_timeout_ms, node roles, and resource names/types");
+        lcs_log_warn("configuration mismatch with node %s: quorum settings differ "
+                     "(local=%016llx remote=%016llx)", name,
+                     (unsigned long long)local_voting,
+                     (unsigned long long)voting_fingerprint);
+        return -1;
+    }
+
+    if (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL &&
+        role == LCS_NODE_FULL)
+    {
+        uint64_t local_full = lcs_config_full_fingerprint(&g_state.cfg);
+        if (full_fingerprint != local_full)
+        {
+            snprintf(error, error_len,
+                     "configuration mismatch: full-member resources differ; check groups, placement, dependencies, VIP addresses, and service units");
+            lcs_log_warn("configuration mismatch with full-member node %s: resource definitions differ "
+                         "(local=%016llx remote=%016llx)", name,
+                         (unsigned long long)local_full,
+                         (unsigned long long)full_fingerprint);
+            return -1;
+        }
+    }
         
     *node_idx = idx;
     *voting_ready = ready != 0;
@@ -433,7 +487,26 @@ static int handshake_flush_output(int epoll_fd, int slot_idx)
     }
     hs->out_off = 0;
     hs->out_len = 0;
+    if (hs->reject_after_flush)
+    {
+        handshake_close(epoll_fd, slot_idx, "HELLO rejected");
+        return 0;
+    }
     return handshake_promote(epoll_fd, slot_idx);
+}
+
+static int handshake_reject(int epoll_fd, int slot_idx, uint32_t seq, const char *message)
+{
+    inbound_handshake_t *hs = &g_state.handshakes[slot_idx];
+    unsigned char payload[512];
+    size_t payload_len = 0;
+    lcs_log_warn("rejecting peer HELLO: %s", message);
+    if (lcs_encode_simple_resp(payload, sizeof(payload), &payload_len, -1, message) != 0 ||
+        peer_queue_raw_frame(hs->outbuf, LCS_PEER_INBUF_SIZE, &hs->out_off, &hs->out_len,
+                             LCS_MSG_ERROR, seq, payload, (uint32_t)payload_len) != 0)
+        return -1;
+    hs->reject_after_flush = true;
+    return handshake_flush_output(epoll_fd, slot_idx);
 }
 
 static int handshake_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
@@ -448,11 +521,11 @@ static int handshake_process_frame(int epoll_fd, int slot_idx, const lcs_frame_h
     uint64_t instance_id = 0;
     uint8_t mode = 0;
     bool voting_ready = false;
+    char hello_error[512];
     if (peer_decode_hello(payload, hdr->length, &node_idx, &instance_id,
-                          &mode, &voting_ready) != 0)
+                          &mode, &voting_ready, hello_error, sizeof(hello_error)) != 0)
     {
-        lcs_log_debug("invalid inbound peer HELLO");
-        return -1;
+        return handshake_reject(epoll_fd, slot_idx, hdr->seq, hello_error);
     }
     if (node_idx == g_state.self_index)
     {
@@ -916,7 +989,7 @@ static int peer_complete_outbound_hello(int epoll_fd, int node_idx,
     {
         if (hdr->type == LCS_MSG_ERROR)
         {
-            char msg[128];
+            char msg[512];
             lcs_log_warn("persistent peer %s rejected HELLO: %s",
                          g_state.cfg.nodes[node_idx].name,
                          peer_error_message(payload, hdr->length, msg, sizeof(msg)));
@@ -932,8 +1005,15 @@ static int peer_complete_outbound_hello(int epoll_fd, int node_idx,
     uint64_t instance_id = 0;
     uint8_t mode = 0;
     bool voting_ready = false;
+    char hello_error[512];
     if (peer_decode_hello(payload, hdr->length, &remote_idx, &instance_id,
-                          &mode, &voting_ready) != 0 ||
+                          &mode, &voting_ready, hello_error, sizeof(hello_error)) != 0)
+    {
+        lcs_log_warn("persistent peer %s HELLO_ACK rejected: %s",
+                     g_state.cfg.nodes[node_idx].name, hello_error);
+        return -1;
+    }
+    if (
         peer_validate_instance_for_hello(remote_idx, instance_id) != 0 ||
         mode != LCS_HELLO_MODE_PERSISTENT ||
         remote_idx != node_idx)

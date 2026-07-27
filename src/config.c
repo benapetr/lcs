@@ -35,11 +35,9 @@ static void set_err(char *err, size_t err_len, unsigned line, const char *msg)
     if (err && err_len)
     {
         if (line)
-        {
             snprintf(err, err_len, "line %u: %s", line, msg);
-        } else {
+        else
             snprintf(err, err_len, "%s", msg);
-        }
     }
 }
 
@@ -364,9 +362,7 @@ static int parse_depends_on(lcs_resource_config_t *resource, const char *value)
             if (strcmp(resource->depends_on_names[i], name) == 0)
                 return -1;
         }
-        if (set_string(resource->depends_on_names[resource->depends_on_count],
-                       sizeof(resource->depends_on_names[resource->depends_on_count]),
-                       name) != 0)
+        if (set_string(resource->depends_on_names[resource->depends_on_count], sizeof(resource->depends_on_names[resource->depends_on_count]), name) != 0)
             return -1;
         resource->depends_on_count++;
     }
@@ -550,8 +546,7 @@ int lcs_config_load(const char *path, lcs_config_t *cfg, char *err, size_t err_l
     if (!f)
     {
         if (err && err_len)
-            snprintf(err, err_len, "failed to open config %s: %s",
-                     path ? path : "-", strerror(errno));
+            snprintf(err, err_len, "failed to open config %s: %s", path ? path : "-", strerror(errno));
         return -1;
     }
     char line_buf[512];
@@ -639,9 +634,7 @@ int lcs_config_resource_index(const lcs_config_t *cfg, const char *name)
     return -1;
 }
 
-static int validate_dependency_dfs(const lcs_config_t *cfg, int resource_idx,
-                                   uint8_t *visiting, uint8_t *visited,
-                                   char *err, size_t err_len)
+static int validate_dependency_dfs(const lcs_config_t *cfg, int resource_idx, uint8_t *visiting, uint8_t *visited, char *err, size_t err_len)
 {
     if (visited[resource_idx])
         return 0;
@@ -706,8 +699,7 @@ static int validate_groups_and_assign_resources(lcs_config_t *cfg, char *err, si
     for (size_t i = 0; i < cfg->group_count; i++)
     {
         const lcs_group_config_t *group = &cfg->groups[i];
-        if (group->type != LCS_GROUP_KEEP_TOGETHER &&
-            group->type != LCS_GROUP_ANTI_AFFINITY)
+        if (group->type != LCS_GROUP_KEEP_TOGETHER && group->type != LCS_GROUP_ANTI_AFFINITY)
         {
             set_err(err, err_len, 0, "group type is required");
             return -1;
@@ -734,7 +726,8 @@ static int validate_groups_and_assign_resources(lcs_config_t *cfg, char *err, si
                 return -1;
             }
             resource->group_idx = group_idx;
-        } else {
+        } else
+	{
             resource->group_idx = -1;
         }
         if (*resource->home_node_name)
@@ -751,7 +744,8 @@ static int validate_groups_and_assign_resources(lcs_config_t *cfg, char *err, si
                 return -1;
             }
             resource->home_node_idx = node_idx;
-        } else {
+        } else
+	{
             resource->home_node_idx = -1;
         }
     }
@@ -901,4 +895,115 @@ int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
 uint32_t lcs_config_quorum(const lcs_config_t *cfg)
 {
     return (uint32_t)(cfg->node_count / 2u) + 1u;
+}
+
+/*
+ * These fingerprints identify configuration semantics, not configuration
+ * files. In particular, node-local routing, bind, socket, logging, metrics,
+ * authentication, probe tuning, interfaces, and hook paths are intentionally
+ * not included here. Authentication is checked separately by the handshake.
+ */
+typedef struct
+{
+    uint64_t value;
+} config_hash_t;
+
+static void config_hash_bytes(config_hash_t *hash, const void *data, size_t len)
+{
+    const unsigned char *bytes = data;
+    for (size_t i = 0; i < len; i++)
+    {
+        hash->value ^= bytes[i];
+        hash->value *= UINT64_C(1099511628211);
+    }
+}
+
+static void config_hash_u64(config_hash_t *hash, uint64_t value)
+{
+    unsigned char bytes[8];
+    for (size_t i = 0; i < sizeof(bytes); i++)
+        bytes[i] = (unsigned char)(value >> (i * 8u));
+    config_hash_bytes(hash, bytes, sizeof(bytes));
+}
+
+static void config_hash_string(config_hash_t *hash, const char *value)
+{
+    size_t len = strlen(value);
+    config_hash_u64(hash, len);
+    config_hash_bytes(hash, value, len);
+}
+
+static config_hash_t config_hash_init(const char *domain)
+{
+    config_hash_t hash = { UINT64_C(14695981039346656037) };
+    config_hash_string(&hash, domain);
+    return hash;
+}
+
+uint64_t lcs_config_voting_fingerprint(const lcs_config_t *cfg)
+{
+    config_hash_t hash = config_hash_init("lcs-voting-config-v1");
+    config_hash_u64(&hash, cfg->lease_ms);
+    config_hash_u64(&hash, cfg->renew_ms);
+    config_hash_u64(&hash, cfg->peer_timeout_ms);
+
+    config_hash_u64(&hash, cfg->node_count);
+    for (size_t i = 0; i < cfg->node_count; i++)
+    {
+        config_hash_string(&hash, cfg->nodes[i].name);
+        config_hash_u64(&hash, (uint64_t)cfg->nodes[i].role);
+    }
+
+    /* Resource names are wire-level IDs after sorting; their types must agree. */
+    config_hash_u64(&hash, cfg->resource_count);
+    for (size_t i = 0; i < cfg->resource_count; i++)
+    {
+        config_hash_string(&hash, cfg->resources[i].name);
+        config_hash_u64(&hash, (uint64_t)cfg->resources[i].type);
+    }
+    return hash.value;
+}
+
+uint64_t lcs_config_full_fingerprint(const lcs_config_t *cfg)
+{
+    config_hash_t hash = config_hash_init("lcs-full-config-v1");
+    config_hash_u64(&hash, lcs_config_voting_fingerprint(cfg));
+
+    config_hash_u64(&hash, cfg->group_count);
+    for (size_t i = 0; i < cfg->group_count; i++)
+    {
+        config_hash_string(&hash, cfg->groups[i].name);
+        config_hash_u64(&hash, (uint64_t)cfg->groups[i].type);
+        config_hash_u64(&hash, (uint64_t)cfg->groups[i].mode);
+    }
+
+    for (size_t i = 0; i < cfg->resource_count; i++)
+    {
+        const lcs_resource_config_t *resource = &cfg->resources[i];
+        config_hash_string(&hash, resource->name);
+        config_hash_u64(&hash, (uint64_t)resource->type);
+        config_hash_string(&hash, resource->group_name);
+        config_hash_string(&hash, resource->home_node_name);
+        config_hash_string(&hash, resource->systemd_unit);
+        config_hash_string(&hash, resource->address);
+        config_hash_u64(&hash, resource->priority);
+
+        /* Dependencies are a set. Hash them in canonical resource-name order. */
+        config_hash_u64(&hash, resource->depends_on_count);
+        for (size_t candidate = 0; candidate < cfg->resource_count; candidate++)
+        {
+            bool is_dependency = false;
+            for (size_t dep = 0; dep < resource->depends_on_count; dep++)
+            {
+                if (resource->depends_on_idx[dep] == (int)candidate)
+                {
+                    is_dependency = true;
+                    break;
+                }
+            }
+            if (is_dependency)
+                config_hash_string(&hash, cfg->resources[candidate].name);
+        }
+    }
+    return hash.value;
 }

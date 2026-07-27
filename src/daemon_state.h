@@ -139,6 +139,7 @@ typedef struct
     int node_idx;
     uint64_t instance_id;
     bool voting_ready;
+    bool reject_after_flush;
 } inbound_handshake_t;
 
 typedef struct
