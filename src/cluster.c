@@ -155,6 +155,83 @@ int cluster_encode_state(unsigned char *payload, size_t cap, size_t *len)
     return 0;
 }
 
+typedef struct
+{
+    uint16_t id;
+    uint16_t owner;
+    uint64_t owner_instance_id;
+    uint8_t state;
+    uint64_t epoch;
+    uint64_t lease_id;
+    uint64_t remaining_ms;
+    uint64_t failover_count;
+    uint64_t home_generation;
+    uint8_t home_blocked;
+    uint64_t disabled_generation;
+    uint8_t disabled;
+    char reason[LCS_REASON_MAX + 1];
+} cluster_state_entry_t;
+
+static int cluster_reject_state(int source_node_idx, int entry_idx,
+                                const char *reason)
+{
+    const char *source = source_node_idx >= 0 ?
+                         cluster_node_name_or_none(source_node_idx) : "internal";
+    if (entry_idx >= 0)
+        lcs_log_warn("rejecting state snapshot from %s entry=%d: %s",
+                     source, entry_idx, reason);
+    else
+        lcs_log_warn("rejecting state snapshot from %s: %s", source, reason);
+    return -1;
+}
+
+static const char *cluster_validate_state_entry(const cluster_state_entry_t *entry)
+{
+    if (entry->id >= g_state.cfg.resource_count)
+        return "resource ID is out of range";
+    if (entry->home_blocked > 1 || entry->disabled > 1)
+        return "boolean field is not 0 or 1";
+    if (entry->remaining_ms > g_state.cfg.lease_ms)
+        return "remaining lease exceeds configured lease_ms";
+
+    bool has_owner = entry->owner != UINT16_MAX;
+    if (has_owner &&
+        (entry->owner >= g_state.cfg.node_count ||
+         g_state.cfg.nodes[entry->owner].role != LCS_NODE_FULL))
+        return "owner is not a valid full-member";
+    if (!has_owner && entry->owner_instance_id != 0)
+        return "owner instance is set without an owner";
+    if (has_owner && entry->owner_instance_id == 0)
+        return "owner instance is missing";
+
+    switch ((lcs_resource_state_t)entry->state)
+    {
+        case LCS_RES_ACTIVE:
+        case LCS_RES_STARTING:
+        case LCS_RES_STOPPING:
+            if (!has_owner)
+                return "active or transitioning resource has no owner";
+            if (entry->lease_id == 0)
+                return "active or transitioning resource has no lease ID";
+            break;
+        case LCS_RES_STOPPED:
+        case LCS_RES_CONFLICT:
+            if (has_owner || entry->owner_instance_id != 0 ||
+                entry->lease_id != 0 || entry->remaining_ms != 0)
+                return "stopped or conflicted resource carries ownership or lease state";
+            break;
+        case LCS_RES_STOP_FAILED:
+            if (entry->remaining_ms != 0)
+                return "stop_failed resource carries a live lease duration";
+            if (!has_owner && entry->lease_id != 0)
+                return "ownerless stop_failed resource carries a lease ID";
+            break;
+        default:
+            return "resource state is invalid";
+    }
+    return NULL;
+}
+
 int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
 {
     lcs_buf_reader_t r;
@@ -162,69 +239,89 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
     uint64_t sender_instance_id;
     uint16_t count;
     if (lcs_buf_get_u64(&r, &sender_instance_id) != 0 ||
-        lcs_buf_get_u16(&r, &count) != 0 ||
-        count != g_state.cfg.resource_count)
-        return -1;
+        lcs_buf_get_u16(&r, &count) != 0)
+        return cluster_reject_state(source_node_idx, -1, "truncated header");
+    if (count != g_state.cfg.resource_count)
+        return cluster_reject_state(source_node_idx, -1, "resource count does not match configuration");
 
     if (source_node_idx >= 0 &&
         ((size_t)source_node_idx >= g_state.cfg.node_count ||
          sender_instance_id != g_state.peers[source_node_idx].instance_id))
-        return -1;
+        return cluster_reject_state(source_node_idx, -1, "sender instance does not match the connected peer");
 
+    cluster_state_entry_t incoming[LCS_MAX_RESOURCES];
+    bool seen[LCS_MAX_RESOURCES] = { false };
     for (uint16_t n = 0; n < count; n++)
     {
-        uint16_t id, owner;
-        uint8_t state, home_blocked, disabled;
-        uint64_t owner_instance_id, epoch, lease_id, remaining_ms, failover_count, home_generation, disabled_generation;
-        char reason[LCS_REASON_MAX + 1];
-        if (lcs_buf_get_u16(&r, &id) != 0 ||
-            lcs_buf_get_u16(&r, &owner) != 0 ||
-            lcs_buf_get_u64(&r, &owner_instance_id) != 0 ||
-            lcs_buf_get_u8(&r, &state) != 0 ||
-            lcs_buf_get_u64(&r, &epoch) != 0 ||
-            lcs_buf_get_u64(&r, &lease_id) != 0 ||
-            lcs_buf_get_u64(&r, &remaining_ms) != 0 ||
-            lcs_buf_get_u64(&r, &failover_count) != 0 ||
-            lcs_buf_get_u64(&r, &home_generation) != 0 ||
-            lcs_buf_get_u8(&r, &home_blocked) != 0 ||
-            lcs_buf_get_u64(&r, &disabled_generation) != 0 ||
-            lcs_buf_get_u8(&r, &disabled) != 0 ||
-            lcs_buf_get_fixed_string(&r, reason, sizeof(reason), LCS_REASON_MAX + 1) != 0 ||
-            id >= g_state.cfg.resource_count)
-            return -1;
+        cluster_state_entry_t entry;
+        memset(&entry, 0, sizeof(entry));
+        if (lcs_buf_get_u16(&r, &entry.id) != 0 ||
+            lcs_buf_get_u16(&r, &entry.owner) != 0 ||
+            lcs_buf_get_u64(&r, &entry.owner_instance_id) != 0 ||
+            lcs_buf_get_u8(&r, &entry.state) != 0 ||
+            lcs_buf_get_u64(&r, &entry.epoch) != 0 ||
+            lcs_buf_get_u64(&r, &entry.lease_id) != 0 ||
+            lcs_buf_get_u64(&r, &entry.remaining_ms) != 0 ||
+            lcs_buf_get_u64(&r, &entry.failover_count) != 0 ||
+            lcs_buf_get_u64(&r, &entry.home_generation) != 0 ||
+            lcs_buf_get_u8(&r, &entry.home_blocked) != 0 ||
+            lcs_buf_get_u64(&r, &entry.disabled_generation) != 0 ||
+            lcs_buf_get_u8(&r, &entry.disabled) != 0 ||
+            lcs_buf_get_fixed_string(&r, entry.reason, sizeof(entry.reason),
+                                     LCS_REASON_MAX + 1) != 0)
+            return cluster_reject_state(source_node_idx, n, "truncated or malformed entry");
 
+        const char *validation_error = cluster_validate_state_entry(&entry);
+        if (validation_error)
+            return cluster_reject_state(source_node_idx, n, validation_error);
+        if (seen[entry.id])
+            return cluster_reject_state(source_node_idx, n, "duplicate resource ID");
+        seen[entry.id] = true;
+        incoming[entry.id] = entry;
+    }
+    if (r.off != r.len)
+        return cluster_reject_state(source_node_idx, -1, "trailing data");
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+    {
+        if (!seen[i])
+            return cluster_reject_state(source_node_idx, -1, "snapshot is missing a resource ID");
+    }
+
+    for (size_t id = 0; id < g_state.cfg.resource_count; id++)
+    {
+        const cluster_state_entry_t *entry = &incoming[id];
         resource_runtime_t *res = &g_state.resources[id];
-        if (home_generation > res->home_generation)
+        if (entry->home_generation > res->home_generation)
         {
-            res->home_generation = home_generation;
-            res->home_blocked = home_blocked != 0;
+            res->home_generation = entry->home_generation;
+            res->home_blocked = entry->home_blocked != 0;
         }
-        if (disabled_generation > res->disabled_generation)
+        if (entry->disabled_generation > res->disabled_generation)
         {
-            res->disabled_generation = disabled_generation;
-            res->disabled = disabled != 0;
+            res->disabled_generation = entry->disabled_generation;
+            res->disabled = entry->disabled != 0;
         }
-        if (failover_count > res->failover_count)
-            res->failover_count = failover_count;
-        if (resources_preserve_startup_cleanup_failure((int)id, epoch))
+        if (entry->failover_count > res->failover_count)
+            res->failover_count = entry->failover_count;
+        if (resources_preserve_startup_cleanup_failure((int)id, entry->epoch))
             continue;
-        bool incoming_conflict = state == LCS_RES_CONFLICT;
-        bool incoming_stop_failed = state == LCS_RES_STOP_FAILED;
+        bool incoming_conflict = entry->state == LCS_RES_CONFLICT;
+        bool incoming_stop_failed = entry->state == LCS_RES_STOP_FAILED;
         bool local_unsafe = res->state == LCS_RES_CONFLICT ||
                             res->state == LCS_RES_STOP_FAILED;
-        bool newer_epoch = epoch > res->epoch;
-        bool same_lease = epoch == res->epoch &&
-                          lease_id != 0 &&
-                          lease_id == res->lease_id &&
-                          owner_instance_id == res->owner_instance_id &&
-                          (owner == UINT16_MAX ? res->owner_node < 0 : res->owner_node == (int)owner);
+        bool newer_epoch = entry->epoch > res->epoch;
+        bool same_lease = entry->epoch == res->epoch &&
+                          entry->lease_id != 0 &&
+                          entry->lease_id == res->lease_id &&
+                          entry->owner_instance_id == res->owner_instance_id &&
+                          (entry->owner == UINT16_MAX ? res->owner_node < 0 : res->owner_node == (int)entry->owner);
         bool preserve_local_transition = same_lease &&
-                                         owner == (uint16_t)g_state.self_index &&
-                                         owner_instance_id == g_state.instance_id &&
+                                         entry->owner == (uint16_t)g_state.self_index &&
+                                         entry->owner_instance_id == g_state.instance_id &&
                                          (res->state == LCS_RES_STARTING ||
                                           res->state == LCS_RES_STOPPING);
-        bool unsafe_update = (incoming_conflict || incoming_stop_failed) && epoch >= res->epoch;
-        if (local_unsafe && !incoming_conflict && !incoming_stop_failed && epoch <= res->epoch)
+        bool unsafe_update = (incoming_conflict || incoming_stop_failed) && entry->epoch >= res->epoch;
+        if (local_unsafe && !incoming_conflict && !incoming_stop_failed && entry->epoch <= res->epoch)
             continue;
         bool local_owner = res->owner_node == g_state.self_index &&
                            res->owner_instance_id == g_state.instance_id &&
@@ -238,29 +335,26 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
         {
             if (res->owner_node == g_state.self_index &&
                 res->owner_instance_id == g_state.instance_id &&
-                owner != (uint16_t)g_state.self_index &&
+                entry->owner != (uint16_t)g_state.self_index &&
                 res->state == LCS_RES_ACTIVE)
             {
                 if (resources_stop_local_backend(&g_state.cfg.resources[id]) != 0)
                 {
-                    resources_enter_stop_failed_state((int)id, epoch + 1, "local resource stop failed while applying state sync", -1);
+                    resources_enter_stop_failed_state((int)id, entry->epoch + 1, "local resource stop failed while applying state sync", -1);
                     continue;
                 }
             }
-            res->epoch = epoch;
-            res->lease_id = lease_id;
-            res->owner_node = owner == UINT16_MAX ? -1 : (int)owner;
-            res->owner_instance_id = owner == UINT16_MAX ? 0 : owner_instance_id;
+            res->epoch = entry->epoch;
+            res->lease_id = entry->lease_id;
+            res->owner_node = entry->owner == UINT16_MAX ? -1 : (int)entry->owner;
+            res->owner_instance_id = entry->owner == UINT16_MAX ? 0 : entry->owner_instance_id;
             if (!preserve_local_transition)
-                res->state = (lcs_resource_state_t)state;
+                res->state = (lcs_resource_state_t)entry->state;
             if (!same_lease)
-            {
-                if (remaining_ms > g_state.cfg.lease_ms)
-                    remaining_ms = g_state.cfg.lease_ms;
-                res->lease_deadline_ms = remaining_ms ?
-                                         lcs_now_ms() + remaining_ms : 0;
-            }
-            snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s", (incoming_conflict || incoming_stop_failed) ? reason : "");
+                res->lease_deadline_ms = entry->remaining_ms ?
+                                         lcs_now_ms() + entry->remaining_ms : 0;
+            snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",
+                     (incoming_conflict || incoming_stop_failed) ? entry->reason : "");
         }
     }
     return 0;
