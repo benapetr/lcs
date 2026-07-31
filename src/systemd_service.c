@@ -7,6 +7,14 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+static bool systemd_test_stop_failed(void)
+{
+    const char *fail_file = getenv("LCS_SYSTEMD_FAIL_STOP_FILE");
+    return getenv("LCS_SYSTEMD_FAIL_STOP") != NULL ||
+           (fail_file && *fail_file && access(fail_file, F_OK) == 0);
+}
 
 #ifdef HAVE_SYSTEMD
 #include <systemd/sd-bus.h>
@@ -28,6 +36,13 @@ static int service_get_active_state(sd_bus *bus, const lcs_resource_config_t *re
                                 res->systemd_unit);
     if (rc < 0)
     {
+        if (sd_bus_error_has_name(&err, "org.freedesktop.systemd1.NoSuchUnit"))
+        {
+            /* An installed but currently unloaded unit is already inactive. */
+            *state = strdup("inactive");
+            sd_bus_error_free(&err);
+            return *state ? 0 : -1;
+        }
         lcs_log_warn("systemd GetUnit failed for service %s unit=%s: %s",
                      res->name, res->systemd_unit,
                      err.message ? err.message : "D-Bus call failed");
@@ -138,11 +153,26 @@ static int service_call_unit_method(const lcs_resource_config_t *res, const char
 
 int lcs_systemd_service_start(const lcs_resource_config_t *res)
 {
+    if (getenv("LCS_SYSTEMD_DRY_RUN"))
+    {
+        lcs_log_info("dry-run systemd start service %s unit=%s", res->name, res->systemd_unit);
+        return 0;
+    }
     return service_call_unit_method(res, "StartUnit", true);
 }
 
 int lcs_systemd_service_stop(const lcs_resource_config_t *res)
 {
+    if (systemd_test_stop_failed())
+    {
+        lcs_log_warn("forced systemd stop failure for service %s unit=%s", res->name, res->systemd_unit);
+        return -1;
+    }
+    if (getenv("LCS_SYSTEMD_DRY_RUN"))
+    {
+        lcs_log_info("dry-run systemd stop service %s unit=%s", res->name, res->systemd_unit);
+        return 0;
+    }
     sd_bus *bus = NULL;
     char *state = NULL;
     int rc = sd_bus_open_system(&bus);
@@ -171,6 +201,8 @@ int lcs_systemd_service_stop(const lcs_resource_config_t *res)
 
 int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
 {
+    if (getenv("LCS_SYSTEMD_DRY_RUN"))
+        return 1;
     sd_bus *bus = NULL;
     char *state = NULL;
     int rc = sd_bus_open_system(&bus);
@@ -197,6 +229,8 @@ int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
 
 int lcs_systemd_service_start(const lcs_resource_config_t *res)
 {
+    if (getenv("LCS_SYSTEMD_DRY_RUN"))
+        return 0;
     lcs_log_warn("cannot start service %s unit=%s: built without systemd D-Bus support",
                  res->name, res->systemd_unit);
     return -1;
@@ -204,6 +238,10 @@ int lcs_systemd_service_start(const lcs_resource_config_t *res)
 
 int lcs_systemd_service_stop(const lcs_resource_config_t *res)
 {
+    if (systemd_test_stop_failed())
+        return -1;
+    if (getenv("LCS_SYSTEMD_DRY_RUN"))
+        return 0;
     lcs_log_warn("cannot stop service %s unit=%s: built without systemd D-Bus support",
                  res->name, res->systemd_unit);
     return -1;
@@ -211,6 +249,8 @@ int lcs_systemd_service_stop(const lcs_resource_config_t *res)
 
 int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
 {
+    if (getenv("LCS_SYSTEMD_DRY_RUN"))
+        return 1;
     lcs_log_warn("cannot inspect service %s unit=%s: built without systemd D-Bus support",
                  res->name, res->systemd_unit);
     return -1;

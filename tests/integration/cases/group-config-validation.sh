@@ -31,7 +31,7 @@ run_good_config_starts()
     shift 3
     cat >"$cfg"
     local out="$TEST_TMP/$name.out"
-    LCS_VIP_DRY_RUN=1 "$LCSD" -c "$cfg" --no-syslog --no-timestamp >"$out" 2>&1 &
+    LCS_VIP_DRY_RUN=1 LCS_SYSTEMD_DRY_RUN=1 "$LCSD" -c "$cfg" --no-syslog --no-timestamp >"$out" 2>&1 &
     local pid=$!
     sleep 0.4
     if ! kill -0 "$pid" 2>/dev/null; then

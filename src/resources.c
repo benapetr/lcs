@@ -455,22 +455,129 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
     g_state.no_quorum_state_cleared = true;
 }
 
-void resources_cleanup_local_vips_without_lease(void)
+static uint64_t resources_next_epoch(uint64_t epoch)
+{
+    return epoch == UINT64_MAX ? UINT64_MAX : epoch + 1;
+}
+
+static int resources_try_startup_cleanup(int resource_idx)
+{
+    resource_runtime_t *res = &g_state.resources[resource_idx];
+    const lcs_resource_config_t *resource = &g_state.cfg.resources[resource_idx];
+    if (resources_stop_local_backend(resource) == 0)
+    {
+        if (res->startup_cleanup_failed)
+        {
+            res->epoch = resources_next_epoch(res->epoch);
+            if (res->epoch > g_state.lease_grants[resource_idx].promised_epoch)
+                g_state.lease_grants[resource_idx].promised_epoch = res->epoch;
+            res->owner_node = -1;
+            res->owner_instance_id = 0;
+            res->state = LCS_RES_STOPPED;
+            res->lease_id = 0;
+            res->lease_deadline_ms = 0;
+            res->renew_after_ms = 0;
+            res->conflict_reason[0] = '\0';
+            res->startup_cleanup_failed = false;
+            res->startup_cleanup_broadcast_pending = true;
+            lcs_log_info("startup cleanup recovered for %s %s; resource is confirmed inactive",
+                         resource_kind(resource), resource->name);
+        } else
+        {
+            lcs_log_info("startup cleanup verified %s %s inactive",
+                         resource_kind(resource), resource->name);
+        }
+        res->next_startup_cleanup_attempt_ms = 0;
+        return 0;
+    }
+
+    if (!res->startup_cleanup_failed)
+    {
+        res->epoch = resources_next_epoch(res->epoch);
+        res->owner_node = g_state.self_index;
+        res->owner_instance_id = g_state.instance_id;
+        res->state = LCS_RES_STOP_FAILED;
+        res->lease_id = 0;
+        res->lease_deadline_ms = 0;
+        res->renew_after_ms = 0;
+        res->startup_cleanup_failed = true;
+        res->startup_cleanup_broadcast_pending = true;
+        snprintf(res->conflict_reason, sizeof(res->conflict_reason),
+                 "startup cleanup failed; local resource may still be active");
+        lcs_log_warn("startup cleanup failed for %s %s; node remains recovering and resource is blocked cluster-wide until cleanup succeeds or the node is fenced",
+                     resource_kind(resource), resource->name);
+    }
+    res->next_startup_cleanup_attempt_ms = lcs_now_ms() + 1000u;
+    return -1;
+}
+
+void resources_begin_startup_cleanup(void)
 {
     if (g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL)
     {
-        lcs_log_debug("skipping local VIP cleanup on quorum-only node");
+        lcs_log_debug("skipping local resource cleanup on quorum-only node");
         return;
     }
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+        (void)resources_try_startup_cleanup((int)i);
+}
+
+void resources_progress_startup_cleanup(int epoll_fd)
+{
+    if (g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL)
+        return;
+
+    uint64_t now = lcs_now_ms();
+    bool broadcast = false;
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
-        if (g_state.cfg.resources[i].type != LCS_RESOURCE_VIP)
-            continue;
-        if (g_state.resources[i].owner_node != g_state.self_index ||
-            g_state.resources[i].owner_instance_id != g_state.instance_id ||
-            g_state.resources[i].state != LCS_RES_ACTIVE)
-            resources_stop_local_backend(&g_state.cfg.resources[i]);
+        resource_runtime_t *res = &g_state.resources[i];
+        if (res->startup_cleanup_failed &&
+            (!res->next_startup_cleanup_attempt_ms ||
+             now >= res->next_startup_cleanup_attempt_ms))
+            (void)resources_try_startup_cleanup((int)i);
+        if (res->startup_cleanup_broadcast_pending)
+        {
+            res->startup_cleanup_broadcast_pending = false;
+            broadcast = true;
+        }
     }
+    if (broadcast)
+        peer_broadcast_state_sync(epoll_fd);
+}
+
+bool resources_startup_cleanup_complete(void)
+{
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+    {
+        if (g_state.resources[i].startup_cleanup_failed)
+            return false;
+    }
+    return true;
+}
+
+bool resources_preserve_startup_cleanup_failure(int resource_idx, uint64_t incoming_epoch)
+{
+    resource_runtime_t *res = &g_state.resources[resource_idx];
+    if (!res->startup_cleanup_failed)
+        return false;
+
+    if (incoming_epoch >= res->epoch)
+    {
+        res->epoch = resources_next_epoch(incoming_epoch);
+        if (res->epoch > g_state.lease_grants[resource_idx].promised_epoch)
+            g_state.lease_grants[resource_idx].promised_epoch = res->epoch;
+        res->startup_cleanup_broadcast_pending = true;
+    }
+    res->owner_node = g_state.self_index;
+    res->owner_instance_id = g_state.instance_id;
+    res->state = LCS_RES_STOP_FAILED;
+    res->lease_id = 0;
+    res->lease_deadline_ms = 0;
+    res->renew_after_ms = 0;
+    snprintf(res->conflict_reason, sizeof(res->conflict_reason),
+             "startup cleanup failed; local resource may still be active");
+    return true;
 }
 
 void resources_enter_conflict_state(int resource_idx, uint64_t epoch, const char *reason)

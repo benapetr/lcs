@@ -63,6 +63,8 @@ void cluster_update_recovery_state(void)
 {
     if (g_state.voting_ready || lcs_now_ms() < g_state.voting_not_before_ms)
         return;
+    if (!resources_startup_cleanup_complete())
+        return;
 
     uint32_t synchronized_votes = 1;
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
@@ -204,6 +206,8 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
         }
         if (failover_count > res->failover_count)
             res->failover_count = failover_count;
+        if (resources_preserve_startup_cleanup_failure((int)id, epoch))
+            continue;
         bool incoming_conflict = state == LCS_RES_CONFLICT;
         bool incoming_stop_failed = state == LCS_RES_STOP_FAILED;
         bool local_unsafe = res->state == LCS_RES_CONFLICT ||

@@ -58,6 +58,9 @@ typedef struct
     bool disabled;
     bool shutdown_release_required;
     bool shutdown_release_confirmed;
+    bool startup_cleanup_failed;
+    bool startup_cleanup_broadcast_pending;
+    uint64_t next_startup_cleanup_attempt_ms;
     pid_t hook_pid;
     resource_hook_type_t hook_type;
     uint64_t hook_deadline_ms;

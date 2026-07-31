@@ -21,6 +21,14 @@ int resources_stop_local_backend(const lcs_resource_config_t *resource)
     return 0;
 }
 
+bool resources_preserve_startup_cleanup_failure(int resource_idx,
+                                                uint64_t incoming_epoch)
+{
+    (void)resource_idx;
+    (void)incoming_epoch;
+    return false;
+}
+
 void resources_enter_stop_failed_state(int resource_idx, uint64_t epoch,
                                        const char *reason, int epoll_fd)
 {

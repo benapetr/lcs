@@ -6,7 +6,10 @@
 
 #include "daemon_state.h"
 
-void resources_cleanup_local_vips_without_lease(void);
+void resources_begin_startup_cleanup(void);
+void resources_progress_startup_cleanup(int epoll_fd);
+bool resources_startup_cleanup_complete(void);
+bool resources_preserve_startup_cleanup_failure(int resource_idx, uint64_t incoming_epoch);
 int  resources_stop_local_backend(const lcs_resource_config_t *res);
 void resources_enter_conflict_state(int resource_idx, uint64_t epoch, const char *reason);
 void resources_enter_stop_failed_state(int resource_idx, uint64_t epoch, const char *reason, int epoll_fd);

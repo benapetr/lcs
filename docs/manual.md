@@ -319,6 +319,14 @@ itself. This guarantees that any lease grant forgotten by a restart has expired
 before the node can grant a conflicting lease. Recovery state is held only in
 memory; no lease or epoch files are written to disk.
 
+Before recovery can complete, a full-member also removes every configured VIP
+and stops every configured systemd service locally. This prevents a resource
+left running by a crashed daemon or enabled unit from overlapping a later
+cluster owner. If shutdown cannot be verified, the node remains `recovering`,
+advertises the resource as `stop_failed`, and retries cleanup. The failure must
+be corrected locally or the node must be fenced before the cluster will use the
+resource again. Quorum-only nodes do not perform resource cleanup.
+
 Because recovery is intentionally diskless, `lease_ms` and `peer_timeout_ms`
 must not be reduced during a rolling restart. To reduce either value, stop all
 cluster daemons first, update every configuration, and then start the cluster.
@@ -337,15 +345,20 @@ Each resource carries a monotonically increasing epoch number held in memory. Ep
 
 Every lease grant, renewal, ownership change, and move request includes the epoch it applies to. Nodes reject any claim, renewal, or move request referencing an epoch older than the highest epoch they have already accepted for that resource. This prevents stale packets, delayed messages, or restarted daemons from reactivating an obsolete owner.
 
-On startup, `lcsd` does not activate any VIP immediately. It first connects to
-peers and merges their current resource state and epochs. It cannot vote or own
-a resource until its restart recovery quarantine and initial synchronization
-requirements have both completed. If majority quorum is unavailable, the node
-does not own any VIPs.
+On startup, `lcsd` does not activate any resource immediately. It first confirms
+that configured local resources are inactive, then connects to peers and merges
+their current resource state and epochs. It cannot vote or own a resource until
+startup cleanup, restart recovery quarantine, and initial synchronization have
+all completed. If majority quorum is unavailable, the node does not own any
+resources.
 
 Each daemon start generates a fresh random instance ID. Peers use the combination of node ID, instance ID, epoch, and lease ID to detect and discard stale messages from old daemon instances or lingering connections.
 
-If the entire cluster restarts and all in-memory epochs are lost, the cluster begins a new incarnation from baseline epochs. This is safe because no node retains a VIP across a daemon restart: on startup, if `lcsd` finds a locally configured VIP active on an interface but does not hold a current majority lease for it, the VIP is removed before normal operation begins.
+If the entire cluster restarts and all in-memory epochs are lost, the cluster
+begins a new incarnation from baseline epochs. Before normal operation, every
+full-member removes configured VIPs and stops configured systemd services. A
+node that cannot prove a resource inactive remains non-voting and propagates
+`stop_failed` instead of allowing automatic placement.
 
 ---
 

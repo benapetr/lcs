@@ -95,7 +95,11 @@ depends_on = vip1
 systemd_unit = app.service
 ```
 
-The service unit should not be enabled to start independently on every node; LCS should be the actor that starts and stops it.
+The service unit should not be enabled to start independently on every node;
+LCS should be the actor that starts and stops it. On every full-member startup,
+LCS stops and verifies all configured local resources before becoming eligible
+to vote. A failed startup cleanup leaves the node recovering and advertises
+`stop_failed` until a retry succeeds or the node is fenced.
 
 Similar config needs to exist on each node, only difference is IP to listen on and node name. That's all you need. Now launch lcsd on all nodes, it should form the quorum and set up resources. For troubleshooting use -vvv for maximal logs.
 

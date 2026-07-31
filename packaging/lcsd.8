@@ -208,6 +208,13 @@ Service resources use the same
 and hook keys as VIP resources. Build with
 .B make WITH_SYSTEMD=0
 to explicitly disable service operations.
+.PP
+On full-member startup, configured VIPs and systemd services are stopped and
+verified inactive before the node becomes eligible to vote. If cleanup cannot
+be confirmed, the node remains recovering and advertises the resource as
+.B stop_failed
+until cleanup succeeds or the node is fenced. Managed service units should not
+be independently enabled on every cluster node.
 .SH FILES
 .TP
 .I /etc/lcs/lcs.conf

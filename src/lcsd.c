@@ -446,7 +446,7 @@ static int setup_runtime(int *epoll_fd)
         return -1;
     }
 
-    resources_cleanup_local_vips_without_lease();
+    resources_begin_startup_cleanup();
 
     if (lcs_init_open_sockets() != 0)
         return -1;

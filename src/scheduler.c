@@ -72,6 +72,7 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     bool run_placement = !g_state.next_placement_ms || now >= g_state.next_placement_ms;
 
     peer_poll(sched->epoll_fd);
+    resources_progress_startup_cleanup(sched->epoll_fd);
     handshake_expire(sched->epoll_fd);
     client_expire(sched->epoll_fd);
     move_process(sched->epoll_fd);

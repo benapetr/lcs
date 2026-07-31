@@ -9,7 +9,6 @@ trap cleanup_cluster EXIT
 
 prepare_cluster
 fail_file="$TEST_TMP/fail-vip-del"
-touch "$fail_file"
 export LCS_EXTRA_ENV_node1="LCS_VIP_FAIL_DEL_FILE=$fail_file"
 
 start_node node1
@@ -22,6 +21,7 @@ wait_for_quorum node1
 wait_for_owner node1 node1
 
 log "forcing VIP stop failure on node1"
+touch "$fail_file"
 "$LCS" -s "$(node_socket node1)" resource stop vip1 >/dev/null
 wait_until 8 "vip1 stop_failed on node1" \
     node_status_has node1 "vip1 127.0.0.200/32 dev=lo state=stop_failed owner=node1"
