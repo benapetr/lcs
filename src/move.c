@@ -16,6 +16,28 @@
 #include <stdio.h>
 #include <string.h>
 
+static uint32_t move_service_allowance_ms(int resource_idx)
+{
+    if (resource_idx < 0 ||
+        (size_t)resource_idx >= g_state.cfg.resource_count ||
+        g_state.cfg.resources[resource_idx].type != LCS_RESOURCE_SERVICE)
+        return 0;
+    return resources_service_operation_timeout_ms();
+}
+
+static uint32_t move_forward_timeout_ms(int resource_idx)
+{
+    return (g_state.cfg.peer_timeout_ms * 2u) + 1000u +
+           move_service_allowance_ms(resource_idx);
+}
+
+static uint64_t move_deadline_after_ms(int resource_idx)
+{
+    return (uint64_t)g_state.cfg.peer_timeout_ms * 3u +
+           g_state.cfg.lease_ms + 1000u +
+           move_service_allowance_ms(resource_idx);
+}
+
 static void move_clear(move_runtime_t *move)
 {
     memset(move, 0, sizeof(*move));
@@ -212,7 +234,9 @@ static void move_start_owner_release(int epoll_fd, move_runtime_t *move)
                        move->rpc_resp[move->old_owner_idx],
                        sizeof(move->rpc_resp[move->old_owner_idx]),
                        &move->rpc_resp_len[move->old_owner_idx],
-                       g_state.cfg.peer_timeout_ms, move_rpc_callback,
+                       g_state.cfg.peer_timeout_ms +
+                       move_service_allowance_ms(move->resource_idx),
+                       move_rpc_callback,
                        &move->rpc_ctx[move->old_owner_idx]) != 0)
     {
         move->phase = LCS_MOVE_PHASE_WAIT_OLD_LEASE_EXPIRY;
@@ -413,14 +437,14 @@ static int move_start_remote_target(int epoll_fd, int cli_server_slot, uint32_t 
     move->cli_server_seq = cli_server_seq;
     move->resource_idx = resource_idx;
     move->target_idx = target_idx;
-    move->deadline_ms = lcs_now_ms() + (g_state.cfg.peer_timeout_ms * 2u) + 1000u;
+    uint32_t timeout_ms = move_forward_timeout_ms(resource_idx);
+    move->deadline_ms = lcs_now_ms() + timeout_ms;
     g_state.cli_servers[cli_server_slot].deadline_ms = move->deadline_ms + 1000u;
     move_set_failed(move, "target node move request failed");
     move->rpc_ctx[0].move = move;
     move->rpc_ctx[0].move_id = move->id;
     move->rpc_ctx[0].node_idx = target_idx;
 
-    uint32_t timeout_ms = (g_state.cfg.peer_timeout_ms * 2u) + 1000u;
     if (peer_rpc_async(epoll_fd, target_idx, LCS_MSG_MOVE_REQ, payload, len,
                        LCS_MSG_MOVE_RESP, move->peer_resp,
                        sizeof(move->peer_resp), &move->peer_resp_len,
@@ -486,7 +510,7 @@ int move_start_internal(int epoll_fd, int resource_idx, int target_idx, const ch
     move->origin = LCS_MOVE_ORIGIN_NONE;
     move->resource_idx = resource_idx;
     move->target_idx = target_idx;
-    move->deadline_ms = lcs_now_ms() + (g_state.cfg.peer_timeout_ms * 3u) + g_state.cfg.lease_ms + 1000u;
+    move->deadline_ms = lcs_now_ms() + move_deadline_after_ms(resource_idx);
     move_set_failed(move, "internal move failed");
     lcs_log_info("starting internal move of resource %s to %s%s%s",
                  g_state.cfg.resources[resource_idx].name,
@@ -515,7 +539,7 @@ int move_start_internal(int epoll_fd, int resource_idx, int target_idx, const ch
     move->rpc_ctx[0].move = move;
     move->rpc_ctx[0].move_id = move->id;
     move->rpc_ctx[0].node_idx = target_idx;
-    uint32_t timeout_ms = (g_state.cfg.peer_timeout_ms * 2u) + 1000u;
+    uint32_t timeout_ms = move_forward_timeout_ms(resource_idx);
     if (peer_rpc_async(epoll_fd, target_idx, LCS_MSG_MOVE_REQ, req,
                        (uint32_t)req_len, LCS_MSG_MOVE_RESP, move->peer_resp,
                        sizeof(move->peer_resp), &move->peer_resp_len,
@@ -573,7 +597,7 @@ int move_start_cli_server(int epoll_fd, int cli_server_slot, uint32_t cli_server
     move->cli_server_seq = cli_server_seq;
     move->resource_idx = resource_idx;
     move->target_idx = target_idx;
-    move->deadline_ms = lcs_now_ms() + (g_state.cfg.peer_timeout_ms * 3u) + g_state.cfg.lease_ms + 1000u;
+    move->deadline_ms = lcs_now_ms() + move_deadline_after_ms(resource_idx);
     g_state.cli_servers[cli_server_slot].deadline_ms = move->deadline_ms + 1000u;
     move_start_target(epoll_fd, move);
     return 0;
@@ -606,7 +630,7 @@ int move_start_peer_request(int epoll_fd, int source_node_idx, uint32_t peer_seq
     move->peer_seq = peer_seq;
     move->resource_idx = resource_idx;
     move->target_idx = target_idx;
-    move->deadline_ms = lcs_now_ms() + (g_state.cfg.peer_timeout_ms * 3u) + g_state.cfg.lease_ms + 1000u;
+    move->deadline_ms = lcs_now_ms() + move_deadline_after_ms(resource_idx);
     move_start_target(epoll_fd, move);
     return 0;
 }

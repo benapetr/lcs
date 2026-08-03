@@ -26,6 +26,25 @@ int resources_stop_local_backend(const lcs_resource_config_t *resource)
     return 0;
 }
 
+int resources_begin_state_replacement(int resource_idx, int owner_node,
+                                      uint64_t owner_instance_id,
+                                      lcs_resource_state_t state,
+                                      uint64_t epoch, uint64_t lease_id,
+                                      uint64_t deadline_ms,
+                                      const char *reason, int epoll_fd)
+{
+    (void)resource_idx;
+    (void)owner_node;
+    (void)owner_instance_id;
+    (void)state;
+    (void)epoch;
+    (void)lease_id;
+    (void)deadline_ms;
+    (void)reason;
+    (void)epoll_fd;
+    return 0;
+}
+
 void resources_enter_stop_failed_state(int resource_idx, uint64_t epoch,
                                        const char *reason, int epoll_fd)
 {

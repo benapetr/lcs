@@ -67,6 +67,12 @@ int  lease_handle_owner_release_request(const void *payload, size_t len,
                                         int source_node_idx, uint32_t response_seq,
                                         int epoll_fd);
 
+/* Continue a handoff after an asynchronous backend stop is confirmed. */
+int lease_complete_owner_release(int resource_idx, int owner_idx,
+                                 uint64_t epoch, uint64_t lease_id,
+                                 int source_node_idx, uint32_t response_seq,
+                                 int epoll_fd);
+
 // Expire remote ownership records whose lease deadline has passed. This only
 // clears local cluster state for leases owned by other daemon instances; it does
 // not remove local resources.

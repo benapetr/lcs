@@ -315,11 +315,16 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
                           entry->lease_id == res->lease_id &&
                           entry->owner_instance_id == res->owner_instance_id &&
                           (entry->owner == UINT16_MAX ? res->owner_node < 0 : res->owner_node == (int)entry->owner);
-        bool preserve_local_transition = same_lease &&
-                                         entry->owner == (uint16_t)g_state.self_index &&
-                                         entry->owner_instance_id == g_state.instance_id &&
-                                         (res->state == LCS_RES_STARTING ||
-                                          res->state == LCS_RES_STOPPING);
+        /*
+         * Peers only have an observational copy of our lease state.  In
+         * particular, a STARTING snapshot can arrive back after the local
+         * systemd worker has already completed.  Never let gossip regress or
+         * otherwise replace the owner's authoritative lifecycle state for the
+         * same lease.
+         */
+        bool preserve_local_state = same_lease &&
+                                    entry->owner == (uint16_t)g_state.self_index &&
+                                    entry->owner_instance_id == g_state.instance_id;
         bool unsafe_update = (incoming_conflict || incoming_stop_failed) && entry->epoch >= res->epoch;
         if (local_unsafe && !incoming_conflict && !incoming_stop_failed && entry->epoch <= res->epoch)
             continue;
@@ -336,8 +341,23 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             if (res->owner_node == g_state.self_index &&
                 res->owner_instance_id == g_state.instance_id &&
                 entry->owner != (uint16_t)g_state.self_index &&
-                res->state == LCS_RES_ACTIVE)
+                (res->state == LCS_RES_ACTIVE ||
+                 res->state == LCS_RES_STARTING ||
+                 res->state == LCS_RES_STOPPING))
             {
+                int replacement_rc = resources_begin_state_replacement(
+                    (int)id,
+                    entry->owner == UINT16_MAX ? -1 : (int)entry->owner,
+                    entry->owner == UINT16_MAX ? 0 : entry->owner_instance_id,
+                    (lcs_resource_state_t)entry->state, entry->epoch,
+                    entry->lease_id,
+                    entry->remaining_ms ? lcs_now_ms() + entry->remaining_ms : 0,
+                    (incoming_conflict || incoming_stop_failed) ? entry->reason : "",
+                    -1);
+                if (replacement_rc > 0)
+                    continue;
+                if (replacement_rc < 0)
+                    continue;
                 if (resources_stop_local_backend(&g_state.cfg.resources[id]) != 0)
                 {
                     resources_enter_stop_failed_state((int)id, entry->epoch + 1, "local resource stop failed while applying state sync", -1);
@@ -348,7 +368,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             res->lease_id = entry->lease_id;
             res->owner_node = entry->owner == UINT16_MAX ? -1 : (int)entry->owner;
             res->owner_instance_id = entry->owner == UINT16_MAX ? 0 : entry->owner_instance_id;
-            if (!preserve_local_transition)
+            if (!preserve_local_state)
                 res->state = (lcs_resource_state_t)entry->state;
             if (!same_lease)
                 res->lease_deadline_ms = entry->remaining_ms ?

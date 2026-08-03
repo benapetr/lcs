@@ -72,6 +72,7 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     bool run_placement = !g_state.next_placement_ms || now >= g_state.next_placement_ms;
 
     peer_poll(sched->epoll_fd);
+    resources_process_service_operations(sched->epoll_fd);
     resources_progress_startup_cleanup(sched->epoll_fd);
     handshake_expire(sched->epoll_fd);
     cli_server_expire(sched->epoll_fd);
@@ -132,6 +133,7 @@ int scheduler_run_shutdown_once(const scheduler_t *sched)
     peer_poll(sched->epoll_fd);
     handshake_expire(sched->epoll_fd);
     lease_process_operations(sched->epoll_fd);
+    resources_process_service_operations(sched->epoll_fd);
     resources_process_hooks(sched->epoll_fd);
     resources_progress_graceful_shutdown(sched->epoll_fd);
     resources_maintain_owned_leases(sched->epoll_fd);

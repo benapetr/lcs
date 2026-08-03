@@ -5,8 +5,11 @@
 
 #include "log.h"
 
+#include <errno.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static bool systemd_test_stop_failed(void)
@@ -151,7 +154,7 @@ static int service_call_unit_method(const lcs_resource_config_t *res, const char
     return 0;
 }
 
-int lcs_systemd_service_start(const lcs_resource_config_t *res)
+static int systemd_service_start_sync(const lcs_resource_config_t *res)
 {
     if (getenv("LCS_SYSTEMD_DRY_RUN"))
     {
@@ -161,7 +164,7 @@ int lcs_systemd_service_start(const lcs_resource_config_t *res)
     return service_call_unit_method(res, "StartUnit", true);
 }
 
-int lcs_systemd_service_stop(const lcs_resource_config_t *res)
+static int systemd_service_stop_sync(const lcs_resource_config_t *res)
 {
     if (systemd_test_stop_failed())
     {
@@ -199,7 +202,7 @@ int lcs_systemd_service_stop(const lcs_resource_config_t *res)
     return service_call_unit_method(res, "StopUnit", false);
 }
 
-int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
+static int systemd_service_is_active_sync(const lcs_resource_config_t *res)
 {
     if (getenv("LCS_SYSTEMD_DRY_RUN"))
         return 1;
@@ -227,7 +230,7 @@ int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
 
 #else
 
-int lcs_systemd_service_start(const lcs_resource_config_t *res)
+static int systemd_service_start_sync(const lcs_resource_config_t *res)
 {
     if (getenv("LCS_SYSTEMD_DRY_RUN"))
         return 0;
@@ -236,7 +239,7 @@ int lcs_systemd_service_start(const lcs_resource_config_t *res)
     return -1;
 }
 
-int lcs_systemd_service_stop(const lcs_resource_config_t *res)
+static int systemd_service_stop_sync(const lcs_resource_config_t *res)
 {
     if (systemd_test_stop_failed())
         return -1;
@@ -247,7 +250,7 @@ int lcs_systemd_service_stop(const lcs_resource_config_t *res)
     return -1;
 }
 
-int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
+static int systemd_service_is_active_sync(const lcs_resource_config_t *res)
 {
     if (getenv("LCS_SYSTEMD_DRY_RUN"))
         return 1;
@@ -257,3 +260,107 @@ int lcs_systemd_service_is_active(const lcs_resource_config_t *res)
 }
 
 #endif
+
+typedef enum
+{
+    SYSTEMD_WORKER_START = 1,
+    SYSTEMD_WORKER_STOP,
+    SYSTEMD_WORKER_CHECK,
+} systemd_worker_action_t;
+
+static void systemd_worker_test_delay(void)
+{
+    const char *value = getenv("LCS_SYSTEMD_DELAY_MS");
+    if (!value || !*value)
+        return;
+    char *end = NULL;
+    unsigned long delay_ms = strtoul(value, &end, 10);
+    if (!end || *end != '\0' || delay_ms > 60000ul)
+        return;
+    usleep((useconds_t)(delay_ms * 1000ul));
+}
+
+static int systemd_service_spawn_worker(const lcs_resource_config_t *res,
+                                        systemd_worker_action_t action,
+                                        pid_t *pid)
+{
+    if (!res || !pid)
+        return -1;
+    pid_t child = fork();
+    if (child < 0)
+        return -1;
+    if (child == 0)
+    {
+        /* Do not keep daemon listeners or peer sockets alive if the parent
+         * exits while this short-lived worker is waiting on systemd. */
+        (void)close_range(3, ~0u, 0);
+        systemd_worker_test_delay();
+        int result = -1;
+        if (action == SYSTEMD_WORKER_START)
+            result = systemd_service_start_sync(res) == 0 ? 0 : -1;
+        else if (action == SYSTEMD_WORKER_STOP)
+            result = systemd_service_stop_sync(res) == 0 ? 0 : -1;
+        else
+            result = systemd_service_is_active_sync(res);
+
+        if (action == SYSTEMD_WORKER_CHECK && result > 0)
+            _exit(1);
+        if (result == 0)
+            _exit(0);
+        _exit(2);
+    }
+    *pid = child;
+    return 0;
+}
+
+int lcs_systemd_service_start_async(const lcs_resource_config_t *res,
+                                    pid_t *pid)
+{
+    return systemd_service_spawn_worker(res, SYSTEMD_WORKER_START, pid);
+}
+
+int lcs_systemd_service_stop_async(const lcs_resource_config_t *res,
+                                   pid_t *pid)
+{
+    return systemd_service_spawn_worker(res, SYSTEMD_WORKER_STOP, pid);
+}
+
+int lcs_systemd_service_check_async(const lcs_resource_config_t *res,
+                                    pid_t *pid)
+{
+    return systemd_service_spawn_worker(res, SYSTEMD_WORKER_CHECK, pid);
+}
+
+int lcs_systemd_service_collect(pid_t pid, int *result)
+{
+    if (pid <= 0 || !result)
+        return -1;
+    int status = 0;
+    pid_t rc;
+    do
+    {
+        rc = waitpid(pid, &status, WNOHANG);
+    } while (rc < 0 && errno == EINTR);
+    if (rc == 0)
+        return 0;
+    if (rc < 0)
+        return -1;
+    if (!WIFEXITED(status))
+    {
+        *result = -1;
+        return 1;
+    }
+    int code = WEXITSTATUS(status);
+    *result = code == 0 ? 0 : code == 1 ? 1 : -1;
+    return 1;
+}
+
+void lcs_systemd_service_cancel(pid_t pid)
+{
+    if (pid <= 0)
+        return;
+    (void)kill(pid, SIGKILL);
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
+    {
+    }
+}

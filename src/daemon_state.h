@@ -40,6 +40,17 @@ typedef enum
     LCS_HOOK_POST_STOP,
 } resource_hook_type_t;
 
+typedef enum
+{
+    LCS_SERVICE_OP_NONE = 0,
+    LCS_SERVICE_OP_START,
+    LCS_SERVICE_OP_STOP,
+    LCS_SERVICE_OP_ROLLBACK_STOP,
+    LCS_SERVICE_OP_HEALTH,
+    LCS_SERVICE_OP_STARTUP_CLEANUP,
+    LCS_SERVICE_OP_STATE_REPLACE,
+} resource_service_op_type_t;
+
 typedef struct
 {
     lcs_resource_state_t state;
@@ -66,6 +77,23 @@ typedef struct
     uint64_t hook_deadline_ms;
     uint64_t hook_epoch;
     uint64_t hook_lease_id;
+    pid_t service_pid;
+    resource_service_op_type_t service_op;
+    uint64_t service_deadline_ms;
+    uint64_t service_epoch;
+    uint64_t service_lease_id;
+    uint64_t next_service_health_ms;
+    bool service_stop_post_hook;
+    bool service_handoff;
+    int service_handoff_source_node;
+    uint32_t service_handoff_response_seq;
+    int service_replace_owner_node;
+    uint64_t service_replace_owner_instance_id;
+    lcs_resource_state_t service_replace_state;
+    uint64_t service_replace_epoch;
+    uint64_t service_replace_lease_id;
+    uint64_t service_replace_deadline_ms;
+    char service_replace_reason[LCS_REASON_MAX + 1];
     char conflict_reason[LCS_REASON_MAX + 1];
 } resource_runtime_t;
 

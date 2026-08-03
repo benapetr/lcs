@@ -41,6 +41,25 @@ int resources_stop_local_backend(const lcs_resource_config_t *resource)
     return stop_backend_result;
 }
 
+int resources_begin_state_replacement(int resource_idx, int owner_node,
+                                      uint64_t owner_instance_id,
+                                      lcs_resource_state_t state,
+                                      uint64_t epoch, uint64_t lease_id,
+                                      uint64_t deadline_ms,
+                                      const char *reason, int epoll_fd)
+{
+    (void)resource_idx;
+    (void)owner_node;
+    (void)owner_instance_id;
+    (void)state;
+    (void)epoch;
+    (void)lease_id;
+    (void)deadline_ms;
+    (void)reason;
+    (void)epoll_fd;
+    return 0;
+}
+
 bool resources_preserve_startup_cleanup_failure(int resource_idx,
                                                 uint64_t incoming_epoch)
 {
@@ -223,6 +242,27 @@ static void test_repeated_sync_cannot_ratchet_deadline_or_grant(void)
     }
 }
 
+static void test_echoed_starting_state_cannot_regress_local_owner(void)
+{
+    initialize_state(1);
+    resource_runtime_t *res = &g_state.resources[0];
+    res->owner_node = g_state.self_index;
+    res->owner_instance_id = g_state.instance_id;
+    res->state = LCS_RES_ACTIVE;
+    res->epoch = 5;
+    res->lease_id = 55;
+    res->lease_deadline_ms = fake_now_ms + 3000;
+
+    test_state_entry_t entry = active_entry(0, (uint16_t)g_state.self_index,
+                                            g_state.instance_id, 5, 55, 1000);
+    entry.state = LCS_RES_STARTING;
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t len = encode_state(payload, &entry, 1);
+    assert(cluster_apply_state(payload, len, 2) == 0);
+    assert(res->state == LCS_RES_ACTIVE);
+    assert(res->lease_deadline_ms == fake_now_ms + 3000);
+}
+
 static void test_state_apply_stop_failure_preserves_local_owner(void)
 {
     initialize_state(1);
@@ -336,6 +376,7 @@ int main(void)
 {
     test_valid_merge_rules();
     test_repeated_sync_cannot_ratchet_deadline_or_grant();
+    test_echoed_starting_state_cannot_regress_local_owner();
     test_state_apply_stop_failure_preserves_local_owner();
     test_invalid_entries_are_atomic();
     test_duplicate_id_does_not_partially_apply();

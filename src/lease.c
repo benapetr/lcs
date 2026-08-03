@@ -240,6 +240,14 @@ int lease_apply_commit(const void *payload, size_t len, int source_node_idx, int
         res->owner_instance_id == g_state.instance_id && !same_lease &&
         res->state != LCS_RES_STOPPED)
     {
+        int replacement_rc = resources_begin_state_replacement(
+            (int)resource_id, owner_node, sender_instance_id,
+            LCS_RES_ACTIVE, epoch, lease_id,
+            lcs_now_ms() + remaining_ms, "", epoll_fd);
+        if (replacement_rc > 0)
+            return 0;
+        if (replacement_rc < 0)
+            return -1;
         if (resources_stop_local_backend(&g_state.cfg.resources[resource_id]) != 0)
         {
             resources_enter_stop_failed_state((int)resource_id, epoch + 1, "local resource stop failed while applying lease commit", epoll_fd);
@@ -761,19 +769,37 @@ int lease_handle_owner_release_request(const void *payload, size_t len,
         res->lease_id != lease_id)
         return -1;
 
-    if (resources_release_for_handoff((int)resource_id, epoch, lease_id, epoll_fd) != 0)
+    int stop_rc = resources_release_for_handoff((int)resource_id, epoch,
+                                                lease_id, source_node_idx,
+                                                response_seq, epoll_fd);
+    if (stop_rc < 0)
         return -1;
+    if (stop_rc > 0)
+    {
+        lcs_log_info("asynchronous stop started for controlled handoff of resource %s epoch=%llu",
+                     g_state.cfg.resources[resource_id].name,
+                     (unsigned long long)epoch);
+        return 1;
+    }
+    return lease_complete_owner_release((int)resource_id, g_state.self_index,
+                                        epoch, lease_id, source_node_idx,
+                                        response_seq, epoll_fd);
+}
 
+int lease_complete_owner_release(int resource_idx, int owner_idx,
+                                 uint64_t epoch, uint64_t lease_id,
+                                 int source_node_idx, uint32_t response_seq,
+                                 int epoll_fd)
+{
     if (lease_start_operation(epoll_fd, LCS_LEASE_OP_RELEASE,
-                              (int)resource_id, g_state.self_index,
-                              epoch, lease_id) != 0)
+                              resource_idx, owner_idx, epoch, lease_id) != 0)
         return -1;
     lease_runtime_t *release = NULL;
     for (size_t i = 0; i < LCS_LEASE_OP_MAX; i++)
     {
         if (g_state.lease_ops[i].active &&
             g_state.lease_ops[i].type == LCS_LEASE_OP_RELEASE &&
-            g_state.lease_ops[i].resource_idx == (int)resource_id)
+            g_state.lease_ops[i].resource_idx == resource_idx)
         {
             release = &g_state.lease_ops[i];
             break;
@@ -785,7 +811,7 @@ int lease_handle_owner_release_request(const void *payload, size_t len,
     release->release_response_node = source_node_idx;
     release->release_response_seq = response_seq;
     lcs_log_info("resource %s stopped for controlled handoff; waiting for release quorum at epoch=%llu",
-                 g_state.cfg.resources[resource_id].name,
+                 g_state.cfg.resources[resource_idx].name,
                  (unsigned long long)epoch);
     return 1;
 }
