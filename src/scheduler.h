@@ -9,7 +9,7 @@
 typedef struct
 {
     int epoll_fd;
-    int local_fd;
+    int cli_server_fd;
     int metrics_fd;
 } scheduler_t;
 

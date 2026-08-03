@@ -26,3 +26,10 @@ tests/integration/run.sh remote-move failover
 
 These tests are intentionally not part of `make` because they start multiple
 daemons and depend on localhost networking behavior.
+
+Deterministic lease, grant, recovery-timer, and state-synchronization tests are
+kept in `tests/unit` and can be run with:
+
+```sh
+tests/unit/run.sh
+```

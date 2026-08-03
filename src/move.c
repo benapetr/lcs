@@ -6,7 +6,7 @@
 #include "cluster.h"
 #include "group.h"
 #include "lease.h"
-#include "local_client.h"
+#include "cli_server.h"
 #include "log.h"
 #include "peer.h"
 #include "protocol.h"
@@ -19,7 +19,7 @@
 static void move_clear(move_runtime_t *move)
 {
     memset(move, 0, sizeof(*move));
-    move->local_client_slot = -1;
+    move->cli_server_slot = -1;
     move->source_node_idx = -1;
     move->resource_idx = -1;
     move->target_idx = -1;
@@ -49,7 +49,7 @@ static void move_complete(int epoll_fd, move_runtime_t *move)
     if (move->resource_idx >= 0 && move->target_idx >= 0)
     {
         const char *origin = "move";
-        if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT)
+        if (move->origin == LCS_MOVE_ORIGIN_CLI_SERVER)
             origin = "CLI move";
         else if (move->origin == LCS_MOVE_ORIGIN_PEER)
             origin = "peer move";
@@ -60,7 +60,7 @@ static void move_complete(int epoll_fd, move_runtime_t *move)
         {
             resource_runtime_t *res = &g_state.resources[move->resource_idx];
             const lcs_resource_config_t *resource = &g_state.cfg.resources[move->resource_idx];
-            if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT &&
+            if (move->origin == LCS_MOVE_ORIGIN_CLI_SERVER &&
                 resource->home_node_idx >= 0 &&
                 move->target_idx != resource->home_node_idx &&
                 !res->home_blocked)
@@ -75,7 +75,7 @@ static void move_complete(int epoll_fd, move_runtime_t *move)
                              cluster_node_name_or_none(move->target_idx),
                              cluster_node_name_or_none(resource->home_node_idx));
             }
-            if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT &&
+            if (move->origin == LCS_MOVE_ORIGIN_CLI_SERVER &&
                 resource->home_node_idx >= 0 &&
                 move->target_idx == resource->home_node_idx &&
                 res->home_blocked)
@@ -99,9 +99,9 @@ static void move_complete(int epoll_fd, move_runtime_t *move)
         }
     }
 
-    if (move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT)
+    if (move->origin == LCS_MOVE_ORIGIN_CLI_SERVER)
     {
-        client_complete_move(epoll_fd, move->local_client_slot, move->local_client_id, move->client_seq, move->final_status, move->final_message);
+        cli_server_complete_move(epoll_fd, move->cli_server_slot, move->cli_server_id, move->cli_server_seq, move->final_status, move->final_message);
     } else if (move->origin == LCS_MOVE_ORIGIN_PEER)
     {
         peer_queue_simple_resp(epoll_fd, move->source_node_idx, move->peer_seq, LCS_MSG_MOVE_RESP, move->final_status, move->final_message);
@@ -150,9 +150,9 @@ static void move_rpc_callback(void *ctx, int status, const unsigned char *payloa
         move->pending_rpcs--;
 }
 
-static void move_fail_immediate_local(int epoll_fd, int local_slot, uint64_t local_client_id, uint32_t client_seq, const char *message)
+static void move_fail_immediate_cli_server(int epoll_fd, int cli_server_slot, uint64_t cli_server_id, uint32_t cli_server_seq, const char *message)
 {
-    client_complete_move(epoll_fd, local_slot, local_client_id, client_seq, -1, message);
+    cli_server_complete_move(epoll_fd, cli_server_slot, cli_server_id, cli_server_seq, -1, message);
 }
 
 static int move_validate_request(const void *payload, uint32_t len, int *resource_idx, int *target_idx, char *message, size_t message_len)
@@ -397,24 +397,24 @@ static void move_start_target(int epoll_fd, move_runtime_t *move)
     move_start_lease_acquire(epoll_fd, move);
 }
 
-static int move_start_remote_target(int epoll_fd, int local_slot, uint32_t client_seq, const void *payload, uint32_t len, int resource_idx, int target_idx)
+static int move_start_remote_target(int epoll_fd, int cli_server_slot, uint32_t cli_server_seq, const void *payload, uint32_t len, int resource_idx, int target_idx)
 {
-    uint64_t local_client_id = g_state.local_clients[local_slot].id;
+    uint64_t cli_server_id = g_state.cli_servers[cli_server_slot].id;
     move_runtime_t *move = move_alloc();
     if (!move)
     {
-        move_fail_immediate_local(epoll_fd, local_slot, local_client_id, client_seq, "move table is full");
+        move_fail_immediate_cli_server(epoll_fd, cli_server_slot, cli_server_id, cli_server_seq, "move table is full");
         return -1;
     }
-    move->origin = LCS_MOVE_ORIGIN_LOCAL_CLIENT;
+    move->origin = LCS_MOVE_ORIGIN_CLI_SERVER;
     move->phase = LCS_MOVE_PHASE_WAIT_TARGET;
-    move->local_client_slot = local_slot;
-    move->local_client_id = local_client_id;
-    move->client_seq = client_seq;
+    move->cli_server_slot = cli_server_slot;
+    move->cli_server_id = cli_server_id;
+    move->cli_server_seq = cli_server_seq;
     move->resource_idx = resource_idx;
     move->target_idx = target_idx;
     move->deadline_ms = lcs_now_ms() + (g_state.cfg.peer_timeout_ms * 2u) + 1000u;
-    g_state.local_clients[local_slot].deadline_ms = move->deadline_ms + 1000u;
+    g_state.cli_servers[cli_server_slot].deadline_ms = move->deadline_ms + 1000u;
     move_set_failed(move, "target node move request failed");
     move->rpc_ctx[0].move = move;
     move->rpc_ctx[0].move_id = move->id;
@@ -437,9 +437,9 @@ static int move_start_remote_target(int epoll_fd, int local_slot, uint32_t clien
         move_complete(epoll_fd, move);
         return -1;
     }
-    lcs_log_debug3("move operation forwarded resource=%s target=%s local_slot=%d",
+    lcs_log_debug3("move operation forwarded resource=%s target=%s cli_server_slot=%d",
                    g_state.cfg.resources[resource_idx].name, g_state.cfg.nodes[target_idx].name,
-                   local_slot);
+                   cli_server_slot);
     return 0;
 }
 
@@ -527,15 +527,15 @@ int move_start_internal(int epoll_fd, int resource_idx, int target_idx, const ch
     return 0;
 }
 
-int move_start_local_client(int epoll_fd, int local_slot, uint32_t client_seq, const void *payload, uint32_t len)
+int move_start_cli_server(int epoll_fd, int cli_server_slot, uint32_t cli_server_seq, const void *payload, uint32_t len)
 {
     int resource_idx = -1;
     int target_idx = -1;
     char message[128] = "";
-    uint64_t local_client_id = g_state.local_clients[local_slot].id;
+    uint64_t cli_server_id = g_state.cli_servers[cli_server_slot].id;
     if (move_validate_request(payload, len, &resource_idx, &target_idx, message, sizeof(message)) != 0)
     {
-        move_fail_immediate_local(epoll_fd, local_slot, local_client_id, client_seq, message);
+        move_fail_immediate_cli_server(epoll_fd, cli_server_slot, cli_server_id, cli_server_seq, message);
         return -1;
     }
     int anchor_idx = group_move_anchor_resource(resource_idx);
@@ -552,29 +552,29 @@ int move_start_local_client(int epoll_fd, int local_slot, uint32_t client_seq, c
                             g_state.cfg.resources[resource_idx].name,
                             g_state.cfg.nodes[target_idx].name) != 0)
     {
-        move_fail_immediate_local(epoll_fd, local_slot, local_client_id, client_seq, "failed to encode move request");
+        move_fail_immediate_cli_server(epoll_fd, cli_server_slot, cli_server_id, cli_server_seq, "failed to encode move request");
         return -1;
     }
     if (target_idx != g_state.self_index)
-        return move_start_remote_target(epoll_fd, local_slot, client_seq,
+        return move_start_remote_target(epoll_fd, cli_server_slot, cli_server_seq,
                                         planned_req, (uint32_t)planned_req_len,
                                         resource_idx, target_idx);
 
     move_runtime_t *move = move_alloc();
     if (!move)
     {
-        move_fail_immediate_local(epoll_fd, local_slot, local_client_id, client_seq, "move table is full");
+        move_fail_immediate_cli_server(epoll_fd, cli_server_slot, cli_server_id, cli_server_seq, "move table is full");
         return -1;
     }
-    move->origin = LCS_MOVE_ORIGIN_LOCAL_CLIENT;
+    move->origin = LCS_MOVE_ORIGIN_CLI_SERVER;
     move->phase = LCS_MOVE_PHASE_PREPARE_TARGET;
-    move->local_client_slot = local_slot;
-    move->local_client_id = local_client_id;
-    move->client_seq = client_seq;
+    move->cli_server_slot = cli_server_slot;
+    move->cli_server_id = cli_server_id;
+    move->cli_server_seq = cli_server_seq;
     move->resource_idx = resource_idx;
     move->target_idx = target_idx;
     move->deadline_ms = lcs_now_ms() + (g_state.cfg.peer_timeout_ms * 3u) + g_state.cfg.lease_ms + 1000u;
-    g_state.local_clients[local_slot].deadline_ms = move->deadline_ms + 1000u;
+    g_state.cli_servers[cli_server_slot].deadline_ms = move->deadline_ms + 1000u;
     move_start_target(epoll_fd, move);
     return 0;
 }
@@ -752,20 +752,20 @@ void move_process(int epoll_fd)
     }
 }
 
-void move_cancel_local_client(int local_slot, uint64_t local_client_id)
+void move_cancel_cli_server(int cli_server_slot, uint64_t cli_server_id)
 {
     for (size_t i = 0; i < LCS_MOVE_OP_MAX; i++)
     {
         move_runtime_t *move = &g_state.moves[i];
         if (move->active &&
-            move->origin == LCS_MOVE_ORIGIN_LOCAL_CLIENT &&
-            move->local_client_slot == local_slot &&
-            move->local_client_id == local_client_id)
+            move->origin == LCS_MOVE_ORIGIN_CLI_SERVER &&
+            move->cli_server_slot == cli_server_slot &&
+            move->cli_server_id == cli_server_id)
         {
             move->origin = LCS_MOVE_ORIGIN_NONE;
-            move->local_client_slot = -1;
-            move->local_client_id = 0;
-            move->client_seq = 0;
+            move->cli_server_slot = -1;
+            move->cli_server_id = 0;
+            move->cli_server_seq = 0;
         }
     }
 }

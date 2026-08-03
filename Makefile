@@ -19,7 +19,7 @@ datadir ?= $(prefix)/share
 
 COMMON_OBJS = src/config.o src/log.o src/protocol.o src/util.o
 LCSD_OBJS = src/lcsd.o src/vip.o src/cluster.o src/peer.o src/lease.o \
-            src/resources.o src/group.o src/local_client.o src/move.o src/metrics.o src/epoll_util.o \
+            src/resources.o src/group.o src/cli_server.o src/move.o src/metrics.o src/epoll_util.o \
             src/scheduler.o src/systemd_service.o \
             $(COMMON_OBJS)
 LCS_OBJS = src/lcs.o $(COMMON_OBJS)

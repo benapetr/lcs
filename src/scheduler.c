@@ -5,7 +5,7 @@
 
 #include "group.h"
 #include "lease.h"
-#include "local_client.h"
+#include "cli_server.h"
 #include "log.h"
 #include "metrics.h"
 #include "move.h"
@@ -51,17 +51,17 @@ static void scheduler_dispatch_event(const scheduler_t *sched, const struct epol
         peer_pump_epoll_event(sched->epoll_fd, ev);
         return;
     }
-    if (client_index_from_epoll_id(event_id) >= 0)
+    if (cli_server_index_from_epoll_id(event_id) >= 0)
     {
-        client_pump_epoll_event(sched->epoll_fd, ev);
+        cli_server_pump_epoll_event(sched->epoll_fd, ev);
         return;
     }
 
     if (!(ev->events & EPOLLIN))
         return;
         
-    if (event_id == LCS_EPOLL_LOCAL)
-        client_accept(sched->epoll_fd, sched->local_fd);
+    if (event_id == LCS_EPOLL_CLI_SERVER_LISTENER)
+        cli_server_accept(sched->epoll_fd, sched->cli_server_fd);
     else if (event_id == LCS_EPOLL_METRICS)
         scheduler_handle_metrics_clients(sched);
 }
@@ -74,7 +74,7 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     peer_poll(sched->epoll_fd);
     resources_progress_startup_cleanup(sched->epoll_fd);
     handshake_expire(sched->epoll_fd);
-    client_expire(sched->epoll_fd);
+    cli_server_expire(sched->epoll_fd);
     move_process(sched->epoll_fd);
     lease_process_operations(sched->epoll_fd);
     lease_expire_remote();

@@ -7,7 +7,7 @@
 #include "epoll_util.h"
 #include "group.h"
 #include "lease.h"
-#include "local_client.h"
+#include "cli_server.h"
 #include "log.h"
 #include "metrics.h"
 #include "peer.h"
@@ -33,7 +33,7 @@
 volatile sig_atomic_t g_stop;
 daemon_state_t g_state;
 int g_peer_listener_fd = -1;
-int g_local_fd = -1;
+int g_cli_server_fd = -1;
 int g_tcp_fd = -1;
 int g_metrics_fd = -1;
 
@@ -50,10 +50,10 @@ typedef struct
 
 static void close_listener_fds(void)
 {
-    if (g_local_fd >= 0)
+    if (g_cli_server_fd >= 0)
     {
-        close(g_local_fd);
-        g_local_fd = -1;
+        close(g_cli_server_fd);
+        g_cli_server_fd = -1;
     }
     if (g_tcp_fd >= 0)
     {
@@ -250,13 +250,13 @@ static int lcs_init_metrics_socket(void)
 
 static int lcs_init_open_sockets(void)
 {
-    g_local_fd = create_unix_listener(g_state.cfg.socket_path);
-    if (g_local_fd < 0)
+    g_cli_server_fd = create_unix_listener(g_state.cfg.socket_path);
+    if (g_cli_server_fd < 0)
     {
         lcs_log_error("failed to listen on %s: %s", g_state.cfg.socket_path, strerror(errno));
         return 1;
     }
-    if (lcs_set_fd_nonblocking(g_local_fd) != 0)
+    if (lcs_set_fd_nonblocking(g_cli_server_fd) != 0)
     {
         lcs_log_error("failed to set local listener nonblocking: %s", strerror(errno));
         close_listener_fds();
@@ -464,7 +464,7 @@ static int setup_runtime(int *epoll_fd)
         unlink(g_state.cfg.socket_path);
         return -1;
     }
-    if (lcs_add_epoll_fd(*epoll_fd, g_local_fd, LCS_EPOLL_LOCAL) != 0 ||
+    if (lcs_add_epoll_fd(*epoll_fd, g_cli_server_fd, LCS_EPOLL_CLI_SERVER_LISTENER) != 0 ||
         lcs_add_epoll_fd(*epoll_fd, g_tcp_fd, LCS_EPOLL_PEER) != 0 ||
         (g_metrics_fd >= 0 && lcs_add_epoll_fd(*epoll_fd, g_metrics_fd, LCS_EPOLL_METRICS) != 0))
     {
@@ -506,7 +506,7 @@ static void run_daemon_loop(int epoll_fd)
 {
     scheduler_t sched = {
         .epoll_fd = epoll_fd,
-        .local_fd = g_local_fd,
+        .cli_server_fd = g_cli_server_fd,
         .metrics_fd = g_metrics_fd,
     };
 
@@ -522,7 +522,7 @@ static void shutdown_daemon(int epoll_fd)
 {
     scheduler_t sched = {
         .epoll_fd = epoll_fd,
-        .local_fd = g_local_fd,
+        .cli_server_fd = g_cli_server_fd,
         .metrics_fd = g_metrics_fd,
     };
     resources_begin_graceful_shutdown(epoll_fd);
@@ -548,7 +548,7 @@ static void shutdown_daemon(int epoll_fd)
         if (g_state.handshakes[i].active)
             handshake_close(epoll_fd, (int)i, "shutdown");
     }
-    client_close_all(epoll_fd);
+    cli_server_close_all(epoll_fd);
     close(epoll_fd);
     close_listener_fds();
     unlink(g_state.cfg.socket_path);

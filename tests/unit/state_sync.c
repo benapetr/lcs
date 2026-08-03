@@ -5,10 +5,13 @@
 
 #include <assert.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 daemon_state_t g_state;
 static uint64_t fake_now_ms = 1000;
+static int stop_backend_result;
+static int stop_failed_count;
 
 typedef struct
 {
@@ -35,7 +38,7 @@ uint64_t lcs_now_ms(void)
 int resources_stop_local_backend(const lcs_resource_config_t *resource)
 {
     (void)resource;
-    return 0;
+    return stop_backend_result;
 }
 
 bool resources_preserve_startup_cleanup_failure(int resource_idx,
@@ -49,11 +52,13 @@ bool resources_preserve_startup_cleanup_failure(int resource_idx,
 void resources_enter_stop_failed_state(int resource_idx, uint64_t epoch,
                                        const char *reason, int epoll_fd)
 {
-    (void)resource_idx;
-    (void)epoch;
-    (void)reason;
     (void)epoll_fd;
-    assert(!"unexpected stop_failed transition");
+    stop_failed_count++;
+    g_state.resources[resource_idx].state = LCS_RES_STOP_FAILED;
+    g_state.resources[resource_idx].epoch = epoch;
+    snprintf(g_state.resources[resource_idx].conflict_reason,
+             sizeof(g_state.resources[resource_idx].conflict_reason), "%s",
+             reason);
 }
 
 void lcs_log_debug3(const char *fmt, ...)
@@ -125,6 +130,8 @@ static void assert_rejected_unchanged(unsigned char *payload, size_t len)
 static void initialize_state(size_t resource_count)
 {
     memset(&g_state, 0, sizeof(g_state));
+    stop_backend_result = 0;
+    stop_failed_count = 0;
     g_state.self_index = 0;
     g_state.instance_id = 100;
     g_state.cfg.node_count = 3;
@@ -180,6 +187,67 @@ static void test_valid_merge_rules(void)
     assert(res->owner_node == g_state.self_index);
     assert(res->epoch == 7);
     assert(res->lease_deadline_ms == 9000);
+}
+
+static void test_repeated_sync_cannot_ratchet_deadline_or_grant(void)
+{
+    initialize_state(1);
+    resource_runtime_t *res = &g_state.resources[0];
+    res->owner_node = 1;
+    res->owner_instance_id = 101;
+    res->state = LCS_RES_ACTIVE;
+    res->epoch = 5;
+    res->lease_id = 55;
+    res->lease_deadline_ms = fake_now_ms + 3000;
+
+    lease_grant_t *grant = &g_state.lease_grants[0];
+    grant->active = true;
+    grant->owner_node = 1;
+    grant->owner_instance_id = 101;
+    grant->epoch = 5;
+    grant->lease_id = 55;
+    grant->deadline_ms = fake_now_ms + 2500;
+    grant->promised_epoch = 5;
+    lease_grant_t original_grant = *grant;
+    uint64_t original_observed_deadline = res->lease_deadline_ms;
+
+    unsigned char payload[LCS_MAX_FRAME];
+    test_state_entry_t entry = active_entry(0, 1, 101, 5, 55, 5000);
+    for (int round = 0; round < 20; round++)
+    {
+        fake_now_ms += 50;
+        size_t len = encode_state(payload, &entry, 1);
+        assert(cluster_apply_state(payload, len, 2) == 0);
+        assert(res->lease_deadline_ms == original_observed_deadline);
+        assert(memcmp(grant, &original_grant, sizeof(*grant)) == 0);
+    }
+}
+
+static void test_state_apply_stop_failure_preserves_local_owner(void)
+{
+    initialize_state(1);
+    resource_runtime_t *res = &g_state.resources[0];
+    res->owner_node = g_state.self_index;
+    res->owner_instance_id = g_state.instance_id;
+    res->state = LCS_RES_ACTIVE;
+    res->epoch = 5;
+    res->lease_id = 55;
+    res->lease_deadline_ms = fake_now_ms + 3000;
+
+    test_state_entry_t entry = active_entry(0, UINT16_MAX, 0, 6, 0, 0);
+    entry.state = LCS_RES_CONFLICT;
+    entry.reason = "peer reports conflict";
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t len = encode_state(payload, &entry, 1);
+    stop_backend_result = -1;
+    assert(cluster_apply_state(payload, len, 2) == 0);
+
+    assert(stop_failed_count == 1);
+    assert(res->state == LCS_RES_STOP_FAILED);
+    assert(res->owner_node == g_state.self_index);
+    assert(res->owner_instance_id == g_state.instance_id);
+    assert(res->lease_id == 55);
+    assert(strstr(res->conflict_reason, "stop failed") != NULL);
 }
 
 static void test_invalid_entries_are_atomic(void)
@@ -267,6 +335,8 @@ static void test_duplicate_id_does_not_partially_apply(void)
 int main(void)
 {
     test_valid_merge_rules();
+    test_repeated_sync_cannot_ratchet_deadline_or_grant();
+    test_state_apply_stop_failure_preserves_local_owner();
     test_invalid_entries_are_atomic();
     test_duplicate_id_does_not_partially_apply();
     return 0;

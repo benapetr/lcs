@@ -14,9 +14,9 @@
 #define LCS_PEER_OUTBUF_SIZE  ((LCS_FRAME_HEADER_SIZE + LCS_MAX_FRAME) * 4u)
 #define LCS_HANDSHAKE_MAX     (LCS_MAX_NODES * 2)
 #define LCS_MAX_PEER_RPC_INFLIGHT 8
-#define LCS_LOCAL_CLIENT_MAX 32
-#define LCS_LOCAL_CLIENT_INBUF_SIZE  LCS_PEER_INBUF_SIZE
-#define LCS_LOCAL_CLIENT_OUTBUF_SIZE LCS_PEER_INBUF_SIZE
+#define LCS_CLI_SERVER_MAX 32
+#define LCS_CLI_SERVER_INBUF_SIZE  LCS_PEER_INBUF_SIZE
+#define LCS_CLI_SERVER_OUTBUF_SIZE LCS_PEER_INBUF_SIZE
 #define LCS_MOVE_OP_MAX 16
 #define LCS_MOVE_REQ_PAYLOAD_SIZE ((LCS_NAME_MAX + 1u) * 2u)
 #define LCS_MOVE_RESP_PAYLOAD_SIZE 256u
@@ -157,12 +157,12 @@ typedef struct
     size_t out_off;
     size_t out_len;
     bool close_after_flush;
-} local_client_runtime_t;
+} cli_server_runtime_t;
 
 typedef enum
 {
     LCS_MOVE_ORIGIN_NONE = 0,
-    LCS_MOVE_ORIGIN_LOCAL_CLIENT,
+    LCS_MOVE_ORIGIN_CLI_SERVER,
     LCS_MOVE_ORIGIN_PEER,
 } move_origin_t;
 
@@ -194,9 +194,9 @@ typedef struct move_runtime
     move_phase_t phase;
     uint64_t deadline_ms;
     uint64_t wait_until_ms;
-    int local_client_slot;
-    uint64_t local_client_id;
-    uint32_t client_seq;
+    int cli_server_slot;
+    uint64_t cli_server_id;
+    uint32_t cli_server_seq;
     int source_node_idx;
     uint32_t peer_seq;
     int resource_idx;
@@ -282,8 +282,8 @@ typedef struct
     bool no_quorum_state_cleared;
     peer_runtime_t peers[LCS_MAX_NODES];
     inbound_handshake_t handshakes[LCS_HANDSHAKE_MAX];
-    local_client_runtime_t local_clients[LCS_LOCAL_CLIENT_MAX];
-    uint64_t next_local_client_id;
+    cli_server_runtime_t cli_servers[LCS_CLI_SERVER_MAX];
+    uint64_t next_cli_server_id;
     uint64_t next_move_id;
     move_runtime_t moves[LCS_MOVE_OP_MAX];
     uint64_t next_lease_op_id;
@@ -296,12 +296,12 @@ extern daemon_state_t g_state;
 
 enum
 {
-    LCS_EPOLL_LOCAL            = 1,
+    LCS_EPOLL_CLI_SERVER_LISTENER            = 1,
     LCS_EPOLL_PEER             = 2,
     LCS_EPOLL_METRICS          = 3,
     LCS_EPOLL_PEER_CONN_BASE   = 1000,
     LCS_EPOLL_HANDSHAKE_BASE   = 5000,
-    LCS_EPOLL_LOCAL_CLIENT_BASE = 9000,
+    LCS_EPOLL_CLI_SERVER_BASE = 9000,
 };
 
 enum
