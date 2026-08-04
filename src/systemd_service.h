@@ -21,6 +21,7 @@ int lcs_systemd_service_check_async(const lcs_resource_config_t *res,
 
 /* Returns 0 while pending, 1 when complete, and -1 on waitpid failure. */
 int lcs_systemd_service_collect(pid_t pid, int *result);
+/* Requests termination; collection and reaping remain nonblocking. */
 void lcs_systemd_service_cancel(pid_t pid);
 
 #endif

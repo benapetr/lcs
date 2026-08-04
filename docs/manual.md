@@ -413,7 +413,7 @@ If a conflict is detected—even when quorum indicates this node should own the 
 
 If a resource stop cannot be confirmed, LCS does not release, ACK, or locally apply ownership that would imply the resource is safely stopped. The resource enters `stop_failed`; for services this normally requires external fencing if systemd cannot stop or prove the unit is inactive.
 
-Conflict detection is synchronous: the activation decision waits for all probes to complete. The probe count and per-probe timeout are controlled by `probe_count` and `probe_timeout_ms` in the configuration.
+Conflict detection runs in a worker while the resource remains `starting`. The daemon continues processing peer traffic and renewing the activation lease while the ARP or Neighbor Discovery probes run. Probe results are accepted only if quorum and the same lease are still valid; cancellation, lease expiry, or ownership replacement prevents the worker result from activating the VIP. The probe count and per-probe timeout are controlled by `probe_count` and `probe_timeout_ms` in the configuration.
 
 After successful activation, `lcsd` announces the VIP with a gratuitous ARP reply (IPv4) or an unsolicited Neighbor Advertisement (IPv6).
 

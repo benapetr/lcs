@@ -764,7 +764,8 @@ int lease_handle_owner_release_request(const void *payload, size_t len,
     resource_runtime_t *res = &g_state.resources[resource_id];
     if (res->owner_node != g_state.self_index ||
         res->owner_instance_id != g_state.instance_id ||
-        res->state != LCS_RES_ACTIVE ||
+        (res->state != LCS_RES_ACTIVE &&
+         res->state != LCS_RES_STARTING) ||
         res->epoch != epoch ||
         res->lease_id != lease_id)
         return -1;

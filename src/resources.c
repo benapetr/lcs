@@ -23,6 +23,54 @@
 
 static void resources_release_local_internal(int resource_idx, int epoll_fd, bool allow_hooks);
 
+static uint64_t resources_vip_probe_timeout_ms(void)
+{
+    uint64_t count = g_state.cfg.probe_count ? g_state.cfg.probe_count : 1u;
+    uint64_t per_probe = g_state.cfg.probe_timeout_ms ?
+                         g_state.cfg.probe_timeout_ms : 300u;
+    uint64_t timeout = count * per_probe + 1000u;
+    return timeout < 5000u ? 5000u : timeout;
+}
+
+static void resources_clear_vip_probe(resource_runtime_t *res)
+{
+    memset(&res->vip_probe, 0, sizeof(res->vip_probe));
+}
+
+static void resources_cancel_vip_probe(resource_runtime_t *res)
+{
+    if (res->vip_probe.pid <= 0)
+        return;
+    if (!res->vip_probe.kill_sent)
+    {
+        lcs_vip_probe_cancel(res->vip_probe.pid);
+        lcs_log_debug("requested asynchronous VIP probe cancellation pid=%ld", (long)res->vip_probe.pid);
+    }
+    res->vip_probe.deadline_ms = 0;
+    res->vip_probe.kill_sent = true;
+    res->vip_probe.discard_result = true;
+}
+
+static int resources_start_vip_probe(int resource_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
+{
+    resource_runtime_t *res = &g_state.resources[resource_idx];
+    if (res->vip_probe.pid > 0)
+        return -1;
+    pid_t pid = -1;
+    if (lcs_vip_conflict_check_async(&g_state.cfg, &g_state.cfg.resources[resource_idx], &pid) != 0)
+        return -1;
+    res->vip_probe.pid = pid;
+    res->vip_probe.deadline_ms = lcs_now_ms() + resources_vip_probe_timeout_ms();
+    res->vip_probe.epoch = epoch;
+    res->vip_probe.lease_id = lease_id;
+    res->vip_probe.kill_sent = false;
+    res->vip_probe.discard_result = false;
+    res->state = LCS_RES_STARTING;
+    lcs_log_debug("started asynchronous VIP conflict probe resource=%s pid=%ld", g_state.cfg.resources[resource_idx].name, (long)pid);
+    peer_broadcast_state_sync(epoll_fd);
+    return 0;
+}
+
 uint32_t resources_service_operation_timeout_ms(void)
 {
     uint32_t timeout = g_state.cfg.hook_timeout_ms;
@@ -31,30 +79,42 @@ uint32_t resources_service_operation_timeout_ms(void)
 
 static void resources_clear_service_operation(resource_runtime_t *res)
 {
-    res->service_pid = 0;
-    res->service_op = LCS_SERVICE_OP_NONE;
-    res->service_deadline_ms = 0;
-    res->service_epoch = 0;
-    res->service_lease_id = 0;
-    res->service_stop_post_hook = false;
-    res->service_handoff = false;
-    res->service_handoff_source_node = -1;
-    res->service_handoff_response_seq = 0;
+    res->service.pid = 0;
+    res->service.op = LCS_SERVICE_OP_NONE;
+    res->service.next_op = LCS_SERVICE_OP_NONE;
+    res->service.deadline_ms = 0;
+    res->service.kill_sent = false;
+    res->service.epoch = 0;
+    res->service.lease_id = 0;
+    res->service.stop_post_hook = false;
+    res->service.handoff = false;
+    res->service.handoff_source_node = -1;
+    res->service.handoff_response_seq = 0;
 }
 
-static void resources_cancel_service_operation(resource_runtime_t *res)
+static void resources_cancel_service_operation(resource_runtime_t *res, resource_service_op_type_t next_op)
 {
-    if (res->service_pid > 0)
-        lcs_systemd_service_cancel(res->service_pid);
-    resources_clear_service_operation(res);
+    if (res->service.pid <= 0)
+    {
+        resources_clear_service_operation(res);
+        return;
+    }
+    if (!res->service.kill_sent)
+    {
+        lcs_systemd_service_cancel(res->service.pid);
+        lcs_log_debug("requested asynchronous systemd worker cancellation pid=%ld", (long)res->service.pid);
+    }
+    res->service.op = LCS_SERVICE_OP_CANCELLING;
+    res->service.next_op = next_op;
+    res->service.deadline_ms = 0;
+    res->service.kill_sent = true;
 }
 
-static int resources_start_service_operation(int resource_idx,
-                                             resource_service_op_type_t type)
+static int resources_start_service_operation(int resource_idx, resource_service_op_type_t type)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
     const lcs_resource_config_t *resource = &g_state.cfg.resources[resource_idx];
-    if (res->service_pid > 0 || res->service_op != LCS_SERVICE_OP_NONE)
+    if (res->service.pid > 0 || res->service.op != LCS_SERVICE_OP_NONE)
         return -1;
 
     pid_t pid = -1;
@@ -68,12 +128,12 @@ static int resources_start_service_operation(int resource_idx,
     if (rc != 0)
         return -1;
 
-    res->service_pid = pid;
-    res->service_op = type;
-    res->service_deadline_ms = lcs_now_ms() +
-                               resources_service_operation_timeout_ms();
-    lcs_log_debug("started asynchronous systemd operation resource=%s op=%u pid=%ld",
-                  resource->name, (unsigned)type, (long)pid);
+    res->service.pid = pid;
+    res->service.op = type;
+    res->service.next_op = LCS_SERVICE_OP_NONE;
+    res->service.deadline_ms = lcs_now_ms() + resources_service_operation_timeout_ms();
+    res->service.kill_sent = false;
+    lcs_log_debug("started asynchronous systemd operation resource=%s op=%u pid=%ld", resource->name, (unsigned)type, (long)pid);
     return 0;
 }
 
@@ -131,12 +191,10 @@ static int resource_start_local(const lcs_resource_config_t *res)
         case LCS_RESOURCE_VIP:
             return lcs_vip_add(res);
         case LCS_RESOURCE_SERVICE:
-            lcs_log_warn("synchronous service start requested unexpectedly for %s",
-                         res->name);
+            lcs_log_warn("synchronous service start requested unexpectedly for %s", res->name);
             return -1;
         default:
-            lcs_log_warn("cannot start resource %s: unknown resource type %u",
-                         res->name, (unsigned)res->type);
+            lcs_log_warn("cannot start resource %s: unknown resource type %u", res->name, (unsigned)res->type);
             return -1;
     }
 }
@@ -148,12 +206,10 @@ int resources_stop_local_backend(const lcs_resource_config_t *res)
         case LCS_RESOURCE_VIP:
             return lcs_vip_del(res);
         case LCS_RESOURCE_SERVICE:
-            lcs_log_warn("synchronous service stop requested unexpectedly for %s",
-                         res->name);
+            lcs_log_warn("synchronous service stop requested unexpectedly for %s", res->name);
             return -1;
         default:
-            lcs_log_warn("cannot stop resource %s: unknown resource type %u",
-                         res->name, (unsigned)res->type);
+            lcs_log_warn("cannot stop resource %s: unknown resource type %u", res->name, (unsigned)res->type);
             return -1;
     }
 }
@@ -167,23 +223,7 @@ static int resource_is_local_active(const lcs_resource_config_t *res)
         case LCS_RESOURCE_SERVICE:
             return -1;
         default:
-            lcs_log_warn("cannot inspect resource %s: unknown resource type %u",
-                         res->name, (unsigned)res->type);
-            return -1;
-    }
-}
-
-static int resource_conflict_check(const lcs_resource_config_t *res)
-{
-    switch (res->type)
-    {
-        case LCS_RESOURCE_VIP:
-            return lcs_vip_conflict_check(&g_state.cfg, res);
-        case LCS_RESOURCE_SERVICE:
-            return 0;
-        default:
-            lcs_log_warn("cannot conflict-check resource %s: unknown resource type %u",
-                         res->name, (unsigned)res->type);
+            lcs_log_warn("cannot inspect resource %s: unknown resource type %u", res->name, (unsigned)res->type);
             return -1;
     }
 }
@@ -195,39 +235,31 @@ static void resource_announce(const lcs_resource_config_t *res)
         case LCS_RESOURCE_VIP:
             if (lcs_vip_announce(&g_state.cfg, res) != 0)
             {
-                lcs_log_warn("failed to send VIP announcement for %s on %s",
-                             res->address, res->interface);
+                lcs_log_warn("failed to send VIP announcement for %s on %s", res->address, res->interface);
             }
             return;
         case LCS_RESOURCE_SERVICE:
             return;
         default:
-            lcs_log_warn("cannot announce resource %s: unknown resource type %u",
-                         res->name, (unsigned)res->type);
+            lcs_log_warn("cannot announce resource %s: unknown resource type %u", res->name, (unsigned)res->type);
             return;
     }
 }
 
 static void resources_clear_hook(resource_runtime_t *res)
 {
-    res->hook_pid = 0;
-    res->hook_type = LCS_HOOK_NONE;
-    res->hook_deadline_ms = 0;
-    res->hook_epoch = 0;
-    res->hook_lease_id = 0;
+    memset(&res->hook, 0, sizeof(res->hook));
 }
 
 static void resources_cancel_hook(int resource_idx)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
-    if (res->hook_pid <= 0)
+    if (res->hook.pid <= 0)
         return;
 
-    lcs_log_warn("cancelling %s hook for resource %s pid=%ld",
-                 resources_hook_name(res->hook_type), g_state.cfg.resources[resource_idx].name,
-                 (long)res->hook_pid);
-    kill(res->hook_pid, SIGKILL);
-    waitpid(res->hook_pid, NULL, 0);
+    lcs_log_warn("cancelling %s hook for resource %s pid=%ld", resources_hook_name(res->hook.type), g_state.cfg.resources[resource_idx].name, (long)res->hook.pid);
+    kill(res->hook.pid, SIGKILL);
+    waitpid(res->hook.pid, NULL, 0);
     resources_clear_hook(res);
 }
 
@@ -239,11 +271,11 @@ static int resources_start_hook(int resource_idx, resource_hook_type_t type, uin
     if (!*path)
         return 1;
 
-    if (res->hook_pid > 0)
+    if (res->hook.pid > 0)
     {
         lcs_log_warn("cannot start %s hook for resource %s: %s hook pid=%ld still running",
-                     resources_hook_name(type), resource->name, resources_hook_name(res->hook_type),
-                     (long)res->hook_pid);
+                     resources_hook_name(type), resource->name, resources_hook_name(res->hook.type),
+                     (long)res->hook.pid);
         return -1;
     }
 
@@ -277,13 +309,12 @@ static int resources_start_hook(int resource_idx, resource_hook_type_t type, uin
         _exit(127);
     }
 
-    res->hook_pid = pid;
-    res->hook_type = type;
-    res->hook_deadline_ms = lcs_now_ms() + g_state.cfg.hook_timeout_ms;
-    res->hook_epoch = epoch;
-    res->hook_lease_id = lease_id;
-    lcs_log_info("started %s hook for resource %s pid=%ld path=%s timeout_ms=%u",
-                 resources_hook_name(type), resource->name, (long)pid, path, g_state.cfg.hook_timeout_ms);
+    res->hook.pid = pid;
+    res->hook.type = type;
+    res->hook.deadline_ms = lcs_now_ms() + g_state.cfg.hook_timeout_ms;
+    res->hook.epoch = epoch;
+    res->hook.lease_id = lease_id;
+    lcs_log_info("started %s hook for resource %s pid=%ld path=%s timeout_ms=%u", resources_hook_name(type), resource->name, (long)pid, path, g_state.cfg.hook_timeout_ms);
     return 0;
 }
 
@@ -356,8 +387,7 @@ static bool resources_release_local_dependents(int resource_idx, int epoll_fd, b
         if (!depends || !resource_locally_owned_running((int)i))
             continue;
 
-        lcs_log_info("releasing dependent resource %s before %s",
-                     candidate->name, g_state.cfg.resources[resource_idx].name);
+        lcs_log_info("releasing dependent resource %s before %s", candidate->name, g_state.cfg.resources[resource_idx].name);
         resources_release_local_internal((int)i, epoll_fd, allow_hooks);
         if (resource_locally_owned_running((int)i))
             pending = true;
@@ -365,27 +395,21 @@ static bool resources_release_local_dependents(int resource_idx, int epoll_fd, b
     return pending;
 }
 
-static void resources_mark_local_active(int resource_idx, uint64_t epoch,
-                                        uint64_t lease_id, int epoll_fd)
+static void resources_mark_local_active(int resource_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
     const lcs_resource_config_t *resource = &g_state.cfg.resources[resource_idx];
     res->state = LCS_RES_ACTIVE;
     res->next_activation_attempt_ms = 0;
-    res->next_service_health_ms = lcs_now_ms() + 1000u;
+    res->service.next_health_ms = lcs_now_ms() + 1000u;
     resource_announce(resource);
     if (res->failover_pending)
     {
         res->failover_count++;
         res->failover_pending = false;
-        lcs_log_info("counted failover for resource %s total=%llu",
-                     resource->name,
-                     (unsigned long long)res->failover_count);
+        lcs_log_info("counted failover for resource %s total=%llu", resource->name, (unsigned long long)res->failover_count);
     }
-    lcs_log_info("activated %s %s on %s epoch=%llu",
-                 resource_kind(resource), resource->name,
-                 g_state.cfg.nodes[g_state.self_index].name,
-                 (unsigned long long)epoch);
+    lcs_log_info("activated %s %s on %s epoch=%llu", resource_kind(resource), resource->name, g_state.cfg.nodes[g_state.self_index].name, (unsigned long long)epoch);
     peer_broadcast_state_sync(epoll_fd);
     resources_start_hook(resource_idx, LCS_HOOK_POST_START, epoch, lease_id);
 }
@@ -394,70 +418,51 @@ static int resources_complete_local_activation(int resource_idx, uint64_t epoch,
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
     uint64_t now = lcs_now_ms();
-    // TODO: VIP conflict probing is intentionally still synchronous. Making ARP/ND
-    // probes fully scheduler-driven would require a separate async probe state
-    // machine for little practical benefit while probe waits remain short.
     const lcs_resource_config_t *resource = &g_state.cfg.resources[resource_idx];
-    int conflict_rc = resource_conflict_check(resource);
-    if (conflict_rc > 0)
-    {
-        lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
-        resources_enter_conflict_state(resource_idx, epoch + 1, "VIP answered conflict probe before activation");
-        peer_broadcast_state_sync(epoll_fd);
-        return -1;
-    }
-    if (conflict_rc < 0)
-    {
-        lcs_log_warn("auto-place failed %s %s: conflict probe failed", resource_kind(resource), resource->name);
-        lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
-        resources_clear_local_lease(res, epoch);
-        res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
-        return -1;
-    }
     if (resource->type == LCS_RESOURCE_SERVICE)
     {
         res->state = LCS_RES_STARTING;
-        res->service_epoch = epoch;
-        res->service_lease_id = lease_id;
-        if (resources_start_service_operation(resource_idx,
-                                              LCS_SERVICE_OP_START) == 0)
+        res->service.epoch = epoch;
+        res->service.lease_id = lease_id;
+        if (resources_start_service_operation(resource_idx, LCS_SERVICE_OP_START) == 0)
+        {
+            peer_broadcast_state_sync(epoll_fd);
             return 0;
-        lcs_log_warn("auto-place failed service %s: failed to start asynchronous systemd operation",
-                     resource->name);
-        lease_release_majority(resource_idx, g_state.self_index, epoch,
-                               lease_id, epoll_fd);
-        resources_clear_local_lease(res, epoch);
-        res->next_activation_attempt_ms = now +
-                                          lcs_jittered_delay_ms(g_state.cfg.lease_ms);
-        return -1;
-    }
-    if (resource_start_local(resource) != 0)
-    {
-        lcs_log_warn("auto-place failed %s %s: failed to start",
-                     resource_kind(resource), resource->name);
+        }
+        lcs_log_warn("auto-place failed service %s: failed to start asynchronous systemd operation", resource->name);
         lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
         return -1;
     }
-    resources_mark_local_active(resource_idx, epoch, lease_id, epoll_fd);
-    return 0;
+    if (resource->type == LCS_RESOURCE_VIP)
+    {
+        if (resources_start_vip_probe(resource_idx, epoch, lease_id, epoll_fd) == 0)
+            return 0;
+        lcs_log_warn("auto-place failed VIP %s: failed to start asynchronous conflict probe", resource->name);
+        lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
+        resources_clear_local_lease(res, epoch);
+        res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
+        return -1;
+    }
+    lcs_log_warn("auto-place failed resource %s: unknown resource type %u", resource->name, (unsigned)resource->type);
+    return -1;
 }
 
-static int resources_begin_service_stop(int resource_idx,
-                                        resource_service_op_type_t type,
-                                        uint64_t epoch, uint64_t lease_id,
-                                        bool post_hook)
+static int resources_begin_service_stop(int resource_idx, resource_service_op_type_t type, uint64_t epoch, uint64_t lease_id, bool post_hook)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
-    if (res->service_pid > 0)
-        resources_cancel_service_operation(res);
+    res->service.epoch = epoch;
+    res->service.lease_id = lease_id;
+    res->service.stop_post_hook = post_hook;
+    res->state = LCS_RES_STOPPING;
+    if (res->service.pid > 0)
+    {
+        resources_cancel_service_operation(res, type);
+        return 0;
+    }
     if (resources_start_service_operation(resource_idx, type) != 0)
         return -1;
-    res->service_epoch = epoch;
-    res->service_lease_id = lease_id;
-    res->service_stop_post_hook = post_hook;
-    res->state = LCS_RES_STOPPING;
     return 0;
 }
 
@@ -468,6 +473,8 @@ static void resources_release_local_internal(int resource_idx, int epoll_fd, boo
     uint64_t release_epoch = old_epoch + 1;
     uint64_t old_lease_id = res->lease_id;
     bool locally_owned = res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id;
+
+    resources_cancel_vip_probe(res);
 
     if (!locally_owned)
     {
@@ -480,7 +487,7 @@ static void resources_release_local_internal(int resource_idx, int epoll_fd, boo
 
     if (!allow_hooks)
         resources_cancel_hook(resource_idx);
-    else if (res->hook_pid > 0 && res->hook_type != LCS_HOOK_PRE_STOP)
+    else if (res->hook.pid > 0 && res->hook.type != LCS_HOOK_PRE_STOP)
         resources_cancel_hook(resource_idx);
     if (allow_hooks && res->state == LCS_RES_ACTIVE && *g_state.cfg.resources[resource_idx].pre_stop)
     {
@@ -496,27 +503,18 @@ static void resources_release_local_internal(int resource_idx, int epoll_fd, boo
          res->state == LCS_RES_STOPPING ||
          res->state == LCS_RES_STOP_FAILED))
     {
-        if (res->service_op == LCS_SERVICE_OP_STOP ||
-            res->service_op == LCS_SERVICE_OP_ROLLBACK_STOP)
+        if (res->service.op == LCS_SERVICE_OP_STOP || res->service.op == LCS_SERVICE_OP_ROLLBACK_STOP)
             return;
-        if (resources_begin_service_stop(resource_idx, LCS_SERVICE_OP_STOP,
-                                         old_epoch, old_lease_id,
-                                         allow_hooks) != 0)
-            resources_enter_stop_failed_state(resource_idx, release_epoch,
-                                             "failed to start asynchronous systemd stop; service may still be running",
-                                             epoll_fd);
+        if (resources_begin_service_stop(resource_idx, LCS_SERVICE_OP_STOP, old_epoch, old_lease_id, allow_hooks) != 0)
+            resources_enter_stop_failed_state(resource_idx, release_epoch, "failed to start asynchronous systemd stop; service may still be running", epoll_fd);
         return;
     }
 
-    if (res->state == LCS_RES_ACTIVE ||
-        res->state == LCS_RES_STOPPING ||
-        res->state == LCS_RES_STOP_FAILED)
+    if (res->state == LCS_RES_ACTIVE || res->state == LCS_RES_STOPPING || res->state == LCS_RES_STOP_FAILED)
     {
         if (resources_stop_local_backend(&g_state.cfg.resources[resource_idx]) != 0)
         {
-            resources_enter_stop_failed_state(resource_idx, release_epoch,
-                                             "local resource stop failed; node may still be running resource",
-                                             epoll_fd);
+            resources_enter_stop_failed_state(resource_idx, release_epoch, "local resource stop failed; node may still be running resource", epoll_fd);
             return;
         }
     }
@@ -559,7 +557,11 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
             }
         }
         resources_cancel_hook((int)i);
+        resources_cancel_vip_probe(&g_state.resources[i]);
+        resource_vip_probe_runtime_t vip_probe =
+            g_state.resources[i].vip_probe;
         memset(&g_state.resources[i], 0, sizeof(g_state.resources[i]));
+        g_state.resources[i].vip_probe = vip_probe;
         g_state.resources[i].owner_node = -1;
         g_state.resources[i].state = LCS_RES_STOPPED;
         g_state.resources[i].epoch = epoch;
@@ -636,9 +638,9 @@ static int resources_try_startup_cleanup(int resource_idx)
     const lcs_resource_config_t *resource = &g_state.cfg.resources[resource_idx];
     if (resource->type == LCS_RESOURCE_SERVICE)
     {
-        if (res->service_op == LCS_SERVICE_OP_STARTUP_CLEANUP)
+        if (res->service.op == LCS_SERVICE_OP_STARTUP_CLEANUP)
             return -1;
-        if (res->service_op != LCS_SERVICE_OP_NONE ||
+        if (res->service.op != LCS_SERVICE_OP_NONE ||
             resources_start_service_operation(resource_idx,
                                                LCS_SERVICE_OP_STARTUP_CLEANUP) != 0)
             return resources_finish_startup_cleanup(resource_idx, false);
@@ -689,7 +691,7 @@ bool resources_startup_cleanup_complete(void)
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         if (g_state.resources[i].startup_cleanup_failed ||
-            g_state.resources[i].service_op == LCS_SERVICE_OP_STARTUP_CLEANUP)
+            g_state.resources[i].service.op == LCS_SERVICE_OP_STARTUP_CLEANUP)
             return false;
     }
     return true;
@@ -723,9 +725,8 @@ void resources_enter_conflict_state(int resource_idx, uint64_t epoch, const char
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
     lease_cancel_operations(resource_idx);
-    if (res->owner_node == g_state.self_index &&
-        res->owner_instance_id == g_state.instance_id &&
-        res->state == LCS_RES_ACTIVE)
+    resources_cancel_vip_probe(res);
+    if (res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id && res->state == LCS_RES_ACTIVE)
         resources_stop_local_backend(&g_state.cfg.resources[resource_idx]);
     res->epoch = epoch > res->epoch ? epoch : res->epoch + 1;
     res->owner_node = -1;
@@ -735,11 +736,8 @@ void resources_enter_conflict_state(int resource_idx, uint64_t epoch, const char
     res->lease_deadline_ms = 0;
     res->renew_after_ms = 0;
     res->next_activation_attempt_ms = 0;
-    snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",
-             reason ? reason : "VIP conflict detected");
-    lcs_log_warn("resource %s entered conflict state at epoch=%llu: %s; admin clear required",
-                 g_state.cfg.resources[resource_idx].name, (unsigned long long)res->epoch,
-                 res->conflict_reason);
+    snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s", reason ? reason : "VIP conflict detected");
+    lcs_log_warn("resource %s entered conflict state at epoch=%llu: %s; admin clear required", g_state.cfg.resources[resource_idx].name, (unsigned long long)res->epoch, res->conflict_reason);
 }
 
 void resources_enter_stop_failed_state(int resource_idx, uint64_t epoch, const char *reason, int epoll_fd)
@@ -747,14 +745,14 @@ void resources_enter_stop_failed_state(int resource_idx, uint64_t epoch, const c
     resource_runtime_t *res = &g_state.resources[resource_idx];
     lease_cancel_operations(resource_idx);
     resources_cancel_hook(resource_idx);
-    resources_cancel_service_operation(res);
+    resources_cancel_vip_probe(res);
+    resources_cancel_service_operation(res, LCS_SERVICE_OP_NONE);
     res->epoch = epoch > res->epoch ? epoch : res->epoch + 1;
     res->state = LCS_RES_STOP_FAILED;
     res->lease_deadline_ms = 0;
     res->renew_after_ms = 0;
     res->next_activation_attempt_ms = 0;
-    snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",
-             reason ? reason : "local resource stop failed; node may still be running resource");
+    snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s", reason ? reason : "local resource stop failed; node may still be running resource");
     lcs_log_warn("resource %s entered stop_failed state at epoch=%llu: %s; retry stop or fence node",
                  g_state.cfg.resources[resource_idx].name, (unsigned long long)res->epoch,
                  res->conflict_reason);
@@ -762,38 +760,35 @@ void resources_enter_stop_failed_state(int resource_idx, uint64_t epoch, const c
         peer_broadcast_state_sync(epoll_fd);
 }
 
-int resources_begin_state_replacement(int resource_idx, int owner_node,
-                                      uint64_t owner_instance_id,
-                                      lcs_resource_state_t state,
-                                      uint64_t epoch, uint64_t lease_id,
-                                      uint64_t deadline_ms,
-                                      const char *reason, int epoll_fd)
+int resources_begin_state_replacement(int resource_idx, int owner_node, uint64_t owner_instance_id, lcs_resource_state_t state, uint64_t epoch, uint64_t lease_id, uint64_t deadline_ms, const char *reason, int epoll_fd)
 {
     if (g_state.cfg.resources[resource_idx].type != LCS_RESOURCE_SERVICE)
+    {
+        resources_cancel_vip_probe(&g_state.resources[resource_idx]);
         return 0;
+    }
 
     resource_runtime_t *res = &g_state.resources[resource_idx];
     lease_cancel_operations(resource_idx);
     resources_cancel_hook(resource_idx);
-    if (res->service_pid > 0)
-        resources_cancel_service_operation(res);
-    if (resources_start_service_operation(resource_idx,
-                                          LCS_SERVICE_OP_STATE_REPLACE) != 0)
+    res->service.replacement.owner_node = owner_node;
+    res->service.replacement.owner_instance_id = owner_instance_id;
+    res->service.replacement.state = state;
+    res->service.replacement.epoch = epoch;
+    res->service.replacement.lease_id = lease_id;
+    res->service.replacement.deadline_ms = deadline_ms;
+    snprintf(res->service.replacement.reason, sizeof(res->service.replacement.reason), "%s", reason ? reason : "");
+    res->state = LCS_RES_STOPPING;
+    if (res->service.pid > 0)
     {
-        resources_enter_stop_failed_state(resource_idx, epoch + 1,
-                                         "failed to start asynchronous systemd stop while replacing local ownership",
-                                         epoll_fd);
+        resources_cancel_service_operation(res, LCS_SERVICE_OP_STATE_REPLACE);
+        return 1;
+    }
+    if (resources_start_service_operation(resource_idx, LCS_SERVICE_OP_STATE_REPLACE) != 0)
+    {
+        resources_enter_stop_failed_state(resource_idx, epoch + 1, "failed to start asynchronous systemd stop while replacing local ownership", epoll_fd);
         return -1;
     }
-    res->service_replace_owner_node = owner_node;
-    res->service_replace_owner_instance_id = owner_instance_id;
-    res->service_replace_state = state;
-    res->service_replace_epoch = epoch;
-    res->service_replace_lease_id = lease_id;
-    res->service_replace_deadline_ms = deadline_ms;
-    snprintf(res->service_replace_reason,
-             sizeof(res->service_replace_reason), "%s", reason ? reason : "");
-    res->state = LCS_RES_STOPPING;
     return 1;
 }
 
@@ -803,9 +798,7 @@ int resources_activate_acquired_local(int resource_idx, uint64_t epoch, uint64_t
     uint64_t now = lcs_now_ms();
     if (!resource_dependencies_active_locally(resource_idx))
     {
-        lcs_log_warn("auto-place failed %s %s: dependencies are not active locally",
-                     resource_kind(&g_state.cfg.resources[resource_idx]),
-                     g_state.cfg.resources[resource_idx].name);
+        lcs_log_warn("auto-place failed %s %s: dependencies are not active locally", resource_kind(&g_state.cfg.resources[resource_idx]), g_state.cfg.resources[resource_idx].name);
         lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
@@ -815,7 +808,10 @@ int resources_activate_acquired_local(int resource_idx, uint64_t epoch, uint64_t
     {
         res->state = LCS_RES_STARTING;
         if (resources_start_hook(resource_idx, LCS_HOOK_PRE_START, epoch, lease_id) == 0)
+        {
+            peer_broadcast_state_sync(epoll_fd);
             return 0;
+        }
         lcs_log_warn("auto-place failed resource %s: failed to start pre-start hook", g_state.cfg.resources[resource_idx].name);
         lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
@@ -836,35 +832,28 @@ int resources_activate_local(int resource_idx, uint64_t epoch, int epoll_fd)
     uint64_t now = lcs_now_ms();
     if (res->disabled)
     {
-        lcs_log_debug("refusing to activate resource %s because it is administratively stopped",
-                      g_state.cfg.resources[resource_idx].name);
+        lcs_log_debug("refusing to activate resource %s because it is administratively stopped", g_state.cfg.resources[resource_idx].name);
         return -1;
     }
     if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
     {
-        lcs_log_warn("refusing to activate resource %s because it is in %s state",
-                     g_state.cfg.resources[resource_idx].name,
-                     lcs_resource_state_name(res->state));
+        lcs_log_warn("refusing to activate resource %s because it is in %s state", g_state.cfg.resources[resource_idx].name, lcs_resource_state_name(res->state));
         return -1;
     }
     if (res->next_activation_attempt_ms && now < res->next_activation_attempt_ms)
     {
-        lcs_log_debug2("auto-place skip resource %s: activation retry backoff %llu ms remaining",
-                       g_state.cfg.resources[resource_idx].name,
-                       (unsigned long long)(res->next_activation_attempt_ms - now));
+        lcs_log_debug2("auto-place skip resource %s: activation retry backoff %llu ms remaining", g_state.cfg.resources[resource_idx].name, (unsigned long long)(res->next_activation_attempt_ms - now));
         return -1;
     }
     if (!resource_dependencies_active_locally(resource_idx))
     {
-        lcs_log_debug2("auto-place skip resource %s: dependencies are not active locally",
-                       g_state.cfg.resources[resource_idx].name);
+        lcs_log_debug2("auto-place skip resource %s: dependencies are not active locally", g_state.cfg.resources[resource_idx].name);
         return -1;
     }
     uint64_t lease_id = lcs_random_u64();
     if (lease_start_acquire(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd) != 0)
     {
-        lcs_log_debug2("auto-place failed resource %s: could not start majority lease acquire for epoch=%llu",
-                       g_state.cfg.resources[resource_idx].name, (unsigned long long)epoch);
+        lcs_log_debug2("auto-place failed resource %s: could not start majority lease acquire for epoch=%llu", g_state.cfg.resources[resource_idx].name, (unsigned long long)epoch);
         res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
         return -1;
     }
@@ -876,9 +865,7 @@ void resources_release_local(int resource_idx, int epoll_fd)
     resources_release_local_internal(resource_idx, epoll_fd, true);
 }
 
-int resources_release_for_handoff(int resource_idx, uint64_t epoch,
-                                  uint64_t lease_id, int source_node_idx,
-                                  uint32_t response_seq, int epoll_fd)
+int resources_release_for_handoff(int resource_idx, uint64_t epoch, uint64_t lease_id, int source_node_idx, uint32_t response_seq, int epoll_fd)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
 
@@ -888,24 +875,19 @@ int resources_release_for_handoff(int resource_idx, uint64_t epoch,
     resources_cancel_hook(resource_idx);
     if (g_state.cfg.resources[resource_idx].type == LCS_RESOURCE_SERVICE)
     {
-        if (resources_begin_service_stop(resource_idx, LCS_SERVICE_OP_STOP,
-                                         epoch, lease_id, true) != 0)
+        if (resources_begin_service_stop(resource_idx, LCS_SERVICE_OP_STOP, epoch, lease_id, true) != 0)
         {
-            resources_enter_stop_failed_state(resource_idx, epoch + 1,
-                                             "failed to start asynchronous systemd stop during handoff",
-                                             epoll_fd);
+            resources_enter_stop_failed_state(resource_idx, epoch + 1, "failed to start asynchronous systemd stop during handoff", epoll_fd);
             return -1;
         }
-        res->service_handoff = true;
-        res->service_handoff_source_node = source_node_idx;
-        res->service_handoff_response_seq = response_seq;
+        res->service.handoff = true;
+        res->service.handoff_source_node = source_node_idx;
+        res->service.handoff_response_seq = response_seq;
         return 1;
     }
     if (resources_stop_local_backend(&g_state.cfg.resources[resource_idx]) != 0)
     {
-        resources_enter_stop_failed_state(resource_idx, epoch + 1,
-                                         "local resource stop failed during handoff; node may still be running resource",
-                                         epoll_fd);
+        resources_enter_stop_failed_state(resource_idx, epoch + 1, "local resource stop failed during handoff; node may still be running resource", epoll_fd);
         return -1;
     }
 
@@ -933,8 +915,7 @@ void resources_begin_graceful_shutdown(int epoll_fd)
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         resource_runtime_t *res = &g_state.resources[i];
-        if (res->owner_node == g_state.self_index &&
-            res->owner_instance_id == g_state.instance_id)
+        if (res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id)
         {
             res->shutdown_release_required = true;
             res->shutdown_release_confirmed = false;
@@ -951,7 +932,7 @@ void resources_progress_graceful_shutdown(int epoll_fd)
         if (res->shutdown_release_required &&
             res->owner_node == g_state.self_index &&
             res->owner_instance_id == g_state.instance_id &&
-            res->hook_pid <= 0 &&
+            res->hook.pid <= 0 &&
             res->state != LCS_RES_STOPPING &&
             res->state != LCS_RES_STOP_FAILED)
         {
@@ -969,7 +950,7 @@ bool resources_graceful_shutdown_complete(void)
         const resource_runtime_t *res = &g_state.resources[i];
         if (!res->shutdown_release_required)
             continue;
-        if (res->hook_pid > 0 ||
+        if (res->hook.pid > 0 ||
             (res->owner_node == g_state.self_index &&
              res->owner_instance_id == g_state.instance_id) ||
             !res->shutdown_release_confirmed)
@@ -983,33 +964,22 @@ void resources_finish_graceful_shutdown(void)
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         resources_cancel_hook((int)i);
-        resources_cancel_service_operation(&g_state.resources[i]);
+        resources_cancel_vip_probe(&g_state.resources[i]);
+        resources_cancel_service_operation(&g_state.resources[i], LCS_SERVICE_OP_NONE);
     }
 }
 
-static void resources_start_activation_rollback(int resource_idx,
-                                                uint64_t epoch,
-                                                uint64_t lease_id,
-                                                int epoll_fd)
+static void resources_start_activation_rollback(int resource_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
-    if (resources_begin_service_stop(resource_idx,
-                                     LCS_SERVICE_OP_ROLLBACK_STOP,
-                                     epoch, lease_id, false) == 0)
+    if (resources_begin_service_stop(resource_idx, LCS_SERVICE_OP_ROLLBACK_STOP, epoch, lease_id, false) == 0)
     {
-        lcs_log_warn("service %s start was not confirmed; stopping it before releasing lease",
-                     g_state.cfg.resources[resource_idx].name);
+        lcs_log_warn("service %s start was not confirmed; stopping it before releasing lease", g_state.cfg.resources[resource_idx].name);
         return;
     }
-    resources_enter_stop_failed_state(resource_idx, epoch + 1,
-                                     "service start was not confirmed and rollback stop could not be started",
-                                     epoll_fd);
+    resources_enter_stop_failed_state(resource_idx, epoch + 1, "service start was not confirmed and rollback stop could not be started", epoll_fd);
 }
 
-static void resources_finish_service_stop(int resource_idx, bool handoff,
-                                          int handoff_source,
-                                          uint32_t handoff_seq,
-                                          uint64_t epoch, uint64_t lease_id,
-                                          bool post_hook, int epoll_fd)
+static void resources_finish_service_stop(int resource_idx, bool handoff, int handoff_source, uint32_t handoff_seq, uint64_t epoch, uint64_t lease_id, bool post_hook, int epoll_fd)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
     if (handoff)
@@ -1021,27 +991,123 @@ static void resources_finish_service_stop(int resource_idx, bool handoff,
         res->lease_deadline_ms = 0;
         res->renew_after_ms = 0;
         res->conflict_reason[0] = '\0';
-        res->next_activation_attempt_ms = lcs_now_ms() +
-                                          lcs_jittered_delay_ms(g_state.cfg.lease_ms);
+        res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
         lease_cancel_operations(resource_idx);
         if (post_hook)
-            resources_start_hook(resource_idx, LCS_HOOK_POST_STOP, epoch,
-                                 lease_id);
-        if (lease_complete_owner_release(resource_idx, g_state.self_index,
-                                         epoch, lease_id, handoff_source,
-                                         handoff_seq, epoll_fd) < 0)
-            (void)peer_queue_simple_resp(epoll_fd, handoff_source, handoff_seq,
-                                         LCS_MSG_OWNER_RELEASE_RESP, -1,
-                                         "release quorum operation could not be started");
+            resources_start_hook(resource_idx, LCS_HOOK_POST_STOP, epoch, lease_id);
+        if (lease_complete_owner_release(resource_idx, g_state.self_index, epoch, lease_id, handoff_source, handoff_seq, epoll_fd) < 0)
+            (void)peer_queue_simple_resp(epoll_fd, handoff_source, handoff_seq, LCS_MSG_OWNER_RELEASE_RESP, -1, "release quorum operation could not be started");
         return;
     }
 
-    lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id,
-                           epoll_fd);
+    lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
     resources_clear_local_lease(res, resources_next_epoch(epoch));
     if (post_hook)
-        resources_start_hook(resource_idx, LCS_HOOK_POST_STOP,
-                             resources_next_epoch(epoch), lease_id);
+        resources_start_hook(resource_idx, LCS_HOOK_POST_STOP, resources_next_epoch(epoch), lease_id);
+}
+
+static bool resources_activation_lease_current(const resource_runtime_t *res, uint64_t epoch, uint64_t lease_id, uint64_t now)
+{
+    return res->owner_node == g_state.self_index &&
+           res->owner_instance_id == g_state.instance_id &&
+           res->state == LCS_RES_STARTING &&
+           res->epoch == epoch &&
+           res->lease_id == lease_id &&
+           res->lease_deadline_ms > now &&
+           cluster_has_quorum();
+}
+
+void resources_process_vip_operations(int epoll_fd)
+{
+    for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+    {
+        resource_runtime_t *res = &g_state.resources[i];
+        if (res->vip_probe.pid <= 0)
+            continue;
+
+        uint64_t now = lcs_now_ms();
+        bool timed_out = res->vip_probe.deadline_ms &&
+                         now >= res->vip_probe.deadline_ms;
+        int result = -1;
+        int collect_rc = lcs_vip_probe_collect(res->vip_probe.pid, &result);
+        if (collect_rc == 0)
+        {
+            if (timed_out && !res->vip_probe.kill_sent)
+            {
+                lcs_log_warn("asynchronous VIP conflict probe timed out resource=%s pid=%ld; requesting cancellation", g_state.cfg.resources[i].name, (long)res->vip_probe.pid);
+                lcs_vip_probe_cancel(res->vip_probe.pid);
+                res->vip_probe.kill_sent = true;
+                res->vip_probe.deadline_ms = 0;
+            }
+            continue;
+        }
+
+        uint64_t epoch = res->vip_probe.epoch;
+        uint64_t lease_id = res->vip_probe.lease_id;
+        bool discard = res->vip_probe.discard_result;
+        bool killed = res->vip_probe.kill_sent;
+        if (collect_rc < 0)
+        {
+            lcs_log_warn("failed to collect VIP conflict probe resource=%s pid=%ld", g_state.cfg.resources[i].name, (long)res->vip_probe.pid);
+            result = -1;
+        } else if (timed_out || killed)
+        {
+            result = -1;
+        }
+        resources_clear_vip_probe(res);
+        if (discard)
+            continue;
+
+        now = lcs_now_ms();
+        bool still_current = resources_activation_lease_current(res, epoch, lease_id, now);
+        if (!still_current)
+        {
+            if (res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id && res->epoch == epoch && res->lease_id == lease_id)
+            {
+                lcs_log_warn("discarding VIP probe result for %s because its activation lease is no longer valid", g_state.cfg.resources[i].name);
+                lease_release_majority((int)i, g_state.self_index, epoch, lease_id, epoll_fd);
+                resources_clear_local_lease(res, epoch);
+                res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
+            }
+            continue;
+        }
+        if (result > 0)
+        {
+            lease_release_majority((int)i, g_state.self_index, epoch, lease_id, epoll_fd);
+            resources_enter_conflict_state((int)i, epoch + 1, "VIP answered conflict probe before activation");
+            peer_broadcast_state_sync(epoll_fd);
+            continue;
+        }
+        if (result < 0)
+        {
+            lcs_log_warn("auto-place failed VIP %s: conflict probe failed", g_state.cfg.resources[i].name);
+            lease_release_majority((int)i, g_state.self_index, epoch, lease_id, epoll_fd);
+            resources_clear_local_lease(res, epoch);
+            res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
+            continue;
+        }
+
+        if (resource_start_local(&g_state.cfg.resources[i]) != 0)
+        {
+            lcs_log_warn("auto-place failed VIP %s: failed to add address", g_state.cfg.resources[i].name);
+            lease_release_majority((int)i, g_state.self_index, epoch, lease_id, epoll_fd);
+            resources_clear_local_lease(res, epoch);
+            res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
+            continue;
+        }
+
+        now = lcs_now_ms();
+        if (!resources_activation_lease_current(res, epoch, lease_id, now))
+        {
+            lcs_log_warn("removing VIP %s because its activation lease expired while adding the address", g_state.cfg.resources[i].name);
+            (void)resources_stop_local_backend(&g_state.cfg.resources[i]);
+            lease_release_majority((int)i, g_state.self_index, epoch, lease_id, epoll_fd);
+            resources_clear_local_lease(res, epoch);
+            res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
+            continue;
+        }
+        resources_mark_local_active((int)i, epoch, lease_id, epoll_fd);
+    }
 }
 
 void resources_process_service_operations(int epoll_fd)
@@ -1050,38 +1116,76 @@ void resources_process_service_operations(int epoll_fd)
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         resource_runtime_t *res = &g_state.resources[i];
-        if (res->service_pid <= 0 || res->service_op == LCS_SERVICE_OP_NONE)
+        if (res->service.pid <= 0 || res->service.op == LCS_SERVICE_OP_NONE)
             continue;
 
-        bool timed_out = res->service_deadline_ms &&
-                         now >= res->service_deadline_ms;
+        bool timed_out = res->service.deadline_ms && now >= res->service.deadline_ms;
         int result = -1;
-        int collect_rc = timed_out ? 1 :
-                         lcs_systemd_service_collect(res->service_pid, &result);
+        int collect_rc = lcs_systemd_service_collect(res->service.pid, &result);
         if (collect_rc == 0)
+        {
+            if (timed_out && !res->service.kill_sent)
+            {
+                lcs_log_warn("asynchronous systemd operation timed out resource=%s op=%u pid=%ld; requesting cancellation",
+                             g_state.cfg.resources[i].name,
+                             (unsigned)res->service.op,
+                             (long)res->service.pid);
+                lcs_systemd_service_cancel(res->service.pid);
+                res->service.kill_sent = true;
+                res->service.deadline_ms = 0;
+            }
             continue;
-        if (timed_out)
+        }
+        if (collect_rc < 0)
         {
-            lcs_log_warn("asynchronous systemd operation timed out resource=%s op=%u pid=%ld",
-                         g_state.cfg.resources[i].name,
-                         (unsigned)res->service_op, (long)res->service_pid);
-            lcs_systemd_service_cancel(res->service_pid);
+            lcs_log_warn("failed to collect systemd worker resource=%s pid=%ld", g_state.cfg.resources[i].name, (long)res->service.pid);
             result = -1;
-        } else if (collect_rc < 0)
+        } else if (timed_out || res->service.kill_sent)
         {
-            lcs_log_warn("failed to collect systemd worker resource=%s pid=%ld",
-                         g_state.cfg.resources[i].name,
-                         (long)res->service_pid);
             result = -1;
         }
 
-        resource_service_op_type_t type = res->service_op;
-        uint64_t epoch = res->service_epoch;
-        uint64_t lease_id = res->service_lease_id;
-        bool post_hook = res->service_stop_post_hook;
-        bool handoff = res->service_handoff;
-        int handoff_source = res->service_handoff_source_node;
-        uint32_t handoff_seq = res->service_handoff_response_seq;
+        resource_service_op_type_t type = res->service.op;
+        if (type == LCS_SERVICE_OP_CANCELLING)
+        {
+            resource_service_op_type_t next_type = res->service.next_op;
+            bool handoff = res->service.handoff;
+            int handoff_source = res->service.handoff_source_node;
+            uint32_t handoff_seq = res->service.handoff_response_seq;
+            uint64_t replacement_epoch = res->service.replacement.epoch;
+            res->service.pid = 0;
+            res->service.op = LCS_SERVICE_OP_NONE;
+            res->service.next_op = LCS_SERVICE_OP_NONE;
+            res->service.deadline_ms = 0;
+            res->service.kill_sent = false;
+            if (next_type == LCS_SERVICE_OP_NONE)
+            {
+                resources_clear_service_operation(res);
+                continue;
+            }
+            if (resources_start_service_operation((int)i, next_type) == 0)
+                continue;
+
+            resources_enter_stop_failed_state(
+                (int)i,
+                next_type == LCS_SERVICE_OP_STATE_REPLACE ?
+                replacement_epoch + 1 : res->service.epoch + 1,
+                next_type == LCS_SERVICE_OP_STATE_REPLACE ?
+                "failed to start asynchronous systemd stop while replacing local ownership" :
+                "failed to start asynchronous systemd stop after cancelling superseded operation",
+                epoll_fd);
+            if (handoff)
+                (void)peer_queue_simple_resp(epoll_fd, handoff_source, handoff_seq, LCS_MSG_OWNER_RELEASE_RESP, -1, "owner could not start service stop");
+
+            continue;
+        }
+
+        uint64_t epoch = res->service.epoch;
+        uint64_t lease_id = res->service.lease_id;
+        bool post_hook = res->service.stop_post_hook;
+        bool handoff = res->service.handoff;
+        int handoff_source = res->service.handoff_source_node;
+        uint32_t handoff_seq = res->service.handoff_response_seq;
         resources_clear_service_operation(res);
 
         if (type == LCS_SERVICE_OP_STARTUP_CLEANUP)
@@ -1091,26 +1195,20 @@ void resources_process_service_operations(int epoll_fd)
         }
         if (type == LCS_SERVICE_OP_HEALTH)
         {
-            res->next_service_health_ms = now + 1000u;
+            res->service.next_health_ms = now + 1000u;
             if (result == 1)
                 continue;
             if (result < 0)
             {
-                lcs_log_warn("owned service %s health check failed; keeping lease for retry",
-                             g_state.cfg.resources[i].name);
+                lcs_log_warn("owned service %s health check failed; keeping lease for retry", g_state.cfg.resources[i].name);
                 continue;
             }
-            if (res->owner_node == g_state.self_index &&
-                res->owner_instance_id == g_state.instance_id &&
-                res->state == LCS_RES_ACTIVE)
+            if (res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id && res->state == LCS_RES_ACTIVE)
             {
-                lcs_log_warn("owned service %s is no longer active; releasing for failover",
-                             g_state.cfg.resources[i].name);
+                lcs_log_warn("owned service %s is no longer active; releasing for failover", g_state.cfg.resources[i].name);
                 res->failover_pending = true;
-                lease_release_majority((int)i, g_state.self_index,
-                                       res->epoch, res->lease_id, epoll_fd);
-                resources_clear_local_lease(res,
-                                            resources_next_epoch(res->epoch));
+                lease_release_majority((int)i, g_state.self_index, res->epoch, res->lease_id, epoll_fd);
+                resources_clear_local_lease(res, resources_next_epoch(res->epoch));
                 peer_broadcast_state_sync(epoll_fd);
             }
             continue;
@@ -1127,8 +1225,7 @@ void resources_process_service_operations(int epoll_fd)
             if (result == 0 && still_current)
                 resources_mark_local_active((int)i, epoch, lease_id, epoll_fd);
             else
-                resources_start_activation_rollback((int)i, epoch, lease_id,
-                                                    epoll_fd);
+                resources_start_activation_rollback((int)i, epoch, lease_id, epoll_fd);
             continue;
         }
         if (type == LCS_SERVICE_OP_STATE_REPLACE)
@@ -1136,20 +1233,19 @@ void resources_process_service_operations(int epoll_fd)
             if (result != 0)
             {
                 resources_enter_stop_failed_state((int)i,
-                                                  res->service_replace_epoch + 1,
+                                                  res->service.replacement.epoch + 1,
                                                   "systemd service stop failed while replacing local ownership",
                                                   epoll_fd);
                 continue;
             }
-            res->owner_node = res->service_replace_owner_node;
-            res->owner_instance_id = res->service_replace_owner_instance_id;
-            res->state = res->service_replace_state;
-            res->epoch = res->service_replace_epoch;
-            res->lease_id = res->service_replace_lease_id;
-            res->lease_deadline_ms = res->service_replace_deadline_ms;
+            res->owner_node = res->service.replacement.owner_node;
+            res->owner_instance_id = res->service.replacement.owner_instance_id;
+            res->state = res->service.replacement.state;
+            res->epoch = res->service.replacement.epoch;
+            res->lease_id = res->service.replacement.lease_id;
+            res->lease_deadline_ms = res->service.replacement.deadline_ms;
             res->renew_after_ms = 0;
-            snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",
-                     res->service_replace_reason);
+            snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s", res->service.replacement.reason);
             peer_broadcast_state_sync(epoll_fd);
             continue;
         }
@@ -1161,15 +1257,10 @@ void resources_process_service_operations(int epoll_fd)
                                              "asynchronous systemd service stop failed; service may still be running",
                                              epoll_fd);
             if (handoff)
-                (void)peer_queue_simple_resp(epoll_fd, handoff_source,
-                                             handoff_seq,
-                                             LCS_MSG_OWNER_RELEASE_RESP, -1,
-                                             "owner could not confirm service stop");
+                (void)peer_queue_simple_resp(epoll_fd, handoff_source, handoff_seq, LCS_MSG_OWNER_RELEASE_RESP, -1, "owner could not confirm service stop");
             continue;
         }
-        resources_finish_service_stop((int)i, handoff, handoff_source,
-                                      handoff_seq, epoch, lease_id,
-                                      post_hook, epoll_fd);
+        resources_finish_service_stop((int)i, handoff, handoff_source, handoff_seq, epoch, lease_id, post_hook, epoll_fd);
     }
 }
 
@@ -1189,8 +1280,7 @@ int resources_set_disabled(int resource_idx, bool disabled, int epoll_fd, char *
                              res->state == LCS_RES_STOP_FAILED;
     if (res->disabled == disabled && !retry_stop_failed)
     {
-        snprintf(message, message_len, "resource already %s",
-                 disabled ? "stopped" : "started");
+        snprintf(message, message_len, "resource already %s", disabled ? "stopped" : "started");
         return 0;
     }
     if (!disabled && res->state == LCS_RES_STOP_FAILED)
@@ -1206,9 +1296,7 @@ int resources_set_disabled(int resource_idx, bool disabled, int epoll_fd, char *
     res->next_activation_attempt_ms = 0;
     if (disabled)
     {
-        lcs_log_info("%s resource %s",
-                     retry_stop_failed ? "admin retrying stop for" : "admin stopped",
-                     g_state.cfg.resources[resource_idx].name);
+        lcs_log_info("%s resource %s", retry_stop_failed ? "admin retrying stop for" : "admin stopped", g_state.cfg.resources[resource_idx].name);
         if (res->owner_node == g_state.self_index &&
             res->owner_instance_id == g_state.instance_id &&
             (res->state == LCS_RES_ACTIVE ||
@@ -1216,8 +1304,7 @@ int resources_set_disabled(int resource_idx, bool disabled, int epoll_fd, char *
              res->state == LCS_RES_STOPPING ||
              res->state == LCS_RES_STOP_FAILED))
             resources_release_local(resource_idx, epoll_fd);
-        snprintf(message, message_len, "%s",
-                 retry_stop_failed ? "resource stop retry requested" : "resource stop requested");
+        snprintf(message, message_len, "%s", retry_stop_failed ? "resource stop retry requested" : "resource stop requested");
     } else
     {
         lcs_log_info("admin started resource %s", g_state.cfg.resources[resource_idx].name);
@@ -1245,8 +1332,7 @@ void resources_auto_place(int epoll_fd)
         resource_runtime_t *res = &g_state.resources[i];
         if (res->disabled)
         {
-            lcs_log_debug4("auto-place skip resource %s: resource is administratively stopped",
-                           g_state.cfg.resources[i].name);
+            lcs_log_debug4("auto-place skip resource %s: resource is administratively stopped", g_state.cfg.resources[i].name);
             continue;
         }
         if (res->owner_node >= 0)
@@ -1317,8 +1403,7 @@ void resources_home_rebalance(int epoll_fd)
             move_active_for_resource((int)i))
             continue;
 
-        if (move_start_internal(epoll_fd, (int)i, resource->home_node_idx, "home-node rebalance") != 0 ||
-            move_any_active())
+        if (move_start_internal(epoll_fd, (int)i, resource->home_node_idx, "home-node rebalance") != 0 || move_any_active())
             return;
     }
 }
@@ -1365,13 +1450,13 @@ void resources_maintain_owned_leases(int epoll_fd)
         if (g_state.cfg.resources[i].type == LCS_RESOURCE_SERVICE)
         {
             if (res->state == LCS_RES_ACTIVE &&
-                res->service_op == LCS_SERVICE_OP_NONE &&
-                (!res->next_service_health_ms ||
-                 now >= res->next_service_health_ms))
+                res->service.op == LCS_SERVICE_OP_NONE &&
+                (!res->service.next_health_ms ||
+                 now >= res->service.next_health_ms))
             {
                 if (resources_start_service_operation((int)i,
                                                       LCS_SERVICE_OP_HEALTH) != 0)
-                    res->next_service_health_ms = now + 1000u;
+                    res->service.next_health_ms = now + 1000u;
             }
         } else
         {
@@ -1412,20 +1497,20 @@ void resources_process_hooks(int epoll_fd)
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         resource_runtime_t *res = &g_state.resources[i];
-        if (res->hook_pid <= 0)
+        if (res->hook.pid <= 0)
             continue;
 
         int status = 0;
-        pid_t rc = waitpid(res->hook_pid, &status, WNOHANG);
-        bool done = rc == res->hook_pid || rc < 0;
+        pid_t rc = waitpid(res->hook.pid, &status, WNOHANG);
+        bool done = rc == res->hook.pid || rc < 0;
         bool ok = done && WIFEXITED(status) && WEXITSTATUS(status) == 0;
-        if (!done && res->hook_deadline_ms && now >= res->hook_deadline_ms)
+        if (!done && res->hook.deadline_ms && now >= res->hook.deadline_ms)
         {
             lcs_log_warn("%s hook for resource %s timed out; killing pid=%ld",
-                         resources_hook_name(res->hook_type), g_state.cfg.resources[i].name,
-                         (long)res->hook_pid);
-            kill(res->hook_pid, SIGKILL);
-            waitpid(res->hook_pid, &status, 0);
+                         resources_hook_name(res->hook.type), g_state.cfg.resources[i].name,
+                         (long)res->hook.pid);
+            kill(res->hook.pid, SIGKILL);
+            waitpid(res->hook.pid, &status, 0);
             done = true;
             ok = false;
         }
@@ -1434,14 +1519,14 @@ void resources_process_hooks(int epoll_fd)
         if (rc < 0)
         {
             lcs_log_warn("%s hook for resource %s waitpid failed: %s",
-                         resources_hook_name(res->hook_type), g_state.cfg.resources[i].name,
+                         resources_hook_name(res->hook.type), g_state.cfg.resources[i].name,
                          strerror(errno));
             ok = false;
         }
 
-        resource_hook_type_t type = res->hook_type;
-        uint64_t hook_epoch = res->hook_epoch;
-        uint64_t hook_lease_id = res->hook_lease_id;
+        resource_hook_type_t type = res->hook.type;
+        uint64_t hook_epoch = res->hook.epoch;
+        uint64_t hook_lease_id = res->hook.lease_id;
         lcs_log_info("%s hook for resource %s completed status=%s", resources_hook_name(type), g_state.cfg.resources[i].name, ok ? "ok" : "failed");
         resources_clear_hook(res);
 

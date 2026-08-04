@@ -49,7 +49,55 @@ typedef enum
     LCS_SERVICE_OP_HEALTH,
     LCS_SERVICE_OP_STARTUP_CLEANUP,
     LCS_SERVICE_OP_STATE_REPLACE,
+    LCS_SERVICE_OP_CANCELLING,
 } resource_service_op_type_t;
+
+typedef struct
+{
+    pid_t pid;
+    resource_hook_type_t type;
+    uint64_t deadline_ms;
+    uint64_t epoch;
+    uint64_t lease_id;
+} resource_hook_runtime_t;
+
+typedef struct
+{
+    pid_t pid;
+    uint64_t deadline_ms;
+    uint64_t epoch;
+    uint64_t lease_id;
+    bool kill_sent;
+    bool discard_result;
+} resource_vip_probe_runtime_t;
+
+typedef struct
+{
+    int owner_node;
+    uint64_t owner_instance_id;
+    lcs_resource_state_t state;
+    uint64_t epoch;
+    uint64_t lease_id;
+    uint64_t deadline_ms;
+    char reason[LCS_REASON_MAX + 1];
+} resource_service_replacement_runtime_t;
+
+typedef struct
+{
+    pid_t pid;
+    resource_service_op_type_t op;
+    resource_service_op_type_t next_op;
+    uint64_t deadline_ms;
+    bool kill_sent;
+    uint64_t epoch;
+    uint64_t lease_id;
+    uint64_t next_health_ms;
+    bool stop_post_hook;
+    bool handoff;
+    int handoff_source_node;
+    uint32_t handoff_response_seq;
+    resource_service_replacement_runtime_t replacement;
+} resource_service_runtime_t;
 
 typedef struct
 {
@@ -72,28 +120,9 @@ typedef struct
     bool startup_cleanup_failed;
     bool startup_cleanup_broadcast_pending;
     uint64_t next_startup_cleanup_attempt_ms;
-    pid_t hook_pid;
-    resource_hook_type_t hook_type;
-    uint64_t hook_deadline_ms;
-    uint64_t hook_epoch;
-    uint64_t hook_lease_id;
-    pid_t service_pid;
-    resource_service_op_type_t service_op;
-    uint64_t service_deadline_ms;
-    uint64_t service_epoch;
-    uint64_t service_lease_id;
-    uint64_t next_service_health_ms;
-    bool service_stop_post_hook;
-    bool service_handoff;
-    int service_handoff_source_node;
-    uint32_t service_handoff_response_seq;
-    int service_replace_owner_node;
-    uint64_t service_replace_owner_instance_id;
-    lcs_resource_state_t service_replace_state;
-    uint64_t service_replace_epoch;
-    uint64_t service_replace_lease_id;
-    uint64_t service_replace_deadline_ms;
-    char service_replace_reason[LCS_REASON_MAX + 1];
+    resource_hook_runtime_t hook;
+    resource_vip_probe_runtime_t vip_probe;
+    resource_service_runtime_t service;
     char conflict_reason[LCS_REASON_MAX + 1];
 } resource_runtime_t;
 

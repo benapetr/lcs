@@ -360,7 +360,4 @@ void lcs_systemd_service_cancel(pid_t pid)
     if (pid <= 0)
         return;
     (void)kill(pid, SIGKILL);
-    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
-    {
-    }
 }

@@ -374,7 +374,7 @@ static void move_finish_activation(int epoll_fd, move_runtime_t *move)
         move->final_status = 0;
         snprintf(move->final_message, sizeof(move->final_message), "%s",
                  g_state.resources[move->resource_idx].state == LCS_RES_STARTING ?
-                 "move accepted, activation hook running" : "move completed");
+                 "move accepted, activation in progress" : "move completed");
     } else
     {
         move_set_failed(move, "failed to activate VIP on target");

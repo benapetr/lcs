@@ -15,11 +15,13 @@
 #include <linux/rtnetlink.h>
 #include <netpacket/packet.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 typedef struct __attribute__((packed))
@@ -338,9 +340,7 @@ static int open_arp_socket(int ifindex)
     return fd;
 }
 
-static void fill_arp_packet(lcs_arp_packet_t *pkt, const unsigned char mac[ETH_ALEN],
-                            const struct in_addr *sender_ip,
-                            const struct in_addr *target_ip, uint16_t op)
+static void fill_arp_packet(lcs_arp_packet_t *pkt, const unsigned char mac[ETH_ALEN], const struct in_addr *sender_ip, const struct in_addr *target_ip, uint16_t op)
 {
     static const unsigned char broadcast[ETH_ALEN] = {
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff
@@ -564,7 +564,8 @@ static int nd_announce(const lcs_config_t *cfg, const lcs_resource_config_t *vip
     return 0;
 }
 
-int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_resource_config_t *vip)
+static int vip_conflict_check_sync(const lcs_config_t *cfg,
+                                   const lcs_resource_config_t *vip)
 {
     if (getenv("LCS_VIP_CONFLICT"))
     {
@@ -659,6 +660,73 @@ int lcs_vip_conflict_check(const lcs_config_t *cfg, const lcs_resource_config_t 
     }
     close(fd);
     return 0;
+}
+
+static void vip_probe_test_delay(void)
+{
+    const char *value = getenv("LCS_VIP_PROBE_DELAY_MS");
+    if (!value || !*value)
+        return;
+    char *end = NULL;
+    unsigned long delay_ms = strtoul(value, &end, 10);
+    if (!end || *end != '\0' || delay_ms > 60000ul)
+        return;
+    usleep((useconds_t)(delay_ms * 1000ul));
+}
+
+int lcs_vip_conflict_check_async(const lcs_config_t *cfg,
+                                 const lcs_resource_config_t *vip,
+                                 pid_t *pid)
+{
+    if (!cfg || !vip || !pid)
+        return -1;
+    pid_t child = fork();
+    if (child < 0)
+        return -1;
+    if (child == 0)
+    {
+        /* The probe needs no daemon listeners or peer connections. */
+        (void)close_range(3, ~0u, 0);
+        vip_probe_test_delay();
+        int result = vip_conflict_check_sync(cfg, vip);
+        if (result == 0)
+            _exit(0);
+        if (result > 0)
+            _exit(1);
+        _exit(2);
+    }
+    *pid = child;
+    return 0;
+}
+
+int lcs_vip_probe_collect(pid_t pid, int *result)
+{
+    if (pid <= 0 || !result)
+        return -1;
+    int status = 0;
+    pid_t rc;
+    do
+    {
+        rc = waitpid(pid, &status, WNOHANG);
+    } while (rc < 0 && errno == EINTR);
+    if (rc == 0)
+        return 0;
+    if (rc < 0)
+        return -1;
+    if (!WIFEXITED(status))
+    {
+        *result = -1;
+        return 1;
+    }
+    int code = WEXITSTATUS(status);
+    *result = code == 0 ? 0 : code == 1 ? 1 : -1;
+    return 1;
+}
+
+void lcs_vip_probe_cancel(pid_t pid)
+{
+    if (pid > 0)
+        (void)kill(pid, SIGKILL);
 }
 
 int lcs_vip_announce(const lcs_config_t *cfg, const lcs_resource_config_t *vip)

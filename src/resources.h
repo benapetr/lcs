@@ -35,6 +35,7 @@ void resources_auto_place(int epoll_fd);
 void resources_home_rebalance(int epoll_fd);
 void resources_maintain_owned_leases(int epoll_fd);
 void resources_process_hooks(int epoll_fd);
+void resources_process_vip_operations(int epoll_fd);
 void resources_process_service_operations(int epoll_fd);
 uint32_t resources_service_operation_timeout_ms(void);
 

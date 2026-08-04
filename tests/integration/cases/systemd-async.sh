@@ -43,13 +43,17 @@ node_status_has node1 "app type=service unit=app.service state=starting owner=no
     die "service lease did not remain in starting state during delayed start"
 wait_until 8 "delayed service activation to complete" \
     node_status_has node1 "app type=service unit=app.service state=active owner=node1"
+wait_until 5 "delayed service health worker" \
+    grep -Fq "asynchronous systemd operation resource=app op=4" "$TEST_TMP/logs/node1.log"
 
-log "moving service while old owner has a delayed systemd stop"
+log "moving service while a delayed health worker must be cancelled"
 move_output="$TEST_TMP/move.out"
 "$LCS" -s "$(node_socket node1)" resource move app node2 >"$move_output" 2>&1 &
 move_pid=$!
 wait_until 5 "service handoff to enter stopping" \
     node_status_has node1 "app type=service unit=app.service state=stopping owner=node1"
+wait_until 3 "nonblocking health-worker cancellation" \
+    grep -Fq "requested asynchronous systemd worker cancellation" "$TEST_TMP/logs/node1.log"
 timeout 1 "$LCS" -s "$(node_socket node1)" status >/dev/null ||
     die "node1 CLI blocked during delayed systemd stop"
 sleep 1
