@@ -870,6 +870,23 @@ int main(int argc, char **argv)
         return 2;
     }
     const char *cmd = argv[optind++];
+
+    /*
+     * Temporary compatibility alias for the pre-resource CLI syntax.
+     * Remove this entire block once `lcs move` compatibility is retired.
+     */
+    if (strcmp(cmd, "move") == 0)
+    {
+        fprintf(stderr, "lcs: warning: 'lcs move' is deprecated; use 'lcs resource move' instead\n");
+        if (optind + 2 != argc)
+        {
+            usage(stderr);
+            return 2;
+        }
+        return cmd_move(socket_path, argv[optind], argv[optind + 1], json_output);
+    }
+    /* End temporary `lcs move` compatibility alias. */
+
     if (strcmp(cmd, "status") == 0)
     {
         if (optind != argc)
