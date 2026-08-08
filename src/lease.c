@@ -244,15 +244,9 @@ int lease_apply_commit(const void *payload, size_t len, int source_node_idx, int
             (int)resource_id, owner_node, sender_instance_id,
             LCS_RES_ACTIVE, epoch, lease_id,
             lcs_now_ms() + remaining_ms, "", epoll_fd);
-        if (replacement_rc > 0)
+        if (replacement_rc == 0)
             return 0;
-        if (replacement_rc < 0)
-            return -1;
-        if (resources_stop_local_backend(&g_state.cfg.resources[resource_id]) != 0)
-        {
-            resources_enter_stop_failed_state((int)resource_id, epoch + 1, "local resource stop failed while applying lease commit", epoll_fd);
-            return -1;
-        }
+        return -1;
     }
 
     res->epoch = epoch;

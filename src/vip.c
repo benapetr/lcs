@@ -685,6 +685,7 @@ int lcs_vip_conflict_check_async(const lcs_config_t *cfg,
         return -1;
     if (child == 0)
     {
+        (void)setpgid(0, 0);
         /* The probe needs no daemon listeners or peer connections. */
         (void)close_range(3, ~0u, 0);
         vip_probe_test_delay();
@@ -695,6 +696,7 @@ int lcs_vip_conflict_check_async(const lcs_config_t *cfg,
             _exit(1);
         _exit(2);
     }
+    (void)setpgid(child, child);
     *pid = child;
     return 0;
 }
@@ -726,7 +728,10 @@ int lcs_vip_probe_collect(pid_t pid, int *result)
 void lcs_vip_probe_cancel(pid_t pid)
 {
     if (pid > 0)
-        (void)kill(pid, SIGKILL);
+    {
+        if (kill(-pid, SIGKILL) != 0)
+            (void)kill(pid, SIGKILL);
+    }
 }
 
 int lcs_vip_announce(const lcs_config_t *cfg, const lcs_resource_config_t *vip)
@@ -767,4 +772,71 @@ int lcs_vip_announce(const lcs_config_t *cfg, const lcs_resource_config_t *vip)
     close(fd);
     lcs_log_info("sent gratuitous ARP for VIP %s on %s", vip->address, vip->interface);
     return 0;
+}
+
+static void vip_operation_test_delay(void)
+{
+    const char *value = getenv("LCS_VIP_OP_DELAY_MS");
+    if (!value || !*value)
+        return;
+    char *end = NULL;
+    unsigned long delay_ms = strtoul(value, &end, 10);
+    if (!end || *end != '\0' || delay_ms > 60000ul)
+        return;
+    usleep((useconds_t)(delay_ms * 1000ul));
+}
+
+int lcs_vip_operation_async(const lcs_config_t *cfg,
+                            const lcs_resource_config_t *vip,
+                            lcs_vip_worker_action_t action, pid_t *pid)
+{
+    if (!cfg || !vip || !pid ||
+        (action != LCS_VIP_WORKER_ADD &&
+         action != LCS_VIP_WORKER_DEL &&
+         action != LCS_VIP_WORKER_ANNOUNCE))
+        return -1;
+
+    pid_t child = fork();
+    if (child < 0)
+        return -1;
+    if (child == 0)
+    {
+        (void)setpgid(0, 0);
+        /* Backend helpers must not retain daemon sockets while blocked. */
+        (void)close_range(3, ~0u, 0);
+        vip_operation_test_delay();
+        int rc = action == LCS_VIP_WORKER_ADD ? lcs_vip_add(vip) :
+                 action == LCS_VIP_WORKER_DEL ? lcs_vip_del(vip) :
+                                                lcs_vip_announce(cfg, vip);
+        _exit(rc == 0 ? 0 : 1);
+    }
+    (void)setpgid(child, child);
+    *pid = child;
+    return 0;
+}
+
+int lcs_vip_operation_collect(pid_t pid, int *result)
+{
+    if (pid <= 0 || !result)
+        return -1;
+    int status = 0;
+    pid_t rc;
+    do
+    {
+        rc = waitpid(pid, &status, WNOHANG);
+    } while (rc < 0 && errno == EINTR);
+    if (rc == 0)
+        return 0;
+    if (rc < 0)
+        return -1;
+    *result = WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+    return 1;
+}
+
+void lcs_vip_operation_cancel(pid_t pid)
+{
+    if (pid <= 0)
+        return;
+    if (kill(-pid, SIGKILL) != 0)
+        (void)kill(pid, SIGKILL);
 }

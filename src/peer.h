@@ -12,6 +12,7 @@
 /* Globals defined in lcsd.c */
 extern int g_peer_listener_fd;
 
+int peer_resolve_configured_addresses(char *error, size_t error_len);
 void handshake_expire(int epoll_fd);
 void handshake_close(int epoll_fd, int slot_idx, const char *reason);
 void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const char *reason);

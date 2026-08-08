@@ -376,9 +376,7 @@ static void initialize_daemon_state(void)
     g_state.self_index = lcs_config_self_index(&g_state.cfg);
     g_state.instance_id = lcs_random_u64();
     g_state.voting_ready = false;
-    g_state.voting_not_before_ms = lcs_now_ms() +
-                                   (uint64_t)g_state.cfg.lease_ms +
-                                   (uint64_t)g_state.cfg.peer_timeout_ms;
+    g_state.voting_not_before_ms = lcs_now_ms() + (uint64_t)g_state.cfg.lease_ms + (uint64_t)g_state.cfg.peer_timeout_ms;
     g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
     g_state.votes_seen = 0;
     g_state.started_ms = lcs_now_ms();
@@ -432,8 +430,7 @@ static void log_startup_config(const daemon_options_t *opts, bool syslog_enabled
         const lcs_resource_config_t *resource = &g_state.cfg.resources[i];
         if (resource->interface_normalized)
         {
-            lcs_log_warn("VIP %s interface %s normalized to %s; use the kernel interface name without @parent in config",
-                         resource->name, resource->interface_original, resource->interface);
+            lcs_log_warn("VIP %s interface %s normalized to %s; use the kernel interface name without @parent in config", resource->name, resource->interface_original, resource->interface);
         }
     }
 }
@@ -443,6 +440,13 @@ static int setup_runtime(int *epoll_fd)
     if (install_signal_handlers() != 0)
     {
         lcs_log_error("failed to install signal handlers: %s", strerror(errno));
+        return -1;
+    }
+
+    char resolve_error[256] = {0};
+    if (peer_resolve_configured_addresses(resolve_error, sizeof(resolve_error)) != 0)
+    {
+        lcs_log_error("peer address configuration error: %s", resolve_error);
         return -1;
     }
 
@@ -497,8 +501,7 @@ static void log_daemon_started(void)
                  g_metrics_fd >= 0 ? g_state.cfg.metrics_port : 0,
                  g_state.quorum_needed, g_state.cfg.node_count);
     lcs_log_info("restart recovery active; lease voting disabled for %llu ms and until state sync reaches %u votes",
-                 (unsigned long long)((uint64_t)g_state.cfg.lease_ms +
-                                      (uint64_t)g_state.cfg.peer_timeout_ms),
+                 (unsigned long long)((uint64_t)g_state.cfg.lease_ms + (uint64_t)g_state.cfg.peer_timeout_ms),
                  g_state.quorum_needed);
 }
 
@@ -526,11 +529,8 @@ static void shutdown_daemon(int epoll_fd)
         .metrics_fd = g_metrics_fd,
     };
     resources_begin_graceful_shutdown(epoll_fd);
-    uint64_t shutdown_deadline_ms = lcs_now_ms() +
-                                    ((uint64_t)g_state.cfg.hook_timeout_ms * 2u) +
-                                    g_state.cfg.peer_timeout_ms + 100u;
-    while (!resources_graceful_shutdown_complete() &&
-           lcs_now_ms() < shutdown_deadline_ms)
+    uint64_t shutdown_deadline_ms = lcs_now_ms() + ((uint64_t)g_state.cfg.hook_timeout_ms * 2u) + resources_service_operation_timeout_ms() + g_state.cfg.peer_timeout_ms + 100u;
+    while (!resources_graceful_shutdown_complete() && lcs_now_ms() < shutdown_deadline_ms)
     {
         if (scheduler_run_shutdown_once(&sched) != 0)
             break;

@@ -256,11 +256,7 @@ static void cli_server_queue_clear_conflict(int epoll_fd, int slot_idx, uint32_t
     cli_server_queue_simple_response(epoll_fd, slot_idx, LCS_MSG_CLEAR_CONFLICT_RESP, seq, status, message);
 }
 
-static void cli_server_queue_resource_control(int epoll_fd,
-                                          int slot_idx, uint16_t resp_type,
-                                          uint32_t seq,
-                                          const void *payload, uint32_t len,
-                                          bool disabled)
+static void cli_server_queue_resource_control(int epoll_fd, int slot_idx, uint16_t resp_type, uint32_t seq, const void *payload, uint32_t len, bool disabled)
 {
     char resource_name[LCS_NAME_MAX + 1];
     int32_t status = -1;
@@ -277,8 +273,7 @@ static void cli_server_queue_resource_control(int epoll_fd,
         if (resource_idx < 0)
         {
             snprintf(message, sizeof(message), "unknown resource");
-        } else if (resources_set_disabled(resource_idx, disabled, epoll_fd,
-                                          message, sizeof(message)) == 0)
+        } else if (resources_set_disabled(resource_idx, disabled, epoll_fd, message, sizeof(message)) == 0)
         {
             status = 0;
         }

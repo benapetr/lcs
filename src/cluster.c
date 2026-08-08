@@ -267,8 +267,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             lcs_buf_get_u8(&r, &entry.home_blocked) != 0 ||
             lcs_buf_get_u64(&r, &entry.disabled_generation) != 0 ||
             lcs_buf_get_u8(&r, &entry.disabled) != 0 ||
-            lcs_buf_get_fixed_string(&r, entry.reason, sizeof(entry.reason),
-                                     LCS_REASON_MAX + 1) != 0)
+            lcs_buf_get_fixed_string(&r, entry.reason, sizeof(entry.reason), LCS_REASON_MAX + 1) != 0)
             return cluster_reject_state(source_node_idx, n, "truncated or malformed entry");
 
         const char *validation_error = cluster_validate_state_entry(&entry);
@@ -345,7 +344,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
                  res->state == LCS_RES_STARTING ||
                  res->state == LCS_RES_STOPPING))
             {
-                int replacement_rc = resources_begin_state_replacement(
+                (void)resources_begin_state_replacement(
                     (int)id,
                     entry->owner == UINT16_MAX ? -1 : (int)entry->owner,
                     entry->owner == UINT16_MAX ? 0 : entry->owner_instance_id,
@@ -354,15 +353,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
                     entry->remaining_ms ? lcs_now_ms() + entry->remaining_ms : 0,
                     (incoming_conflict || incoming_stop_failed) ? entry->reason : "",
                     -1);
-                if (replacement_rc > 0)
-                    continue;
-                if (replacement_rc < 0)
-                    continue;
-                if (resources_stop_local_backend(&g_state.cfg.resources[id]) != 0)
-                {
-                    resources_enter_stop_failed_state((int)id, entry->epoch + 1, "local resource stop failed while applying state sync", -1);
-                    continue;
-                }
+                continue;
             }
             res->epoch = entry->epoch;
             res->lease_id = entry->lease_id;
@@ -373,8 +364,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             if (!same_lease)
                 res->lease_deadline_ms = entry->remaining_ms ?
                                          lcs_now_ms() + entry->remaining_ms : 0;
-            snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s",
-                     (incoming_conflict || incoming_stop_failed) ? entry->reason : "");
+            snprintf(res->conflict_reason, sizeof(res->conflict_reason), "%s", (incoming_conflict || incoming_stop_failed) ? entry->reason : "");
         }
     }
     return 0;

@@ -74,6 +74,7 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     peer_poll(sched->epoll_fd);
     resources_process_vip_operations(sched->epoll_fd);
     resources_process_service_operations(sched->epoll_fd);
+    resources_progress_handoffs(sched->epoll_fd);
     resources_progress_startup_cleanup(sched->epoll_fd);
     handshake_expire(sched->epoll_fd);
     cli_server_expire(sched->epoll_fd);
@@ -116,8 +117,7 @@ int scheduler_run_once(const scheduler_t *sched)
 int scheduler_run_shutdown_once(const scheduler_t *sched)
 {
     struct epoll_event events[64];
-    int rc = epoll_wait(sched->epoll_fd, events, 64,
-                        LCS_DEFAULT_LOOP_TIMEOUT_MS);
+    int rc = epoll_wait(sched->epoll_fd, events, 64, LCS_DEFAULT_LOOP_TIMEOUT_MS);
     if (rc < 0)
     {
         if (errno == EINTR)
@@ -136,6 +136,7 @@ int scheduler_run_shutdown_once(const scheduler_t *sched)
     lease_process_operations(sched->epoll_fd);
     resources_process_vip_operations(sched->epoll_fd);
     resources_process_service_operations(sched->epoll_fd);
+    resources_progress_handoffs(sched->epoll_fd);
     resources_process_hooks(sched->epoll_fd);
     resources_progress_graceful_shutdown(sched->epoll_fd);
     resources_maintain_owned_leases(sched->epoll_fd);

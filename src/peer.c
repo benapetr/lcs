@@ -36,6 +36,55 @@ static int peer_send_state_sync(int epoll_fd, int node_idx);
 static void peer_free_buffers(peer_runtime_t *peer);
 static void handshake_free_buffers(inbound_handshake_t *hs);
 
+int peer_resolve_configured_addresses(char *error, size_t error_len)
+{
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        peer_runtime_t *peer = &g_state.peers[i];
+        peer->resolved_addr_count = 0;
+        if ((int)i == g_state.self_index)
+            continue;
+
+        char port_buf[16];
+        snprintf(port_buf, sizeof(port_buf), "%u", g_state.cfg.nodes[i].port);
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo *resolved = NULL;
+        int gai = getaddrinfo(g_state.cfg.nodes[i].address, port_buf,
+                              &hints, &resolved);
+        if (gai != 0)
+        {
+            snprintf(error, error_len, "cannot resolve peer %s address %s: %s",
+                     g_state.cfg.nodes[i].name,
+                     g_state.cfg.nodes[i].address, gai_strerror(gai));
+            return -1;
+        }
+        for (const struct addrinfo *ai = resolved;
+             ai && peer->resolved_addr_count < LCS_PEER_ADDR_MAX;
+             ai = ai->ai_next)
+        {
+            if (ai->ai_addrlen > sizeof(struct sockaddr_storage))
+                continue;
+            size_t slot = peer->resolved_addr_count++;
+            memcpy(&peer->resolved_addrs[slot], ai->ai_addr,
+                   ai->ai_addrlen);
+            peer->resolved_addr_lens[slot] = (socklen_t)ai->ai_addrlen;
+        }
+        freeaddrinfo(resolved);
+        if (peer->resolved_addr_count == 0)
+        {
+            snprintf(error, error_len,
+                     "peer %s address %s resolved to no usable addresses",
+                     g_state.cfg.nodes[i].name,
+                     g_state.cfg.nodes[i].address);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int peer_ensure_buffers(peer_runtime_t *peer)
 {
     if (!peer->inbuf)
@@ -1331,20 +1380,15 @@ static int peer_connect(int epoll_fd, int node_idx)
 {
     if (g_state.self_index >= node_idx || g_state.peers[node_idx].fd >= 0)
         return 0;
-    char port_buf[16];
-    snprintf(port_buf, sizeof(port_buf), "%u", g_state.cfg.nodes[node_idx].port);
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    struct addrinfo *res = NULL;
-    if (getaddrinfo(g_state.cfg.nodes[node_idx].address, port_buf, &hints, &res) != 0)
+    peer_runtime_t *peer = &g_state.peers[node_idx];
+    if (peer->resolved_addr_count == 0)
         return -1;
     int fd = -1;
     int saved_errno = ECONNREFUSED;
-    for (struct addrinfo *ai = res; ai; ai = ai->ai_next)
+    for (size_t i = 0; i < peer->resolved_addr_count; i++)
     {
-        fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
+        const struct sockaddr_storage *addr = &peer->resolved_addrs[i];
+        fd = socket(addr->ss_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (fd < 0)
         {
             saved_errno = errno;
@@ -1357,20 +1401,19 @@ static int peer_connect(int epoll_fd, int node_idx)
             fd = -1;
             continue;
         }
-        int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        int rc = connect(fd, (const struct sockaddr *)addr,
+                         peer->resolved_addr_lens[i]);
         if (rc == 0 || errno == EINPROGRESS)
             break;
         saved_errno = errno;
         close(fd);
         fd = -1;
     }
-    freeaddrinfo(res);
     if (fd < 0)
     {
         errno = saved_errno;
         return -1;
     }
-    peer_runtime_t *peer = &g_state.peers[node_idx];
     if (peer_ensure_buffers(peer) != 0)
     {
         close(fd);

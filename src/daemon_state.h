@@ -7,6 +7,7 @@
 #include "config.h"
 #include "protocol.h"
 
+#include <sys/socket.h>
 #include <sys/types.h>
 
 #define LCS_FRAME_HEADER_SIZE ((size_t)sizeof(lcs_frame_header_t))
@@ -22,6 +23,7 @@
 #define LCS_MOVE_RESP_PAYLOAD_SIZE 256u
 #define LCS_LEASE_OP_MAX LCS_MAX_RESOURCES
 #define LCS_LEASE_RESP_PAYLOAD_SIZE 256u
+#define LCS_PEER_ADDR_MAX 8
 
 typedef enum
 {
@@ -56,9 +58,14 @@ typedef struct
 {
     pid_t pid;
     resource_hook_type_t type;
+    resource_hook_type_t next_type;
     uint64_t deadline_ms;
     uint64_t epoch;
     uint64_t lease_id;
+    uint64_t next_epoch;
+    uint64_t next_lease_id;
+    bool kill_sent;
+    bool discard_result;
 } resource_hook_runtime_t;
 
 typedef struct
@@ -70,6 +77,45 @@ typedef struct
     bool kill_sent;
     bool discard_result;
 } resource_vip_probe_runtime_t;
+
+typedef enum
+{
+    LCS_VIP_OP_NONE = 0,
+    LCS_VIP_OP_ADD,
+    LCS_VIP_OP_STOP,
+    LCS_VIP_OP_ROLLBACK_STOP,
+    LCS_VIP_OP_STARTUP_CLEANUP,
+    LCS_VIP_OP_STATE_REPLACE,
+    LCS_VIP_OP_ANNOUNCE,
+    LCS_VIP_OP_CANCELLING,
+} resource_vip_op_type_t;
+
+typedef struct
+{
+    int owner_node;
+    uint64_t owner_instance_id;
+    lcs_resource_state_t state;
+    uint64_t epoch;
+    uint64_t lease_id;
+    uint64_t deadline_ms;
+    char reason[LCS_REASON_MAX + 1];
+} resource_replacement_runtime_t;
+
+typedef struct
+{
+    pid_t pid;
+    resource_vip_op_type_t op;
+    resource_vip_op_type_t next_op;
+    uint64_t deadline_ms;
+    bool kill_sent;
+    uint64_t epoch;
+    uint64_t lease_id;
+    bool stop_post_hook;
+    bool handoff;
+    int handoff_source_node;
+    uint32_t handoff_response_seq;
+    resource_replacement_runtime_t replacement;
+} resource_vip_runtime_t;
 
 typedef struct
 {
@@ -117,11 +163,17 @@ typedef struct
     bool disabled;
     bool shutdown_release_required;
     bool shutdown_release_confirmed;
+    bool handoff_pending;
+    int handoff_source_node;
+    uint32_t handoff_response_seq;
+    uint64_t handoff_epoch;
+    uint64_t handoff_lease_id;
     bool startup_cleanup_failed;
     bool startup_cleanup_broadcast_pending;
     uint64_t next_startup_cleanup_attempt_ms;
     resource_hook_runtime_t hook;
     resource_vip_probe_runtime_t vip_probe;
+    resource_vip_runtime_t vip;
     resource_service_runtime_t service;
     char conflict_reason[LCS_REASON_MAX + 1];
 } resource_runtime_t;
@@ -177,6 +229,9 @@ typedef struct
     uint64_t connect_deadline_ms;
     uint32_t hello_seq;
     uint32_t backoff_ms;
+    struct sockaddr_storage resolved_addrs[LCS_PEER_ADDR_MAX];
+    socklen_t resolved_addr_lens[LCS_PEER_ADDR_MAX];
+    size_t resolved_addr_count;
     uint32_t seen_request_seqs[LCS_SEQ_CACHE_SIZE];
     size_t seen_request_pos;
     unsigned char *inbuf;

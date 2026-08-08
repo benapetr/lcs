@@ -280,9 +280,7 @@ static void systemd_worker_test_delay(void)
     usleep((useconds_t)(delay_ms * 1000ul));
 }
 
-static int systemd_service_spawn_worker(const lcs_resource_config_t *res,
-                                        systemd_worker_action_t action,
-                                        pid_t *pid)
+static int systemd_service_spawn_worker(const lcs_resource_config_t *res, systemd_worker_action_t action, pid_t *pid)
 {
     if (!res || !pid)
         return -1;
@@ -291,6 +289,7 @@ static int systemd_service_spawn_worker(const lcs_resource_config_t *res,
         return -1;
     if (child == 0)
     {
+        (void)setpgid(0, 0);
         /* Do not keep daemon listeners or peer sockets alive if the parent
          * exits while this short-lived worker is waiting on systemd. */
         (void)close_range(3, ~0u, 0);
@@ -309,24 +308,22 @@ static int systemd_service_spawn_worker(const lcs_resource_config_t *res,
             _exit(0);
         _exit(2);
     }
+    (void)setpgid(child, child);
     *pid = child;
     return 0;
 }
 
-int lcs_systemd_service_start_async(const lcs_resource_config_t *res,
-                                    pid_t *pid)
+int lcs_systemd_service_start_async(const lcs_resource_config_t *res, pid_t *pid)
 {
     return systemd_service_spawn_worker(res, SYSTEMD_WORKER_START, pid);
 }
 
-int lcs_systemd_service_stop_async(const lcs_resource_config_t *res,
-                                   pid_t *pid)
+int lcs_systemd_service_stop_async(const lcs_resource_config_t *res, pid_t *pid)
 {
     return systemd_service_spawn_worker(res, SYSTEMD_WORKER_STOP, pid);
 }
 
-int lcs_systemd_service_check_async(const lcs_resource_config_t *res,
-                                    pid_t *pid)
+int lcs_systemd_service_check_async(const lcs_resource_config_t *res, pid_t *pid)
 {
     return systemd_service_spawn_worker(res, SYSTEMD_WORKER_CHECK, pid);
 }
@@ -359,5 +356,6 @@ void lcs_systemd_service_cancel(pid_t pid)
 {
     if (pid <= 0)
         return;
-    (void)kill(pid, SIGKILL);
+    if (kill(-pid, SIGKILL) != 0)
+        (void)kill(pid, SIGKILL);
 }

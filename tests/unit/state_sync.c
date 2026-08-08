@@ -35,12 +35,6 @@ uint64_t lcs_now_ms(void)
     return fake_now_ms;
 }
 
-int resources_stop_local_backend(const lcs_resource_config_t *resource)
-{
-    (void)resource;
-    return stop_backend_result;
-}
-
 int resources_begin_state_replacement(int resource_idx, int owner_node,
                                       uint64_t owner_instance_id,
                                       lcs_resource_state_t state,
@@ -48,15 +42,20 @@ int resources_begin_state_replacement(int resource_idx, int owner_node,
                                       uint64_t deadline_ms,
                                       const char *reason, int epoll_fd)
 {
-    (void)resource_idx;
     (void)owner_node;
     (void)owner_instance_id;
     (void)state;
-    (void)epoch;
     (void)lease_id;
     (void)deadline_ms;
     (void)reason;
     (void)epoll_fd;
+    if (stop_backend_result != 0)
+    {
+        resources_enter_stop_failed_state(resource_idx, epoch + 1,
+                                          "local resource stop failed while applying state sync",
+                                          epoll_fd);
+        return -1;
+    }
     return 0;
 }
 

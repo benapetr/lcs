@@ -20,12 +20,6 @@ bool cluster_local_voting_ready(void)
     return g_state.voting_ready;
 }
 
-int resources_stop_local_backend(const lcs_resource_config_t *resource)
-{
-    (void)resource;
-    return 0;
-}
-
 int resources_begin_state_replacement(int resource_idx, int owner_node,
                                       uint64_t owner_instance_id,
                                       lcs_resource_state_t state,

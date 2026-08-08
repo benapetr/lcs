@@ -16,26 +16,23 @@
 #include <stdio.h>
 #include <string.h>
 
-static uint32_t move_service_allowance_ms(int resource_idx)
+static uint32_t move_backend_allowance_ms(int resource_idx)
 {
-    if (resource_idx < 0 ||
-        (size_t)resource_idx >= g_state.cfg.resource_count ||
-        g_state.cfg.resources[resource_idx].type != LCS_RESOURCE_SERVICE)
-        return 0;
-    return resources_service_operation_timeout_ms();
+    return resources_handoff_operation_timeout_ms(resource_idx);
 }
 
 static uint32_t move_forward_timeout_ms(int resource_idx)
 {
-    return (g_state.cfg.peer_timeout_ms * 2u) + 1000u +
-           move_service_allowance_ms(resource_idx);
+    uint64_t timeout = (uint64_t)g_state.cfg.peer_timeout_ms * 2u + 1000u +
+                       move_backend_allowance_ms(resource_idx);
+    return timeout > UINT32_MAX ? UINT32_MAX : (uint32_t)timeout;
 }
 
 static uint64_t move_deadline_after_ms(int resource_idx)
 {
     return (uint64_t)g_state.cfg.peer_timeout_ms * 3u +
            g_state.cfg.lease_ms + 1000u +
-           move_service_allowance_ms(resource_idx);
+           move_backend_allowance_ms(resource_idx);
 }
 
 static void move_clear(move_runtime_t *move)
@@ -235,7 +232,7 @@ static void move_start_owner_release(int epoll_fd, move_runtime_t *move)
                        sizeof(move->rpc_resp[move->old_owner_idx]),
                        &move->rpc_resp_len[move->old_owner_idx],
                        g_state.cfg.peer_timeout_ms +
-                       move_service_allowance_ms(move->resource_idx),
+                       move_backend_allowance_ms(move->resource_idx),
                        move_rpc_callback,
                        &move->rpc_ctx[move->old_owner_idx]) != 0)
     {
