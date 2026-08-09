@@ -6,9 +6,13 @@
 
 #include "config.h"
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <sys/types.h>
 
 void lcs_vip_set_backend(lcs_vip_backend_t backend);
+bool lcs_vip_dry_run_enabled(void);
+int lcs_vip_check_capabilities(char *error, size_t error_len);
 int lcs_vip_add(const lcs_resource_config_t *vip);
 int lcs_vip_del(const lcs_resource_config_t *vip);
 int lcs_vip_announce(const lcs_config_t *cfg, const lcs_resource_config_t *vip);

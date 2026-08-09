@@ -65,7 +65,8 @@ vip_owner_has()
     local node="$1"
     local vip="$2"
     local owner="$3"
-    status_text "$node" 2>/dev/null | grep -F "$vip " | grep -Fq "owner=$owner"
+    status_text "$node" 2>/dev/null | grep -F "$vip " |
+        grep -F "state=active" | grep -Fq "owner=$owner"
 }
 
 log_has()

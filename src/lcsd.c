@@ -454,6 +454,29 @@ static int setup_runtime(int *epoll_fd)
         return -1;
     }
 
+    bool manages_vips = false;
+    if (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL)
+    {
+        for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+        {
+            if (g_state.cfg.resources[i].type == LCS_RESOURCE_VIP)
+            {
+                manages_vips = true;
+                break;
+            }
+        }
+    }
+    if (manages_vips && !lcs_vip_dry_run_enabled())
+    {
+        char capability_error[512];
+        if (lcs_vip_check_capabilities(capability_error,
+                                       sizeof(capability_error)) != 0)
+        {
+            lcs_log_error("VIP capability check failed: %s", capability_error);
+            return -1;
+        }
+    }
+
     char resolve_error[256] = {0};
     if (peer_resolve_configured_addresses(resolve_error, sizeof(resolve_error)) != 0)
     {

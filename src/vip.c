@@ -12,6 +12,7 @@
 #include <net/if_arp.h>
 #include <netinet/icmp6.h>
 #include <netinet/in.h>
+#include <linux/capability.h>
 #include <linux/rtnetlink.h>
 #include <netpacket/packet.h>
 #include <poll.h>
@@ -21,6 +22,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -55,6 +57,48 @@ void lcs_vip_set_backend(lcs_vip_backend_t backend)
         g_backend = backend;
 }
 
+bool lcs_vip_dry_run_enabled(void)
+{
+    return getenv("LCS_VIP_DRY_RUN") != NULL;
+}
+
+static bool effective_capability_is_set(
+    const struct __user_cap_data_struct data[2], unsigned int capability)
+{
+    size_t word = capability / 32u;
+    unsigned int bit = capability % 32u;
+    return word < 2u && (data[word].effective & (UINT32_C(1) << bit)) != 0;
+}
+
+int lcs_vip_check_capabilities(char *error, size_t error_len)
+{
+    struct __user_cap_header_struct header;
+    struct __user_cap_data_struct data[2];
+    memset(&header, 0, sizeof(header));
+    memset(data, 0, sizeof(data));
+    header.version = _LINUX_CAPABILITY_VERSION_3;
+    header.pid = 0;
+    if (syscall(SYS_capget, &header, data) != 0)
+    {
+        snprintf(error, error_len, "cannot inspect process capabilities: %s",
+                 strerror(errno));
+        return -1;
+    }
+
+    bool has_admin = effective_capability_is_set(data, CAP_NET_ADMIN);
+    bool has_raw = effective_capability_is_set(data, CAP_NET_RAW);
+    if (has_admin && has_raw)
+        return 0;
+
+    snprintf(error, error_len,
+             "VIP resources require CAP_NET_ADMIN and CAP_NET_RAW (missing:%s%s); "
+             "start lcsd through the packaged systemd service, grant the capabilities, "
+             "or use LCS_VIP_DRY_RUN=1 for testing",
+             has_admin ? "" : " CAP_NET_ADMIN",
+             has_raw ? "" : " CAP_NET_RAW");
+    return -1;
+}
+
 static int run_ip_addr(const char *op, const lcs_resource_config_t *vip)
 {
     bool del = strcmp(op, "del") == 0;
@@ -66,7 +110,7 @@ static int run_ip_addr(const char *op, const lcs_resource_config_t *vip)
         lcs_log_warn("forced VIP del failure for %s on %s", vip->address, vip->interface);
         return -1;
     }
-    if (getenv("LCS_VIP_DRY_RUN"))
+    if (lcs_vip_dry_run_enabled())
     {
         lcs_log_info("dry-run VIP %s %s on %s", op, vip->address, vip->interface);
         return 0;
@@ -160,7 +204,7 @@ static int netlink_addr_op(const char *op, const lcs_resource_config_t *vip, boo
         lcs_log_warn("forced netlink VIP del failure for %s on %s", vip->address, vip->interface);
         return -1;
     }
-    if (getenv("LCS_VIP_DRY_RUN"))
+    if (lcs_vip_dry_run_enabled())
     {
         lcs_log_info("dry-run netlink VIP %s %s on %s", op, vip->address, vip->interface);
         return 0;
@@ -572,7 +616,7 @@ static int vip_conflict_check_sync(const lcs_config_t *cfg,
         lcs_log_warn("dry-run VIP conflict detected for %s on %s", vip->address, vip->interface);
         return 1;
     }
-    if (getenv("LCS_VIP_DRY_RUN"))
+    if (lcs_vip_dry_run_enabled())
     {
         lcs_log_info("dry-run VIP conflict check %s on %s", vip->address, vip->interface);
         return 0;
@@ -736,7 +780,7 @@ void lcs_vip_probe_cancel(pid_t pid)
 
 int lcs_vip_announce(const lcs_config_t *cfg, const lcs_resource_config_t *vip)
 {
-    if (getenv("LCS_VIP_DRY_RUN"))
+    if (lcs_vip_dry_run_enabled())
     {
         lcs_log_info("dry-run gratuitous ARP %s on %s", vip->address, vip->interface);
         return 0;
