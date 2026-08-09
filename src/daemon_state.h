@@ -232,6 +232,7 @@ typedef struct
     struct sockaddr_storage resolved_addrs[LCS_PEER_ADDR_MAX];
     socklen_t resolved_addr_lens[LCS_PEER_ADDR_MAX];
     size_t resolved_addr_count;
+    size_t connect_addr_index;
     uint32_t seen_request_seqs[LCS_SEQ_CACHE_SIZE];
     size_t seen_request_pos;
     unsigned char *inbuf;
