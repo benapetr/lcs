@@ -239,6 +239,7 @@ typedef struct
     unsigned char *outbuf;
     size_t out_off;
     size_t out_len;
+    uint16_t protocol_version;
 } peer_runtime_t;
 
 typedef struct
@@ -254,6 +255,7 @@ typedef struct
     int node_idx;
     uint64_t instance_id;
     bool voting_ready;
+    uint16_t protocol_version;
     bool reject_after_flush;
 } inbound_handshake_t;
 
@@ -379,6 +381,33 @@ typedef struct lease_runtime
 
 typedef struct
 {
+    lcs_config_t candidate;
+    char config_path[LCS_PATH_MAX + 1];
+    bool loaded;
+    bool request_pending;
+    bool auto_load_blocked;
+    bool agreed;
+    bool drain_started;
+    bool ready;
+    bool commit_requested;
+    bool commit_broadcast;
+    bool committed_transition;
+    uint64_t active_generation;
+    uint64_t voting_fingerprint;
+    uint64_t full_fingerprint;
+    uint64_t next_announce_ms;
+    uint64_t all_ready_since_ms;
+    uint64_t commit_not_before_ms;
+    bool mismatch_logged;
+    bool peer_loaded[LCS_MAX_NODES];
+    bool peer_agreed[LCS_MAX_NODES];
+    bool peer_ready[LCS_MAX_NODES];
+    uint64_t peer_voting_fingerprint[LCS_MAX_NODES];
+    uint64_t peer_full_fingerprint[LCS_MAX_NODES];
+} config_reload_runtime_t;
+
+typedef struct
+{
     lcs_config_t cfg;
     int self_index;
     uint64_t instance_id;
@@ -387,6 +416,7 @@ typedef struct
     uint32_t quorum_needed;
     uint32_t votes_seen;
     uint64_t started_ms;
+    uint16_t effective_protocol_version;
     uint64_t next_placement_ms;
     uint64_t membership_mask;
     uint64_t membership_since_ms;
@@ -402,6 +432,7 @@ typedef struct
     lease_runtime_t lease_ops[LCS_LEASE_OP_MAX];
     resource_runtime_t resources[LCS_MAX_RESOURCES];
     lease_grant_t lease_grants[LCS_MAX_RESOURCES];
+    config_reload_runtime_t config_reload;
 } daemon_state_t;
 
 extern daemon_state_t g_state;

@@ -172,8 +172,7 @@ typedef struct
     char reason[LCS_REASON_MAX + 1];
 } cluster_state_entry_t;
 
-static int cluster_reject_state(int source_node_idx, int entry_idx,
-                                const char *reason)
+static int cluster_reject_state(int source_node_idx, int entry_idx, const char *reason)
 {
     const char *source = source_node_idx >= 0 ?
                          cluster_node_name_or_none(source_node_idx) : "internal";
@@ -216,8 +215,7 @@ static const char *cluster_validate_state_entry(const cluster_state_entry_t *ent
             break;
         case LCS_RES_STOPPED:
         case LCS_RES_CONFLICT:
-            if (has_owner || entry->owner_instance_id != 0 ||
-                entry->lease_id != 0 || entry->remaining_ms != 0)
+            if (has_owner || entry->owner_instance_id != 0 || entry->lease_id != 0 || entry->remaining_ms != 0)
                 return "stopped or conflicted resource carries ownership or lease state";
             break;
         case LCS_RES_STOP_FAILED:
@@ -244,9 +242,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
     if (count != g_state.cfg.resource_count)
         return cluster_reject_state(source_node_idx, -1, "resource count does not match configuration");
 
-    if (source_node_idx >= 0 &&
-        ((size_t)source_node_idx >= g_state.cfg.node_count ||
-         sender_instance_id != g_state.peers[source_node_idx].instance_id))
+    if (source_node_idx >= 0 && ((size_t)source_node_idx >= g_state.cfg.node_count || sender_instance_id != g_state.peers[source_node_idx].instance_id))
         return cluster_reject_state(source_node_idx, -1, "sender instance does not match the connected peer");
 
     cluster_state_entry_t incoming[LCS_MAX_RESOURCES];
@@ -306,8 +302,7 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
             continue;
         bool incoming_conflict = entry->state == LCS_RES_CONFLICT;
         bool incoming_stop_failed = entry->state == LCS_RES_STOP_FAILED;
-        bool local_unsafe = res->state == LCS_RES_CONFLICT ||
-                            res->state == LCS_RES_STOP_FAILED;
+        bool local_unsafe = res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED;
         bool newer_epoch = entry->epoch > res->epoch;
         bool same_lease = entry->epoch == res->epoch &&
                           entry->lease_id != 0 &&
@@ -321,15 +316,11 @@ int cluster_apply_state(const void *payload, size_t len, int source_node_idx)
          * otherwise replace the owner's authoritative lifecycle state for the
          * same lease.
          */
-        bool preserve_local_state = same_lease &&
-                                    entry->owner == (uint16_t)g_state.self_index &&
-                                    entry->owner_instance_id == g_state.instance_id;
+        bool preserve_local_state = same_lease && entry->owner == (uint16_t)g_state.self_index && entry->owner_instance_id == g_state.instance_id;
         bool unsafe_update = (incoming_conflict || incoming_stop_failed) && entry->epoch >= res->epoch;
         if (local_unsafe && !incoming_conflict && !incoming_stop_failed && entry->epoch <= res->epoch)
             continue;
-        bool local_owner = res->owner_node == g_state.self_index &&
-                           res->owner_instance_id == g_state.instance_id &&
-                           res->state != LCS_RES_STOPPED;
+        bool local_owner = res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id && res->state != LCS_RES_STOPPED;
         if (local_owner && !same_lease && !unsafe_update)
         {
             lcs_log_debug3("ignoring state sync that would replace locally owned resource %s epoch=%llu", g_state.cfg.resources[id].name, (unsigned long long)res->epoch);

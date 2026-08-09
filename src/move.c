@@ -4,6 +4,7 @@
 #include "move.h"
 
 #include "cluster.h"
+#include "config_reload.h"
 #include "group.h"
 #include "lease.h"
 #include "cli_server.h"
@@ -486,6 +487,8 @@ bool move_active_for_resource(int resource_idx)
 
 int move_start_internal(int epoll_fd, int resource_idx, int target_idx, const char *reason)
 {
+    if (config_reload_in_progress())
+        return -1;
     if (resource_idx < 0 || (size_t)resource_idx >= g_state.cfg.resource_count ||
         target_idx < 0 || (size_t)target_idx >= g_state.cfg.node_count)
         return -1;
@@ -550,6 +553,14 @@ int move_start_internal(int epoll_fd, int resource_idx, int target_idx, const ch
 
 int move_start_cli_server(int epoll_fd, int cli_server_slot, uint32_t cli_server_seq, const void *payload, uint32_t len)
 {
+    if (config_reload_in_progress())
+    {
+        cli_server_complete_move(epoll_fd, cli_server_slot,
+                                 g_state.cli_servers[cli_server_slot].id,
+                                 cli_server_seq, -1,
+                                 "cluster configuration reload is in progress");
+        return -1;
+    }
     int resource_idx = -1;
     int target_idx = -1;
     char message[128] = "";
@@ -602,6 +613,10 @@ int move_start_cli_server(int epoll_fd, int cli_server_slot, uint32_t cli_server
 
 int move_start_peer_request(int epoll_fd, int source_node_idx, uint32_t peer_seq, const void *payload, uint32_t len)
 {
+    if (config_reload_in_progress())
+        return peer_queue_simple_resp(epoll_fd, source_node_idx, peer_seq,
+                                      LCS_MSG_MOVE_RESP, -1,
+                                      "cluster configuration reload is in progress");
     int resource_idx = -1;
     int target_idx = -1;
     char message[128] = "";

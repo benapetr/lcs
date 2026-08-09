@@ -5,6 +5,41 @@ should be used on every node, with only the local `[cluster]` `node` value
 changed per host. Lines starting with `#` or `;` are comments; inline comments
 after values are also supported.
 
+## Live resource reload
+
+Deploy the edited configuration file to every node, then run
+`lcs reload` or `systemctl reload lcsd` on any one node (or send `SIGHUP` to
+one `lcsd`). The receiving node announces the candidate and the other nodes
+load their own files automatically. The active configuration is not replaced
+until every
+configured node is online and reports a compatible candidate. Every node must
+then acknowledge that it observed the same complete candidate set before any
+resource is touched. Only after that agreement barrier does the cluster stop
+resources being removed or whose VIP address/interface, resource type, or
+systemd unit changed, followed by the commit.
+
+Resources and groups may be added, removed, or modified. Unchanged resources
+retain ownership, lease, epoch, and administrative state. A changed backend is
+drained and reintroduced as a stopped resource before normal placement resumes.
+Invalid or mismatched candidates do not drain resources or commit; correct the
+files and reload again. A node locks its candidate when it acknowledges that
+the complete candidate set matches; later reload signals on that node are
+ignored until commit. This prevents a file edit from invalidating an agreement
+that another node may already be using. Before agreement, restoring the active
+resource configuration and reloading withdraws that node's pending candidate;
+unchanged resource configuration is treated as a no-op.
+
+Node membership, node roles and addresses, cluster timing, listeners, metrics,
+authentication, and other daemon-wide settings are deliberately rejected by
+live resource reload. Live membership changes require joint-consensus quorum
+transitions and are not implemented yet.
+
+Do not use `systemctl restart lcsd` as a substitute for reload after editing
+resource configuration. A restarted daemon has forgotten the previously active
+configuration and treats the edited file as active immediately, so existing
+members reject it as a configuration mismatch. Reload and wait for the
+candidate to commit before restarting any daemon.
+
 ```ini
 # /etc/lcs/lcs.conf
 #

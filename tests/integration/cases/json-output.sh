@@ -34,12 +34,20 @@ wait_for_owner node1 node1
 status_json="$("$LCS" --json -s "$(node_socket node1)" status)"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["quorum"]')" == "true" ]] ||
     die "status JSON did not report quorum"
+[[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["effective_protocol"]')" == "5" ]] ||
+    die "status JSON did not report effective protocol"
+[[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["effective_protocol_release"]')" == "1.1.0" ]] ||
+    die "status JSON did not map effective protocol to release"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["nodes"][0]["state"]')" == "online" ]] ||
     die "status JSON did not report node state"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["resources"][0]["name"]')" == "vip1" ]] ||
     die "status JSON missing vip1"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["resources"][0]["owner"]')" == "node1" ]] ||
     die "status JSON owner mismatch"
+
+status_text_output="$(status_text node1)"
+printf '%s\n' "$status_text_output" | grep -Fq "protocol: 1.1.0 (wire 5)" ||
+    die "text status did not report mapped effective protocol"
 
 resource_json="$("$LCS" -s "$(node_socket node1)" --json resource list)"
 [[ "$(printf '%s\n' "$resource_json" | json_get 'data["resources"][0]["state"]')" == "active" ]] ||
@@ -48,6 +56,10 @@ resource_json="$("$LCS" -s "$(node_socket node1)" --json resource list)"
 nrpe_json="$("$LCS" -s "$(node_socket node1)" --json nrpe)"
 [[ "$(printf '%s\n' "$nrpe_json" | json_get 'data["state"]')" == "OK" ]] ||
     die "nrpe JSON did not report OK"
+
+reload_json="$("$LCS" -s "$(node_socket node1)" --json reload)"
+[[ "$(printf '%s\n' "$reload_json" | json_get 'data["ok"]')" == "true" ]] ||
+    die "reload JSON did not report an accepted request"
 
 version_json_a="$("$LCS" --json --version)"
 version_json_b="$("$LCS" --version --json)"

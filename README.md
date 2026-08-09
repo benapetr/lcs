@@ -144,6 +144,10 @@ rejects unknown dependencies, self-dependencies, and dependency cycles.
 
 Use `lcs resource list` for a compact resource-only view. `lcs resource stop RESOURCE` marks a resource administratively stopped in cluster memory and releases it through the normal stop path, including hooks. It stays stopped until `lcs resource start RESOURCE` is called, or until the whole cluster is restarted. If local resource removal cannot be confirmed, the owner enters `stop_failed`; fix the local backend condition and run `lcs resource stop RESOURCE` again to retry, or fence/reboot the node if the resource cannot be proven stopped.
 
+After deploying resource configuration to every node, run `lcs reload` on any
+one node to begin the coordinated reload. Restarting a daemon with an edited
+configuration is not a substitute for reload.
+
 # Observability
 
 lcs tool can be used to display cluster status, list resources, run simple monitoring checks, move resources from one node to another one, temporarily stop/start resources, or acknowledge conflicting states
@@ -151,6 +155,7 @@ lcs tool can be used to display cluster status, list resources, run simple monit
 # lcs status
 Cluster
   quorum: yes (3 votes, need 2, membership for 2h 13m 04s)
+  protocol: 1.1.0 (wire 5)
 Nodes
   node1 role=full-member state=online (self)
   node2 role=full-member state=online
@@ -163,7 +168,7 @@ Use `--json` with CLI commands when integrating with automation:
 
 ```
 # lcs --json status
-{"cluster":{"quorum":true,"votes_seen":3,"quorum_needed":2,"membership_seconds":7984},"nodes":[{"id":0,"name":"node1","role":"full-member","state":"online","self":true}],"resources":[{"id":0,"name":"vip1","type":"vip","state":"active","owner":"node1","epoch":11,"lease_id":42,"address":"192.168.6.70/24","interface":"enX0","group":"service","priority":1,"disabled":false}]}
+{"cluster":{"quorum":true,"votes_seen":3,"quorum_needed":2,"membership_seconds":7984,"effective_protocol":5,"effective_protocol_release":"1.1.0"},"nodes":[{"id":0,"name":"node1","role":"full-member","state":"online","self":true}],"resources":[{"id":0,"name":"vip1","type":"vip","state":"active","owner":"node1","epoch":11,"lease_id":42,"address":"192.168.6.70/24","interface":"enX0","group":"service","priority":1,"disabled":false}]}
 
 # lcs --json resource list
 {"resources":[{"name":"vip1","type":"vip","state":"active","owner":"node1","address":"192.168.6.70/24","interface":"enX0","disabled":false}]}

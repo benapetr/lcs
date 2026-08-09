@@ -26,6 +26,28 @@ const char *lcs_protocol_error(void)
     return g_protocol_error;
 }
 
+int lcs_protocol_negotiate(uint16_t local_min, uint16_t local_max,
+                           uint16_t remote_min, uint16_t remote_max,
+                           uint16_t *effective)
+{
+    if (!effective || local_min > local_max || remote_min > remote_max ||
+        remote_max < local_min || remote_min > local_max)
+        return -1;
+    *effective = local_max < remote_max ? local_max : remote_max;
+    return 0;
+}
+
+const char *lcs_peer_protocol_release(uint16_t version)
+{
+    switch (version)
+    {
+        case 5:
+            return "1.1.0";
+        default:
+            return NULL;
+    }
+}
+
 static uint64_t htonll_u64(uint64_t v)
 {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
@@ -233,7 +255,8 @@ int lcs_encode_status_header(lcs_buf_writer_t *w, uint16_t node_count,
                              uint16_t resource_count, uint16_t self_node,
                              uint16_t quorum_needed, uint16_t votes_seen,
                              uint8_t has_quorum,
-                             uint64_t membership_seconds)
+                             uint64_t membership_seconds,
+                             uint16_t effective_protocol)
 {
     return lcs_buf_put_u16(w, LCS_LOCAL_PROTO_VERSION) ||
            lcs_buf_put_u16(w, node_count) ||
@@ -242,14 +265,16 @@ int lcs_encode_status_header(lcs_buf_writer_t *w, uint16_t node_count,
            lcs_buf_put_u16(w, quorum_needed) ||
            lcs_buf_put_u16(w, votes_seen) ||
            lcs_buf_put_u8(w, has_quorum) ||
-           lcs_buf_put_u64(w, membership_seconds) ? -1 : 0;
+           lcs_buf_put_u64(w, membership_seconds) ||
+           lcs_buf_put_u16(w, effective_protocol) ? -1 : 0;
 }
 
 int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
                              uint16_t *resource_count, uint16_t *self_node,
                              uint16_t *quorum_needed, uint16_t *votes_seen,
                              uint8_t *has_quorum,
-                             uint64_t *membership_seconds)
+                             uint64_t *membership_seconds,
+                             uint16_t *effective_protocol)
 {
     uint16_t local_version = 0;
     if (lcs_buf_get_u16(r, &local_version) != 0 ||
@@ -261,7 +286,8 @@ int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
            lcs_buf_get_u16(r, quorum_needed) ||
            lcs_buf_get_u16(r, votes_seen) ||
            lcs_buf_get_u8(r, has_quorum) ||
-           lcs_buf_get_u64(r, membership_seconds) ? -1 : 0;
+           lcs_buf_get_u64(r, membership_seconds) ||
+           lcs_buf_get_u16(r, effective_protocol) ? -1 : 0;
 }
 
 int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role, uint8_t state, uint8_t self, const char *name)

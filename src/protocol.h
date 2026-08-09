@@ -10,8 +10,10 @@
 #include <stdint.h>
 
 #define LCS_PROTO_MAGIC 0x4c435331u
+#define LCS_PEER_PROTO_MIN_VERSION 5
 #define LCS_PEER_PROTO_VERSION 5
-#define LCS_LOCAL_PROTO_VERSION 1003
+#define LCS_PROTO_FEATURE_RESOURCE_RELOAD 5
+#define LCS_LOCAL_PROTO_VERSION 1004
 #define LCS_MAX_FRAME (64u * 1024u)
 
 typedef enum
@@ -27,6 +29,8 @@ typedef enum
     LCS_MSG_RESOURCE_START_RESP = 9,
     LCS_MSG_RESOURCE_STOP_REQ = 10,
     LCS_MSG_RESOURCE_STOP_RESP = 11,
+    LCS_MSG_RELOAD_REQ = 12,
+    LCS_MSG_RELOAD_RESP = 13,
     LCS_MSG_HELLO = 16,
     LCS_MSG_HELLO_ACK = 17,
     LCS_MSG_STATE_SYNC_REQ = 18,
@@ -39,6 +43,8 @@ typedef enum
     LCS_MSG_OWNER_RELEASE_RESP = 25,
     LCS_MSG_HEARTBEAT = 26,
     LCS_MSG_LEASE_COMMIT = 27,
+    LCS_MSG_CONFIG_RELOAD = 28,
+    LCS_MSG_CONFIG_RELOAD_COMMIT = 29,
 } lcs_msg_type_t;
 
 typedef struct
@@ -82,6 +88,10 @@ int lcs_read_frame(int fd, lcs_frame_header_t *hdr, void *payload, size_t payloa
 int lcs_write_frame(int fd, uint16_t type, uint32_t seq, const void *payload, uint32_t length);
 uint32_t lcs_next_seq(void);
 const char *lcs_protocol_error(void);
+int lcs_protocol_negotiate(uint16_t local_min, uint16_t local_max,
+                           uint16_t remote_min, uint16_t remote_max,
+                           uint16_t *effective);
+const char *lcs_peer_protocol_release(uint16_t version);
 
 int lcs_encode_move_req(void *payload, size_t cap, size_t *len,  const char *vip, const char *target_node);
 int lcs_decode_move_req(const void *payload, size_t len, char *vip, size_t vip_len, char *target_node, size_t target_node_len);
@@ -96,12 +106,14 @@ int lcs_encode_status_header(lcs_buf_writer_t *w, uint16_t node_count,
                              uint16_t resource_count, uint16_t self_node,
                              uint16_t quorum_needed, uint16_t votes_seen,
                              uint8_t has_quorum,
-                             uint64_t membership_seconds);
+                             uint64_t membership_seconds,
+                             uint16_t effective_protocol);
 int lcs_decode_status_header(lcs_buf_reader_t *r, uint16_t *node_count,
                              uint16_t *resource_count, uint16_t *self_node,
                              uint16_t *quorum_needed, uint16_t *votes_seen,
                              uint8_t *has_quorum,
-                             uint64_t *membership_seconds);
+                             uint64_t *membership_seconds,
+                             uint16_t *effective_protocol);
 int lcs_encode_status_node(lcs_buf_writer_t *w, uint16_t id, uint16_t role,
                            uint8_t state, uint8_t self, const char *name);
 int lcs_decode_status_node(lcs_buf_reader_t *r, uint16_t *id, uint16_t *role,

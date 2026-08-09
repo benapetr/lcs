@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Petr Bena <petr@bena.rocks>
 
 #include "cluster.h"
+#include "config_reload.h"
 #include "config.h"
 #include "daemon_state.h"
 #include "epoll_util.h"
@@ -31,6 +32,7 @@
 #include <unistd.h>
 
 volatile sig_atomic_t g_stop;
+static volatile sig_atomic_t g_reload;
 daemon_state_t g_state;
 int g_peer_listener_fd = -1;
 int g_cli_server_fd = -1;
@@ -73,6 +75,12 @@ static void on_signal(int signo)
     static const char msg[] = "received signal - shutting down\n";
     ssize_t written;
 
+    if (signo == SIGHUP)
+    {
+        g_reload = 1;
+        return;
+    }
+
     if (g_stop)
         return;
 
@@ -93,7 +101,9 @@ static int install_signal_handlers(void)
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_signal;
     sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGINT, &sa, NULL) != 0 || sigaction(SIGTERM, &sa, NULL) != 0)
+    if (sigaction(SIGINT, &sa, NULL) != 0 ||
+        sigaction(SIGTERM, &sa, NULL) != 0 ||
+        sigaction(SIGHUP, &sa, NULL) != 0)
         return -1;
 
     signal(SIGPIPE, SIG_IGN);
@@ -380,6 +390,7 @@ static void initialize_daemon_state(void)
     g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
     g_state.votes_seen = 0;
     g_state.started_ms = lcs_now_ms();
+    g_state.effective_protocol_version = LCS_PEER_PROTO_MIN_VERSION;
 
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
         g_state.peers[i].fd = -1;
@@ -500,6 +511,9 @@ static void log_daemon_started(void)
                  g_metrics_fd >= 0 ? g_state.cfg.metrics_bind_address : "-",
                  g_metrics_fd >= 0 ? g_state.cfg.metrics_port : 0,
                  g_state.quorum_needed, g_state.cfg.node_count);
+    lcs_log_info("peer protocol supported=%u-%u effective=%u",
+                 LCS_PEER_PROTO_MIN_VERSION, LCS_PEER_PROTO_VERSION,
+                 g_state.effective_protocol_version);
     lcs_log_info("restart recovery active; lease voting disabled for %llu ms and until state sync reaches %u votes",
                  (unsigned long long)((uint64_t)g_state.cfg.lease_ms + (uint64_t)g_state.cfg.peer_timeout_ms),
                  g_state.quorum_needed);
@@ -516,6 +530,11 @@ static void run_daemon_loop(int epoll_fd)
     // Main loop
     while (!g_stop)
     {
+        if (g_reload)
+        {
+            g_reload = 0;
+            config_reload_request();
+        }
         if (scheduler_run_once(&sched) != 0)
             break;
     }
@@ -575,6 +594,7 @@ int main(int argc, char **argv)
 
     bool syslog_enabled = open_daemon_log(&opts);
     initialize_daemon_state();
+    config_reload_init(opts.config_path);
     log_startup_config(&opts, syslog_enabled);
     group_log_strict_warnings();
 

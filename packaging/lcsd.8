@@ -227,6 +227,18 @@ Default local control socket.
 Packaged systemd unit on many distributions.
 .SH SIGNALS
 .TP
+.B SIGHUP
+Load a resource-configuration candidate. The daemon announces the candidate to
+the cluster; peers load their local files automatically, and every configured
+node must acknowledge the same compatible candidate before any resource is
+drained. Removed resources and changed backend identities are then stopped and
+the candidate commits only after every node is ready. Deploy the
+new configuration file to every node before sending SIGHUP to any one node.
+Adding and removing resources and changing resource or group properties is
+supported. Node membership, roles, addresses, quorum timing, listener settings,
+and other daemon-wide settings cannot be changed by live reload. A rejected or
+mismatched candidate leaves the active configuration unchanged.
+.TP
 .B SIGTERM
 Gracefully shut down. Locally owned VIPs are released before exit.
 .TP

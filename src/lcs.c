@@ -19,6 +19,7 @@ static void usage(FILE *out)
     fprintf(out, "usage: lcs [--version]\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] status\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] nrpe\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] reload\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource list\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource move RESOURCE NODE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource start RESOURCE\n");
@@ -147,6 +148,7 @@ typedef struct
     uint16_t votes_seen;
     uint64_t membership_seconds;
     uint8_t has_quorum;
+    uint16_t effective_protocol;
     status_node_t nodes[LCS_MAX_NODES];
     status_resource_t resources[LCS_MAX_RESOURCES];
 } status_snapshot_t;
@@ -173,10 +175,18 @@ static void print_status_json(const status_snapshot_t *status)
     char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1];
     status_node_names(status, node_names);
 
-    printf("{\"cluster\":{\"quorum\":%s,\"votes_seen\":%u,\"quorum_needed\":%u,\"membership_seconds\":%llu},",
+    printf("{\"cluster\":{\"quorum\":%s,\"votes_seen\":%u,\"quorum_needed\":%u,\"membership_seconds\":%llu,\"effective_protocol\":%u,\"effective_protocol_release\":",
            status->has_quorum ? "true" : "false",
            status->votes_seen, status->quorum_needed,
-           (unsigned long long)status->membership_seconds);
+           (unsigned long long)status->membership_seconds,
+           status->effective_protocol);
+    const char *protocol_release =
+        lcs_peer_protocol_release(status->effective_protocol);
+    if (protocol_release)
+        json_string(stdout, protocol_release);
+    else
+        printf("null");
+    printf("},");
 
     printf("\"nodes\":[");
     for (uint16_t i = 0; i < status->node_count; i++)
@@ -282,7 +292,8 @@ static int fetch_status(const char *socket_path, status_snapshot_t *status)
     if (lcs_decode_status_header(&r, &status->node_count, &status->resource_count,
                                  &status->self_node, &status->quorum_needed,
                                  &status->votes_seen, &status->has_quorum,
-                                 &status->membership_seconds) != 0 ||
+                                 &status->membership_seconds,
+                                 &status->effective_protocol) != 0 ||
         status->node_count > LCS_MAX_NODES ||
         status->resource_count > LCS_MAX_RESOURCES)
     {
@@ -346,6 +357,13 @@ static int cmd_status(const char *socket_path, bool json_output)
     printf("  quorum: %s (%u votes, need %u, membership for %s)\n",
            status.has_quorum ? "yes" : "no", status.votes_seen,
            status.quorum_needed, membership_for);
+    const char *protocol_release =
+        lcs_peer_protocol_release(status.effective_protocol);
+    if (protocol_release)
+        printf("  protocol: %s (wire %u)\n", protocol_release,
+               status.effective_protocol);
+    else
+        printf("  protocol: wire %u\n", status.effective_protocol);
     printf("Nodes\n");
     char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1];
     memset(node_names, 0, sizeof(node_names));
@@ -636,6 +654,55 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip, bool jso
     return 0;
 }
 
+static int cmd_reload(const char *socket_path, bool json_output)
+{
+    int fd = connect_socket(socket_path);
+    if (fd < 0)
+        return 1;
+
+    uint32_t seq = lcs_next_seq();
+    if (lcs_write_frame(fd, LCS_MSG_RELOAD_REQ, seq, NULL, 0) != 0)
+    {
+        fprintf(stderr, "lcs: failed to send configuration reload request\n");
+        close(fd);
+        return 1;
+    }
+    unsigned char payload[LCS_MAX_FRAME];
+    lcs_frame_header_t hdr;
+    int read_rc = lcs_read_frame(fd, &hdr, payload, sizeof(payload));
+    if (read_rc <= 0)
+    {
+        fprintf(stderr, "lcs: invalid configuration reload response: %s\n",
+                lcs_protocol_error());
+        close(fd);
+        return 1;
+    }
+    if (hdr.type != LCS_MSG_RELOAD_RESP && hdr.type != LCS_MSG_ERROR)
+    {
+        fprintf(stderr, "lcs: invalid configuration reload response: got message type %u, expected %u or %u\n",
+                hdr.type, LCS_MSG_RELOAD_RESP, LCS_MSG_ERROR);
+        close(fd);
+        return 1;
+    }
+    close(fd);
+
+    int32_t status = -1;
+    char message[128];
+    if (lcs_decode_simple_resp(payload, hdr.length, &status, message,
+                               sizeof(message)) != 0)
+    {
+        fprintf(stderr, "lcs: invalid configuration reload response payload\n");
+        return 1;
+    }
+    if (json_output)
+        print_simple_response_json(status == 0, message);
+    else if (status == 0)
+        printf("%s\n", message);
+    else
+        fprintf(stderr, "lcs: %s\n", message);
+    return status == 0 ? 0 : 1;
+}
+
 static int cmd_resource_control(const char *socket_path, const char *resource, uint16_t req_type, uint16_t resp_type, const char *action, bool json_output)
 {
     int fd = connect_socket(socket_path);
@@ -904,6 +971,15 @@ int main(int argc, char **argv)
             return 2;
         }
         return cmd_nrpe(socket_path, json_output);
+    }
+    if (strcmp(cmd, "reload") == 0)
+    {
+        if (optind != argc)
+        {
+            usage(stderr);
+            return 2;
+        }
+        return cmd_reload(socket_path, json_output);
     }
     if (strcmp(cmd, "resource") == 0)
         return cmd_resource(socket_path, argc, argv, optind, json_output);

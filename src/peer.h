@@ -13,6 +13,7 @@
 extern int g_peer_listener_fd;
 
 int peer_resolve_configured_addresses(char *error, size_t error_len);
+uint16_t peer_effective_protocol_version(void);
 void handshake_expire(int epoll_fd);
 void handshake_close(int epoll_fd, int slot_idx, const char *reason);
 void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const char *reason);
@@ -27,6 +28,10 @@ int peer_queue_simple_resp(int epoll_fd, int node_idx,
                            const char *message);
 void peer_broadcast_state_sync(int epoll_fd);
 void peer_broadcast_lease_commit(int epoll_fd, const void *payload, uint32_t len);
+void peer_broadcast_config_reload(int epoll_fd);
+void peer_broadcast_config_reload_commit(int epoll_fd, const void *payload,
+                                         uint32_t len);
+void peer_close_all_for_config_reload(int epoll_fd);
 void peer_pump_epoll_event(int epoll_fd, const struct epoll_event *ev);
 void peer_poll(int epoll_fd);
 

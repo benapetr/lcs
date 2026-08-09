@@ -203,6 +203,7 @@ Usage:
 lcs [--version]
 lcs [-s SOCKET|--socket SOCKET] status
 lcs [-s SOCKET|--socket SOCKET] nrpe
+lcs [-s SOCKET|--socket SOCKET] reload
 lcs [-s SOCKET|--socket SOCKET] resource list
 lcs [-s SOCKET|--socket SOCKET] resource move RESOURCE NODE
 lcs [-s SOCKET|--socket SOCKET] resource start RESOURCE
@@ -224,6 +225,7 @@ Commands:
 |---------|-------------|
 | `status` | Print cluster quorum, node status, VIP state, ownership, epochs, group metadata, and conflict details as seen by the local daemon. |
 | `nrpe` | Print one monitoring-plugin style line and exit with Nagios-compatible status codes. |
+| `reload` | Ask the local daemon to begin the same coordinated resource-configuration reload as `SIGHUP`. |
 | `resource list` | Print a compact resource-only view. |
 | `resource move RESOURCE NODE` | Request a controlled cluster-level handoff of `RESOURCE` to `NODE`. The target must be an online `full-member`. |
 | `resource start RESOURCE` | Clear an administrative stop and allow normal placement again. |
@@ -241,6 +243,7 @@ Example:
 ```
 Cluster
   quorum: yes (2 votes, need 2, membership for 4m 12s)
+  protocol: 1.1.0 (wire 5)
 ```
 
 `lcs nrpe` prints a single monitoring-plugin style line and exits with Nagios-compatible status codes:

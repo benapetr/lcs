@@ -18,6 +18,12 @@ lcs \- command line client for the Lightweight Cluster Service daemon
 .RB [ \-s
 .IR SOCKET | \-\-socket
 .IR SOCKET ]
+.B reload
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
 .B resource
 .B list
 .br
@@ -87,6 +93,13 @@ cluster section includes the current membership shape duration.
 Print a single monitoring-plugin style status line and exit with Nagios
 compatible status codes. Exit status is 0 for OK, 1 for WARNING, 2 for
 CRITICAL, and 3 for UNKNOWN.
+.TP
+.B reload
+Ask the local daemon to begin a coordinated resource-configuration reload.
+This is equivalent to sending
+.B SIGHUP
+or running
+.BR "systemctl reload lcsd" .
 .TP
 .B resource list
 Print a compact resource-only view.

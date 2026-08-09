@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/sbin/lcsd --no-syslog --no-timestamp --config /etc/lcs/lcs.conf
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 RuntimeDirectory=lcs

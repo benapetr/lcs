@@ -4,6 +4,7 @@
 #include "cli_server.h"
 
 #include "cluster.h"
+#include "config_reload.h"
 #include "log.h"
 #include "move.h"
 #include "peer.h"
@@ -143,7 +144,8 @@ static void cli_server_queue_status(int epoll_fd, int slot_idx, uint32_t seq)
                                  (uint16_t)g_state.quorum_needed,
                                  (uint16_t)g_state.votes_seen,
                                  cluster_has_quorum() ? 1 : 0,
-                                 membership_seconds) != 0)
+                                 membership_seconds,
+                                 g_state.effective_protocol_version) != 0)
     {
         cli_server_queue_error(epoll_fd, slot_idx, seq, "failed to encode status header");
         return;
@@ -219,6 +221,9 @@ static void cli_server_queue_clear_conflict(int epoll_fd, int slot_idx, uint32_t
     if (lcs_decode_clear_conflict_req(payload, len, vip_name, sizeof(vip_name)) != 0)
     {
         snprintf(message, sizeof(message), "invalid clear-conflict request");
+    } else if (config_reload_in_progress())
+    {
+        snprintf(message, sizeof(message), "cluster configuration reload is in progress");
     } else if (!cluster_has_quorum())
     {
         snprintf(message, sizeof(message), "majority quorum is not available");
@@ -264,6 +269,9 @@ static void cli_server_queue_resource_control(int epoll_fd, int slot_idx, uint16
     if (lcs_decode_resource_req(payload, len, resource_name, sizeof(resource_name)) != 0)
     {
         snprintf(message, sizeof(message), "invalid resource request");
+    } else if (!disabled && config_reload_in_progress())
+    {
+        snprintf(message, sizeof(message), "cluster configuration reload is in progress");
     } else if (!cluster_has_quorum())
     {
         snprintf(message, sizeof(message), "majority quorum is not available");
@@ -279,6 +287,26 @@ static void cli_server_queue_resource_control(int epoll_fd, int slot_idx, uint16
         }
     }
     cli_server_queue_simple_response(epoll_fd, slot_idx, resp_type, seq, status, message);
+}
+
+static void cli_server_queue_reload(int epoll_fd, int slot_idx, uint32_t seq, uint32_t len)
+{
+    int32_t status = -1;
+    const char *message;
+    if (len != 0)
+        message = "invalid configuration reload request";
+    else if (g_state.effective_protocol_version <
+             LCS_PROTO_FEATURE_RESOURCE_RELOAD)
+        message = "cluster effective protocol does not support resource reload";
+    else if (g_state.config_reload.agreed)
+        message = "configuration reload candidate is already agreement-locked";
+    else
+    {
+        config_reload_request();
+        status = 0;
+        message = "configuration reload requested";
+    }
+    cli_server_queue_simple_response(epoll_fd, slot_idx, LCS_MSG_RELOAD_RESP, seq, status, message);
 }
 
 static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
@@ -300,6 +328,9 @@ static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_
             break;
         case LCS_MSG_RESOURCE_STOP_REQ:
             cli_server_queue_resource_control(epoll_fd, slot_idx, LCS_MSG_RESOURCE_STOP_RESP, hdr->seq, payload, hdr->length, true);
+            break;
+        case LCS_MSG_RELOAD_REQ:
+            cli_server_queue_reload(epoll_fd, slot_idx, hdr->seq, hdr->length);
             break;
         default:
             cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, "unsupported local CLI message");

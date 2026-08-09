@@ -7,7 +7,16 @@ OPERATIONS_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-lease-operations.XXXXXX")"
 RECOVERY_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-recovery.XXXXXX")"
 SYNC_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-state-sync.XXXXXX")"
 CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-fingerprint.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN"' EXIT
+PROTOCOL_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-protocol-negotiation.XXXXXX")"
+trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN"' EXIT
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
+    "$ROOT_DIR/tests/unit/protocol_negotiation.c" \
+    "$ROOT_DIR/src/protocol.c" \
+    -Wl,--gc-sections -o "$PROTOCOL_BIN"
+"$PROTOCOL_BIN"
+echo "protocol negotiation unit tests passed"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \

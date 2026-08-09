@@ -4,6 +4,7 @@
 #include "scheduler.h"
 
 #include "group.h"
+#include "config_reload.h"
 #include "lease.h"
 #include "cli_server.h"
 #include "log.h"
@@ -83,7 +84,8 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     lease_expire_remote();
     resources_process_hooks(sched->epoll_fd);
     resources_maintain_owned_leases(sched->epoll_fd);
-    if (run_placement)
+    config_reload_process(sched->epoll_fd);
+    if (run_placement && !config_reload_in_progress())
     {
         g_state.next_placement_ms = now + LCS_PLACEMENT_INTERVAL_MS;
         resources_auto_place(sched->epoll_fd);

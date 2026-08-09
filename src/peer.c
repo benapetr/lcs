@@ -4,6 +4,7 @@
 #include "peer.h"
 
 #include "cluster.h"
+#include "config_reload.h"
 #include "epoll_util.h"
 #include "lease.h"
 #include "log.h"
@@ -153,6 +154,8 @@ static bool peer_is_request_type(uint16_t type)
         case LCS_MSG_LEASE_COMMIT:
         case LCS_MSG_OWNER_RELEASE_REQ:
         case LCS_MSG_MOVE_REQ:
+        case LCS_MSG_CONFIG_RELOAD:
+        case LCS_MSG_CONFIG_RELOAD_COMMIT:
             return true;
         default:
             return false;
@@ -217,7 +220,8 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
 {
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, cap);
-    if (lcs_buf_put_u16(&w, LCS_PEER_PROTO_VERSION) != 0 ||
+    if (lcs_buf_put_u16(&w, LCS_PEER_PROTO_MIN_VERSION) != 0 ||
+        lcs_buf_put_u16(&w, LCS_PEER_PROTO_VERSION) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.self_index) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.node_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.group_count) != 0 ||
@@ -228,6 +232,14 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
         lcs_buf_put_u64(&w, g_state.instance_id) != 0 ||
         lcs_buf_put_u64(&w, lcs_config_voting_fingerprint(&g_state.cfg)) != 0 ||
         lcs_buf_put_u64(&w, lcs_config_full_fingerprint(&g_state.cfg)) != 0 ||
+        lcs_buf_put_u8(&w, g_state.config_reload.loaded ? 1 : 0) != 0 ||
+        lcs_buf_put_u8(&w, g_state.config_reload.agreed ? 1 : 0) != 0 ||
+        lcs_buf_put_u8(&w, g_state.config_reload.ready ? 1 : 0) != 0 ||
+        lcs_buf_put_u8(&w, g_state.config_reload.committed_transition ? 1 : 0) != 0 ||
+        lcs_buf_put_u64(&w, g_state.config_reload.loaded ?
+                        g_state.config_reload.voting_fingerprint : 0) != 0 ||
+        lcs_buf_put_u64(&w, g_state.config_reload.loaded ?
+                        g_state.config_reload.full_fingerprint : 0) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.nodes[g_state.self_index].name, LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.cluster_name, LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.secret, LCS_NAME_MAX + 1) != 0)
@@ -238,17 +250,22 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
 
 static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
                              uint64_t *instance_id, uint8_t *mode,
-                             bool *voting_ready, char *error, size_t error_len)
+                             bool *voting_ready, uint16_t *protocol_version,
+                             bool *transition_only,
+                             char *error, size_t error_len)
 {
     lcs_buf_reader_t r;
     lcs_buf_reader_init(&r, payload, len);
-    uint16_t proto_version, remote_idx, node_count, group_count, resource_count, role;
+    uint16_t proto_min, proto_max, remote_idx, node_count, group_count, resource_count, role;
     uint64_t voting_fingerprint, full_fingerprint;
-    uint8_t ready;
+    uint64_t candidate_voting_fingerprint, candidate_full_fingerprint;
+    uint8_t ready, candidate_present, candidate_agreed, candidate_ready;
+    uint8_t commit_proof;
     char name[LCS_NAME_MAX + 1];
     char cluster_name[LCS_NAME_MAX + 1];
     char secret[LCS_NAME_MAX + 1];
-    if (lcs_buf_get_u16(&r, &proto_version) != 0 ||
+    if (lcs_buf_get_u16(&r, &proto_min) != 0 ||
+        lcs_buf_get_u16(&r, &proto_max) != 0 ||
         lcs_buf_get_u16(&r, &remote_idx) != 0 ||
         lcs_buf_get_u16(&r, &node_count) != 0 ||
         lcs_buf_get_u16(&r, &group_count) != 0 ||
@@ -259,23 +276,39 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
         lcs_buf_get_u64(&r, instance_id) != 0 ||
         lcs_buf_get_u64(&r, &voting_fingerprint) != 0 ||
         lcs_buf_get_u64(&r, &full_fingerprint) != 0 ||
+        lcs_buf_get_u8(&r, &candidate_present) != 0 ||
+        lcs_buf_get_u8(&r, &candidate_agreed) != 0 ||
+        lcs_buf_get_u8(&r, &candidate_ready) != 0 ||
+        lcs_buf_get_u8(&r, &commit_proof) != 0 ||
+        lcs_buf_get_u64(&r, &candidate_voting_fingerprint) != 0 ||
+        lcs_buf_get_u64(&r, &candidate_full_fingerprint) != 0 ||
         lcs_buf_get_fixed_string(&r, name, sizeof(name), LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_get_fixed_string(&r, cluster_name, sizeof(cluster_name), LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_get_fixed_string(&r, secret, sizeof(secret), LCS_NAME_MAX + 1) != 0 ||
-        r.off != r.len || ready > 1)
+        r.off != r.len || ready > 1 || candidate_present > 1 ||
+        candidate_agreed > 1 || candidate_ready > 1 || commit_proof > 1 ||
+        (candidate_ready && !candidate_agreed) || (!candidate_present &&
+        (candidate_agreed || candidate_ready || candidate_voting_fingerprint ||
+         candidate_full_fingerprint)))
     {
         snprintf(error, error_len, "invalid HELLO payload");
         return -1;
     }
 
-    if (proto_version != LCS_PEER_PROTO_VERSION)
+    if (lcs_protocol_negotiate(LCS_PEER_PROTO_MIN_VERSION,
+                               LCS_PEER_PROTO_VERSION,
+                               proto_min, proto_max,
+                               protocol_version) != 0)
     {
-        lcs_log_debug("rejecting HELLO with peer protocol version %u, expected %u", proto_version, LCS_PEER_PROTO_VERSION);
-        snprintf(error, error_len, "peer protocol mismatch (local=%u remote=%u)",
-                 LCS_PEER_PROTO_VERSION, proto_version);
+        lcs_log_debug("rejecting HELLO with peer protocol range %u-%u, local range is %u-%u",
+                      proto_min, proto_max, LCS_PEER_PROTO_MIN_VERSION,
+                      LCS_PEER_PROTO_VERSION);
+        snprintf(error, error_len,
+                 "peer protocol mismatch (local=%u-%u remote=%u-%u)",
+                 LCS_PEER_PROTO_MIN_VERSION, LCS_PEER_PROTO_VERSION,
+                 proto_min, proto_max);
         return -1;
     }
-
     int idx = lcs_config_node_index(&g_state.cfg, name);
     if (idx < 0)
     {
@@ -283,10 +316,10 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
         return -1;
     }
     if (idx != (int)remote_idx || node_count != g_state.cfg.node_count ||
-        resource_count != g_state.cfg.resource_count || role != (uint16_t)g_state.cfg.nodes[idx].role)
+        role != (uint16_t)g_state.cfg.nodes[idx].role)
     {
         snprintf(error, error_len,
-                 "configuration mismatch with node %s: membership or resource schema differs", name);
+                 "configuration mismatch with node %s: membership differs", name);
         return -1;
     }
 
@@ -310,31 +343,70 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
     }
 
     uint64_t local_voting = lcs_config_voting_fingerprint(&g_state.cfg);
-    if (voting_fingerprint != local_voting)
+    uint64_t local_full = lcs_config_full_fingerprint(&g_state.cfg);
+    bool compare_full = g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL &&
+                        role == LCS_NODE_FULL;
+    bool active_matches = voting_fingerprint == local_voting &&
+                          (!compare_full || full_fingerprint == local_full) &&
+                          resource_count == g_state.cfg.resource_count &&
+                          group_count == g_state.cfg.group_count;
+    bool remote_candidate_is_active = candidate_present &&
+                                      candidate_voting_fingerprint == local_voting &&
+                                      (!compare_full ||
+                                       candidate_full_fingerprint == local_full);
+    bool candidate_is_committed_active = candidate_present &&
+                                         candidate_agreed && candidate_ready &&
+                                         g_state.config_reload.committed_transition &&
+                                         candidate_voting_fingerprint == local_voting &&
+                                         candidate_full_fingerprint == local_full;
+
+    *transition_only = false;
+    if (commit_proof && g_state.config_reload.loaded &&
+        voting_fingerprint == g_state.config_reload.voting_fingerprint &&
+        full_fingerprint == g_state.config_reload.full_fingerprint)
     {
+        if (g_state.config_reload.ready)
+            g_state.config_reload.commit_requested = true;
         snprintf(error, error_len,
-                 "configuration mismatch: quorum settings differ; check lease_ms/renew_ms/peer_timeout_ms, node roles, and resource names/types");
-        lcs_log_warn("configuration mismatch with node %s: quorum settings differ "
-                     "(local=%016llx remote=%016llx)", name,
-                     (unsigned long long)local_voting,
-                     (unsigned long long)voting_fingerprint);
+                 "peer has committed the prepared configuration; local commit scheduled");
+        lcs_log_info("configuration reload convergence detected from %s; scheduling local commit",
+                     name);
+        return -1;
+    }
+    if (!active_matches && remote_candidate_is_active &&
+        g_state.config_reload.committed_transition)
+        *transition_only = true;
+    else if (!active_matches)
+    {
+        if (voting_fingerprint != local_voting)
+            snprintf(error, error_len,
+                     "configuration mismatch: quorum settings differ; check lease_ms/renew_ms/peer_timeout_ms, node roles, and resource names/types");
+        else if (compare_full && full_fingerprint != local_full)
+            snprintf(error, error_len,
+                     "configuration mismatch: full-member resources differ; check groups, placement, dependencies, VIP addresses, and service units");
+        else
+            snprintf(error, error_len,
+                     "configuration mismatch: active and prepared resource schemas do not match");
+        lcs_log_warn("configuration mismatch with node %s: active=%016llx/%016llx remote=%016llx/%016llx",
+                     name, (unsigned long long)local_voting,
+                     (unsigned long long)local_full,
+                     (unsigned long long)voting_fingerprint,
+                     (unsigned long long)full_fingerprint);
         return -1;
     }
 
-    if (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL &&
-        role == LCS_NODE_FULL)
+    if (candidate_present && !*transition_only &&
+        !candidate_is_committed_active)
     {
-        uint64_t local_full = lcs_config_full_fingerprint(&g_state.cfg);
-        if (full_fingerprint != local_full)
-        {
-            snprintf(error, error_len,
-                     "configuration mismatch: full-member resources differ; check groups, placement, dependencies, VIP addresses, and service units");
-            lcs_log_warn("configuration mismatch with full-member node %s: resource definitions differ "
-                         "(local=%016llx remote=%016llx)", name,
-                         (unsigned long long)local_full,
-                         (unsigned long long)full_fingerprint);
-            return -1;
-        }
+        config_reload_runtime_t *reload = &g_state.config_reload;
+        reload->peer_loaded[idx] = true;
+        reload->peer_agreed[idx] = candidate_agreed != 0;
+        reload->peer_ready[idx] = candidate_ready != 0;
+        reload->peer_voting_fingerprint[idx] = candidate_voting_fingerprint;
+        reload->peer_full_fingerprint[idx] = candidate_full_fingerprint;
+        if (!reload->loaded && !reload->request_pending &&
+            !reload->auto_load_blocked)
+            reload->request_pending = true;
     }
         
     *node_idx = idx;
@@ -500,6 +572,7 @@ static int handshake_promote(int epoll_fd, int slot_idx)
     int node_idx = hs->node_idx;
     uint64_t instance_id = hs->instance_id;
     bool voting_ready = hs->voting_ready;
+    uint16_t protocol_version = hs->protocol_version;
     if (fd < 0 || node_idx < 0)
         return -1;
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
@@ -516,6 +589,7 @@ static int handshake_promote(int epoll_fd, int slot_idx)
         return -1;
     }
     g_state.peers[node_idx].voting_ready = voting_ready;
+    g_state.peers[node_idx].protocol_version = protocol_version;
     return 0;
 }
 
@@ -570,9 +644,13 @@ static int handshake_process_frame(int epoll_fd, int slot_idx, const lcs_frame_h
     uint64_t instance_id = 0;
     uint8_t mode = 0;
     bool voting_ready = false;
+    uint16_t protocol_version = 0;
+    bool transition_only = false;
     char hello_error[512];
     if (peer_decode_hello(payload, hdr->length, &node_idx, &instance_id,
-                          &mode, &voting_ready, hello_error, sizeof(hello_error)) != 0)
+                          &mode, &voting_ready, &protocol_version,
+                          &transition_only,
+                          hello_error, sizeof(hello_error)) != 0)
     {
         return handshake_reject(epoll_fd, slot_idx, hdr->seq, hello_error);
     }
@@ -601,6 +679,9 @@ static int handshake_process_frame(int epoll_fd, int slot_idx, const lcs_frame_h
     hs->node_idx = node_idx;
     hs->instance_id = instance_id;
     hs->voting_ready = voting_ready;
+    hs->protocol_version = protocol_version;
+    if (transition_only)
+        hs->reject_after_flush = true;
     lcs_log_debug3("inbound HELLO accepted from %s slot=%d seq=%u", g_state.cfg.nodes[node_idx].name, slot_idx, hdr->seq);
     return handshake_flush_output(epoll_fd, slot_idx);
 }
@@ -832,6 +913,16 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx,
                                      unsigned char *payload)
 {
     size_t len = 0;
+    if ((hdr->type == LCS_MSG_CONFIG_RELOAD ||
+         hdr->type == LCS_MSG_CONFIG_RELOAD_COMMIT) &&
+        g_state.peers[source_node_idx].protocol_version <
+        LCS_PROTO_FEATURE_RESOURCE_RELOAD)
+    {
+        peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq,
+                               LCS_MSG_ERROR, -1,
+                               "message requires a newer negotiated protocol");
+        return -1;
+    }
     if (hdr->seq == 0)
     {
         peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "invalid sequence");
@@ -892,6 +983,12 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx,
         case LCS_MSG_MOVE_REQ:
             move_start_peer_request(epoll_fd, source_node_idx, hdr->seq, payload, hdr->length);
             return 0;
+        case LCS_MSG_CONFIG_RELOAD:
+            return config_reload_handle_announcement(payload, hdr->length,
+                                                     source_node_idx);
+        case LCS_MSG_CONFIG_RELOAD_COMMIT:
+            return config_reload_handle_commit(payload, hdr->length,
+                                               source_node_idx);
         default:
             peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "unsupported peer message");
             return -1;
@@ -1054,9 +1151,13 @@ static int peer_complete_outbound_hello(int epoll_fd, int node_idx,
     uint64_t instance_id = 0;
     uint8_t mode = 0;
     bool voting_ready = false;
+    uint16_t protocol_version = 0;
+    bool transition_only = false;
     char hello_error[512];
     if (peer_decode_hello(payload, hdr->length, &remote_idx, &instance_id,
-                          &mode, &voting_ready, hello_error, sizeof(hello_error)) != 0)
+                          &mode, &voting_ready, &protocol_version,
+                          &transition_only,
+                          hello_error, sizeof(hello_error)) != 0)
     {
         lcs_log_warn("persistent peer %s HELLO_ACK rejected: %s",
                      g_state.cfg.nodes[node_idx].name, hello_error);
@@ -1070,11 +1171,14 @@ static int peer_complete_outbound_hello(int epoll_fd, int node_idx,
         lcs_log_debug("persistent peer %s invalid HELLO_ACK payload", g_state.cfg.nodes[node_idx].name);
         return -1;
     }
+    if (transition_only)
+        return -1;
     peer->conn_state = LCS_PEER_ESTABLISHED;
     peer->hello_seq = 0;
     peer->connect_deadline_ms = 0;
     peer_mark_seen(node_idx, instance_id);
     peer->voting_ready = voting_ready;
+    peer->protocol_version = protocol_version;
     if (peer_update_epoll(epoll_fd, node_idx) != 0)
         return -1;
 
@@ -1284,6 +1388,23 @@ static uint32_t peer_handshake_timeout_ms(void)
            g_state.cfg.peer_timeout_ms : LCS_DEFAULT_HANDSHAKE_TIMEOUT_MS;
 }
 
+uint16_t peer_effective_protocol_version(void)
+{
+    uint16_t effective = LCS_PEER_PROTO_VERSION;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index)
+            continue;
+        uint16_t peer_version = g_state.peers[i].protocol_version;
+        if (g_state.peers[i].conn_state != LCS_PEER_ESTABLISHED ||
+            !peer_version)
+            peer_version = LCS_PEER_PROTO_MIN_VERSION;
+        if (peer_version < effective)
+            effective = peer_version;
+    }
+    return effective;
+}
+
 void peer_pump_epoll_event(int epoll_fd, const struct epoll_event *ev)
 {
     uint32_t event_id = ev->data.u32;
@@ -1468,6 +1589,58 @@ void peer_broadcast_lease_commit(int epoll_fd, const void *payload, uint32_t len
     }
 }
 
+void peer_broadcast_config_reload(int epoll_fd)
+{
+    unsigned char payload[32];
+    size_t len = 0;
+    if (config_reload_encode_announcement(payload, sizeof(payload), &len) != 0)
+        return;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index ||
+            g_state.peers[i].conn_state != LCS_PEER_ESTABLISHED ||
+            g_state.peers[i].protocol_version < LCS_PROTO_FEATURE_RESOURCE_RELOAD)
+            continue;
+        if (peer_queue_frame(epoll_fd, (int)i, LCS_MSG_CONFIG_RELOAD,
+                             lcs_next_seq(), payload, (uint32_t)len) != 0 ||
+            peer_flush_output(epoll_fd, (int)i) != 0)
+            peer_close_connection(epoll_fd, (int)i, true,
+                                  "configuration reload announcement failed");
+    }
+}
+
+void peer_broadcast_config_reload_commit(int epoll_fd, const void *payload,
+                                         uint32_t len)
+{
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index ||
+            g_state.peers[i].conn_state != LCS_PEER_ESTABLISHED)
+            continue;
+        if (peer_queue_frame(epoll_fd, (int)i, LCS_MSG_CONFIG_RELOAD_COMMIT,
+                             lcs_next_seq(), payload, len) != 0 ||
+            peer_flush_output(epoll_fd, (int)i) != 0)
+            peer_close_connection(epoll_fd, (int)i, true,
+                                  "configuration reload commit failed");
+    }
+}
+
+void peer_close_all_for_config_reload(int epoll_fd)
+{
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i != g_state.self_index && g_state.peers[i].fd >= 0)
+            peer_close_connection(epoll_fd, (int)i, false,
+                                  "configuration reload committed");
+    }
+    for (size_t i = 0; i < LCS_HANDSHAKE_MAX; i++)
+    {
+        if (g_state.handshakes[i].active)
+            handshake_close(epoll_fd, (int)i,
+                            "configuration reload committed");
+    }
+}
+
 void peer_poll(int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
@@ -1549,6 +1722,13 @@ void peer_poll(int epoll_fd)
     }
     cluster_update_recovery_state();
     cluster_recompute_votes();
+    uint16_t effective = peer_effective_protocol_version();
+    if (effective != g_state.effective_protocol_version)
+    {
+        lcs_log_info("cluster effective peer protocol changed from %u to %u",
+                     g_state.effective_protocol_version, effective);
+        g_state.effective_protocol_version = effective;
+    }
 }
 
 void handshake_expire(int epoll_fd)
