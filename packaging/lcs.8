@@ -95,7 +95,9 @@ compatible status codes. Exit status is 0 for OK, 1 for WARNING, 2 for
 CRITICAL, and 3 for UNKNOWN.
 .TP
 .B reload
-Ask the local daemon to begin a coordinated resource-configuration reload.
+Asynchronously refresh cached peer DNS addresses and ask the local daemon to
+begin a coordinated resource-configuration reload. Failed DNS lookups retain
+the previous cache and do not disturb established connections.
 This is equivalent to sending
 .B SIGHUP
 or running

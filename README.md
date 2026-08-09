@@ -144,9 +144,11 @@ rejects unknown dependencies, self-dependencies, and dependency cycles.
 
 Use `lcs resource list` for a compact resource-only view. `lcs resource stop RESOURCE` marks a resource administratively stopped in cluster memory and releases it through the normal stop path, including hooks. It stays stopped until `lcs resource start RESOURCE` is called, or until the whole cluster is restarted. If local resource removal cannot be confirmed, the owner enters `stop_failed`; fix the local backend condition and run `lcs resource stop RESOURCE` again to retry, or fence/reboot the node if the resource cannot be proven stopped.
 
-After deploying resource configuration to every node, run `lcs reload` on any
-one node to begin the coordinated reload. Restarting a daemon with an edited
-configuration is not a substitute for reload.
+After deploying resource configuration to every online node, run `lcs reload`
+on any one node to begin the coordinated reload. Restarting a daemon with an edited
+configuration is not a substitute for reload. Reload also refreshes cached peer
+DNS results asynchronously; failed lookups retain the previous addresses and
+do not disturb established connections.
 
 # Observability
 

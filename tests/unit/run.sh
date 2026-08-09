@@ -21,7 +21,7 @@ echo "protocol negotiation unit tests passed"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
     "$ROOT_DIR/tests/unit/config_fingerprint.c" \
-    "$ROOT_DIR/src/config.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" \
     -Wl,--gc-sections -o "$CONFIG_BIN"
 "$CONFIG_BIN"
 echo "configuration fingerprint unit tests passed"

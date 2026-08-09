@@ -54,6 +54,7 @@ for node in node1 node2 node3; do
     wait_until 10 "$node committed added resource" \
         grep -Fq "configuration reload committed generation=2 resources=2" "$TEST_TMP/logs/$node.log"
 done
+wait_for_quorum node2
 
 for node in node1 node2 node3; do
     config="$(node_config "$node")"
@@ -70,6 +71,7 @@ for node in node1 node2 node3; do
     wait_until 10 "$node committed removed resource" \
         grep -Fq "configuration reload committed generation=3 resources=1" "$TEST_TMP/logs/$node.log"
 done
+wait_for_quorum node3
 
 for node in node1 node2 node3; do
     sed -i 's|address = 127.0.0.201/32|address = 127.0.0.202/32|' \

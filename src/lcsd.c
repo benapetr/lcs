@@ -556,6 +556,7 @@ static void run_daemon_loop(int epoll_fd)
         if (g_reload)
         {
             g_reload = 0;
+            peer_dns_refresh_request();
             config_reload_request();
         }
         if (scheduler_run_once(&sched) != 0)
@@ -580,6 +581,7 @@ static void shutdown_daemon(int epoll_fd)
     if (!resources_graceful_shutdown_complete())
         lcs_log_warn("graceful shutdown drain timed out; local resources are stopped where possible but release quorum was not confirmed");
     resources_finish_graceful_shutdown();
+    peer_dns_refresh_cancel();
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         if ((int)i != g_state.self_index && g_state.peers[i].fd >= 0)

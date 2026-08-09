@@ -3,6 +3,8 @@
 #include "config.h"
 
 #include <assert.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -48,6 +50,26 @@ static lcs_config_t base_config(void)
 
 int main(void)
 {
+    char config_path[] = "/tmp/lcs-optional-address.XXXXXX";
+    int config_fd = mkstemp(config_path);
+    assert(config_fd >= 0);
+    FILE *config_file = fdopen(config_fd, "w");
+    assert(config_file != NULL);
+    assert(fputs("[cluster]\n"
+                 "name = test\n"
+                 "node = node1.example.test\n"
+                 "port = 3322\n"
+                 "[node node1.example.test]\n"
+                 "role = full-member\n",
+                 config_file) >= 0);
+    assert(fclose(config_file) == 0);
+    lcs_config_t parsed;
+    char config_error[256];
+    assert(lcs_config_load(config_path, &parsed, config_error,
+                           sizeof(config_error)) == 0);
+    assert(strcmp(parsed.nodes[0].address, "node1.example.test") == 0);
+    unlink(config_path);
+
     lcs_config_t base = base_config();
     uint64_t voting = lcs_config_voting_fingerprint(&base);
     uint64_t full = lcs_config_full_fingerprint(&base);

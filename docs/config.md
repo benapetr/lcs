@@ -7,16 +7,33 @@ after values are also supported.
 
 ## Live resource reload
 
-Deploy the edited configuration file to every node, then run
+Deploy the edited configuration file to every currently online node, then run
 `lcs reload` or `systemctl reload lcsd` on any one node (or send `SIGHUP` to
-one `lcsd`). The receiving node announces the candidate and the other nodes
-load their own files automatically. The active configuration is not replaced
-until every
-configured node is online and reports a compatible candidate. Every node must
-then acknowledge that it observed the same complete candidate set before any
-resource is touched. Only after that agreement barrier does the cluster stop
+one `lcsd`). The receiving node captures itself and every currently connected
+peer as a fixed participant set. That set must contain quorum, at least one
+full member, and every participant must support resource reload. Members already offline do not
+participate or block the change. Every participant loads its local file
+automatically and must report a compatible candidate, then acknowledge the
+same complete participant set before any resource is touched. Only after that
+agreement barrier does the cluster stop
 resources being removed or whose VIP address/interface, resource type, or
 systemd unit changed, followed by the commit.
+
+If a captured participant disconnects before commit, the attempt aborts. Retry
+the reload to capture the new online set. A member excluded because it was
+offline cannot rejoin with the old resource configuration. Its handshake gives
+an actionable mismatch and records a non-voting commit proof. Deploy the
+committed file there and run `lcs reload`; the node drains its old local
+resources, adopts the committed schema, and rejoins through recovery without a
+restart. If an excluded full member could still hold a changed resource,
+the transaction waits one complete lease interval before commit.
+Deploy the same committed file to every excluded node before bringing it back.
+
+Every reload request also refreshes cached peer hostnames asynchronously. A
+successful lookup with usable addresses replaces that peer's cache for future
+connection attempts. A failed or empty lookup retains the previous cache, and
+DNS changes never disconnect an established peer. This refresh does not make
+the configured node `address` itself live-reloadable.
 
 Resources and groups may be added, removed, or modified. Unchanged resources
 retain ownership, lease, epoch, and administrative state. A changed backend is
@@ -135,7 +152,9 @@ metrics_port = 9120
 # quorum-only can vote and hold lease state but never activates VIPs.
 role = full-member
 
-# REQUIRED: peer address for daemon-to-daemon TCP.
+# OPTIONAL: peer address for daemon-to-daemon TCP. It may be an IPv4 address,
+# IPv6 address, or hostname. If omitted, the node section name is resolved.
+# An explicit address takes precedence over the node name.
 address = 192.0.2.11
 
 # OPTIONAL: per-node peer TCP port.

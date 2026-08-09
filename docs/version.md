@@ -26,6 +26,10 @@ Future peer protocol changes should follow these rules:
 - Raise the minimum supported version only in a release that intentionally
   ends rolling-upgrade compatibility with older releases.
 
-Version 5 establishes this negotiation contract. It intentionally does not
-decode the earlier version-3 HELLO because no release was made between those
-formats.
+Version 5 establishes this negotiation contract and includes fixed
+online-participant sets for resource reload. Reload checks the negotiated
+version of every transaction participant rather than the global effective
+version, because an offline nonparticipant conservatively contributes the
+minimum version and must not block an otherwise compatible online quorum. It
+intentionally does not decode the earlier version-3 HELLO because no release
+was made between those formats.

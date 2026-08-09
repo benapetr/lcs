@@ -135,7 +135,8 @@ or
 .BR quorum-only .
 .TP
 .B address
-Peer address, either IPv4, IPv6, or a hostname.
+Optional peer address, either IPv4, IPv6, or a hostname. If omitted, the node
+section name is resolved. An explicit address takes precedence.
 .TP
 .B port
 Optional per-node peer TCP port override.
@@ -228,12 +229,13 @@ Packaged systemd unit on many distributions.
 .SH SIGNALS
 .TP
 .B SIGHUP
-Load a resource-configuration candidate. The daemon announces the candidate to
-the cluster; peers load their local files automatically, and every configured
-node must acknowledge the same compatible candidate before any resource is
-drained. Removed resources and changed backend identities are then stopped and
-the candidate commits only after every node is ready. Deploy the
-new configuration file to every node before sending SIGHUP to any one node.
+Asynchronously refresh cached peer DNS addresses and load a
+resource-configuration candidate. DNS results replace the cache only when
+resolution succeeds; failures retain the previous addresses and established
+connections are not disturbed. The daemon captures the current online quorum,
+whose members load and unanimously acknowledge the same compatible candidate
+before any resource is drained. Members already offline do not block commit.
+Deploy the new configuration file to every online node before sending SIGHUP.
 Adding and removing resources and changing resource or group properties is
 supported. Node membership, roles, addresses, quorum timing, listener settings,
 and other daemon-wide settings cannot be changed by live reload. A rejected or

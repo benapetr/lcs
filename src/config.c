@@ -186,7 +186,7 @@ static int parse_section(lcs_config_t *cfg, char *name, section_t *sec, char *er
     if (strncmp(body, "node ", 5) == 0)
     {
         char *node_name = lcs_trim(body + 5);
-        if (!lcs_valid_name(node_name))
+        if (!lcs_valid_name(node_name) || strlen(node_name) > LCS_NAME_MAX)
         {
             set_err(err, err_len, line, "invalid node name");
             return -1;
@@ -817,10 +817,16 @@ int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
     }
     for (size_t i = 0; i < cfg->node_count; i++)
     {
-        const lcs_node_config_t *node = &cfg->nodes[i];
+        lcs_node_config_t *node = &cfg->nodes[i];
         if (node->role != LCS_NODE_FULL && node->role != LCS_NODE_QUORUM_ONLY)
         {
             set_err(err, err_len, 0, "node role is required");
+            return -1;
+        }
+        if (!*node->address &&
+            set_string(node->address, sizeof(node->address), node->name) != 0)
+        {
+            set_err(err, err_len, 0, "node name is too long to use as its default address");
             return -1;
         }
         if (!valid_ip_or_host(node->address))

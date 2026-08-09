@@ -13,6 +13,9 @@
 extern int g_peer_listener_fd;
 
 int peer_resolve_configured_addresses(char *error, size_t error_len);
+void peer_dns_refresh_request(void);
+void peer_dns_refresh_process(void);
+void peer_dns_refresh_cancel(void);
 uint16_t peer_effective_protocol_version(void);
 void handshake_expire(int epoll_fd);
 void handshake_close(int epoll_fd, int slot_idx, const char *reason);

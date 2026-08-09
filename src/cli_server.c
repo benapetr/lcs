@@ -293,11 +293,13 @@ static void cli_server_queue_reload(int epoll_fd, int slot_idx, uint32_t seq, ui
 {
     int32_t status = -1;
     const char *message;
+    if (len == 0)
+        peer_dns_refresh_request();
     if (len != 0)
         message = "invalid configuration reload request";
-    else if (g_state.effective_protocol_version <
-             LCS_PROTO_FEATURE_RESOURCE_RELOAD)
-        message = "cluster effective protocol does not support resource reload";
+    else if (!config_reload_supported_by_online_quorum() &&
+             !config_reload_catchup_available())
+        message = "the current online quorum does not support resource reload";
     else if (g_state.config_reload.agreed)
         message = "configuration reload candidate is already agreement-locked";
     else

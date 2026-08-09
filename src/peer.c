@@ -15,10 +15,13 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netdb.h>
+#include <signal.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* Forward declarations */
@@ -37,6 +40,83 @@ static int peer_send_state_sync(int epoll_fd, int node_idx);
 static void peer_free_buffers(peer_runtime_t *peer);
 static void handshake_free_buffers(inbound_handshake_t *hs);
 
+typedef struct
+{
+    bool attempted;
+    int resolve_status;
+    size_t addr_count;
+    struct sockaddr_storage addrs[LCS_PEER_ADDR_MAX];
+    socklen_t addr_lens[LCS_PEER_ADDR_MAX];
+} peer_dns_refresh_entry_t;
+
+typedef struct
+{
+    peer_dns_refresh_entry_t entries[LCS_MAX_NODES];
+} peer_dns_refresh_result_t;
+
+static struct
+{
+    pid_t pid;
+    uint64_t deadline_ms;
+    bool kill_sent;
+    bool request_pending;
+    peer_dns_refresh_result_t *result;
+} g_dns_refresh;
+
+static bool peer_address_is_numeric(const char *address)
+{
+    struct in_addr ipv4;
+    struct in6_addr ipv6;
+    return inet_pton(AF_INET, address, &ipv4) == 1 ||
+           inet_pton(AF_INET6, address, &ipv6) == 1;
+}
+
+static bool resolved_address_exists(const struct sockaddr_storage *addrs,
+                                    const socklen_t *lens, size_t count,
+                                    const struct sockaddr *candidate,
+                                    socklen_t candidate_len)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        if (lens[i] == candidate_len &&
+            memcmp(&addrs[i], candidate, candidate_len) == 0)
+            return true;
+    }
+    return false;
+}
+
+static int resolve_node_address(const lcs_node_config_t *node,
+                                struct sockaddr_storage *addrs,
+                                socklen_t *addr_lens, size_t *addr_count)
+{
+    char port_buf[16];
+    snprintf(port_buf, sizeof(port_buf), "%u", node->port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo *resolved = NULL;
+    int gai = getaddrinfo(node->address, port_buf, &hints, &resolved);
+    if (gai != 0)
+        return gai;
+
+    *addr_count = 0;
+    for (const struct addrinfo *ai = resolved;
+         ai && *addr_count < LCS_PEER_ADDR_MAX; ai = ai->ai_next)
+    {
+        if (ai->ai_addrlen > sizeof(struct sockaddr_storage) ||
+            resolved_address_exists(addrs, addr_lens, *addr_count,
+                                    ai->ai_addr, (socklen_t)ai->ai_addrlen))
+            continue;
+        size_t slot = (*addr_count)++;
+        memset(&addrs[slot], 0, sizeof(addrs[slot]));
+        memcpy(&addrs[slot], ai->ai_addr, ai->ai_addrlen);
+        addr_lens[slot] = (socklen_t)ai->ai_addrlen;
+    }
+    freeaddrinfo(resolved);
+    return *addr_count ? 0 : EAI_NONAME;
+}
+
 int peer_resolve_configured_addresses(char *error, size_t error_len)
 {
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
@@ -46,15 +126,10 @@ int peer_resolve_configured_addresses(char *error, size_t error_len)
         if ((int)i == g_state.self_index)
             continue;
 
-        char port_buf[16];
-        snprintf(port_buf, sizeof(port_buf), "%u", g_state.cfg.nodes[i].port);
-        struct addrinfo hints;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        struct addrinfo *resolved = NULL;
-        int gai = getaddrinfo(g_state.cfg.nodes[i].address, port_buf,
-                              &hints, &resolved);
+        int gai = resolve_node_address(&g_state.cfg.nodes[i],
+                                       peer->resolved_addrs,
+                                       peer->resolved_addr_lens,
+                                       &peer->resolved_addr_count);
         if (gai != 0)
         {
             snprintf(error, error_len, "cannot resolve peer %s address %s: %s",
@@ -62,28 +137,174 @@ int peer_resolve_configured_addresses(char *error, size_t error_len)
                      g_state.cfg.nodes[i].address, gai_strerror(gai));
             return -1;
         }
-        for (const struct addrinfo *ai = resolved;
-             ai && peer->resolved_addr_count < LCS_PEER_ADDR_MAX;
-             ai = ai->ai_next)
-        {
-            if (ai->ai_addrlen > sizeof(struct sockaddr_storage))
-                continue;
-            size_t slot = peer->resolved_addr_count++;
-            memcpy(&peer->resolved_addrs[slot], ai->ai_addr,
-                   ai->ai_addrlen);
-            peer->resolved_addr_lens[slot] = (socklen_t)ai->ai_addrlen;
-        }
-        freeaddrinfo(resolved);
-        if (peer->resolved_addr_count == 0)
-        {
-            snprintf(error, error_len,
-                     "peer %s address %s resolved to no usable addresses",
-                     g_state.cfg.nodes[i].name,
-                     g_state.cfg.nodes[i].address);
-            return -1;
-        }
     }
     return 0;
+}
+
+static bool resolved_address_sets_equal(const peer_runtime_t *peer,
+                                        const peer_dns_refresh_entry_t *entry)
+{
+    if (peer->resolved_addr_count != entry->addr_count)
+        return false;
+    for (size_t i = 0; i < peer->resolved_addr_count; i++)
+    {
+        if (!resolved_address_exists(entry->addrs, entry->addr_lens,
+                                     entry->addr_count,
+                                     (const struct sockaddr *)&peer->resolved_addrs[i],
+                                     peer->resolved_addr_lens[i]))
+            return false;
+    }
+    return true;
+}
+
+static void peer_dns_refresh_start(void)
+{
+    peer_dns_refresh_result_t *result = mmap(NULL, sizeof(*result),
+                                             PROT_READ | PROT_WRITE,
+                                             MAP_SHARED | MAP_ANONYMOUS,
+                                             -1, 0);
+    if (result == MAP_FAILED)
+    {
+        lcs_log_warn("DNS cache refresh could not allocate shared result memory: %s",
+                     strerror(errno));
+        return;
+    }
+    memset(result, 0, sizeof(*result));
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        lcs_log_warn("DNS cache refresh worker could not start: %s",
+                     strerror(errno));
+        munmap(result, sizeof(*result));
+        return;
+    }
+    if (pid == 0)
+    {
+        const char *forced_failure =
+            getenv("LCS_DNS_REFRESH_TEST_FAILURE");
+        for (size_t i = 0; i < g_state.cfg.node_count; i++)
+        {
+            if ((int)i == g_state.self_index ||
+                peer_address_is_numeric(g_state.cfg.nodes[i].address))
+                continue;
+            peer_dns_refresh_entry_t *entry = &result->entries[i];
+            entry->attempted = true;
+            if (forced_failure &&
+                (strcmp(forced_failure, "*") == 0 ||
+                 strcmp(forced_failure, g_state.cfg.nodes[i].name) == 0))
+            {
+                entry->resolve_status = EAI_AGAIN;
+                continue;
+            }
+            entry->resolve_status = resolve_node_address(
+                &g_state.cfg.nodes[i], entry->addrs, entry->addr_lens,
+                &entry->addr_count);
+        }
+        _exit(0);
+    }
+
+    g_dns_refresh.pid = pid;
+    g_dns_refresh.result = result;
+    g_dns_refresh.kill_sent = false;
+    uint64_t timeout_ms = g_state.cfg.peer_timeout_ms;
+    if (timeout_ms < 5000u)
+        timeout_ms = 5000u;
+    if (timeout_ms > 30000u)
+        timeout_ms = 30000u;
+    g_dns_refresh.deadline_ms = lcs_now_ms() + timeout_ms;
+    lcs_log_debug("started asynchronous DNS cache refresh pid=%ld",
+                  (long)pid);
+}
+
+void peer_dns_refresh_request(void)
+{
+    if (g_dns_refresh.pid > 0)
+    {
+        g_dns_refresh.request_pending = true;
+        return;
+    }
+    peer_dns_refresh_start();
+}
+
+void peer_dns_refresh_process(void)
+{
+    if (g_dns_refresh.pid <= 0)
+        return;
+    int worker_status = 0;
+    pid_t rc = waitpid(g_dns_refresh.pid, &worker_status, WNOHANG);
+    if (rc == 0)
+    {
+        if (!g_dns_refresh.kill_sent &&
+            lcs_now_ms() >= g_dns_refresh.deadline_ms)
+        {
+            (void)kill(g_dns_refresh.pid, SIGKILL);
+            g_dns_refresh.kill_sent = true;
+            lcs_log_warn("DNS cache refresh timed out; retaining all cached peer addresses");
+        }
+        return;
+    }
+    if (rc < 0)
+    {
+        if (errno == EINTR)
+            return;
+        lcs_log_warn("DNS cache refresh worker wait failed: %s; retaining cached addresses",
+                     strerror(errno));
+    } else if (!g_dns_refresh.kill_sent &&
+               (!WIFEXITED(worker_status) || WEXITSTATUS(worker_status) != 0))
+    {
+        lcs_log_warn("DNS cache refresh worker failed; retaining all cached peer addresses");
+    } else if (!g_dns_refresh.kill_sent)
+    {
+        for (size_t i = 0; i < g_state.cfg.node_count; i++)
+        {
+            const peer_dns_refresh_entry_t *entry =
+                &g_dns_refresh.result->entries[i];
+            if (!entry->attempted)
+                continue;
+            peer_runtime_t *peer = &g_state.peers[i];
+            if (entry->resolve_status != 0 || !entry->addr_count)
+            {
+                lcs_log_warn("DNS refresh for peer %s address %s failed: %s; retaining %zu cached address%s",
+                             g_state.cfg.nodes[i].name,
+                             g_state.cfg.nodes[i].address,
+                             gai_strerror(entry->resolve_status),
+                             peer->resolved_addr_count,
+                             peer->resolved_addr_count == 1 ? "" : "es");
+                continue;
+            }
+            bool changed = !resolved_address_sets_equal(peer, entry);
+            memcpy(peer->resolved_addrs, entry->addrs,
+                   sizeof(peer->resolved_addrs));
+            memcpy(peer->resolved_addr_lens, entry->addr_lens,
+                   sizeof(peer->resolved_addr_lens));
+            peer->resolved_addr_count = entry->addr_count;
+            if (changed)
+                lcs_log_info("DNS cache refreshed for peer %s address %s: installed %zu address%s for future connections",
+                             g_state.cfg.nodes[i].name,
+                             g_state.cfg.nodes[i].address,
+                             entry->addr_count,
+                             entry->addr_count == 1 ? "" : "es");
+            else
+                lcs_log_debug("DNS cache refresh for peer %s address %s is unchanged",
+                              g_state.cfg.nodes[i].name,
+                              g_state.cfg.nodes[i].address);
+        }
+    }
+
+    munmap(g_dns_refresh.result, sizeof(*g_dns_refresh.result));
+    bool repeat = g_dns_refresh.request_pending;
+    memset(&g_dns_refresh, 0, sizeof(g_dns_refresh));
+    if (repeat)
+        peer_dns_refresh_start();
+}
+
+void peer_dns_refresh_cancel(void)
+{
+    if (g_dns_refresh.pid <= 0)
+        return;
+    (void)kill(g_dns_refresh.pid, SIGKILL);
+    (void)waitpid(g_dns_refresh.pid, NULL, WNOHANG);
+    g_dns_refresh.pid = 0;
 }
 
 static int peer_ensure_buffers(peer_runtime_t *peer)
@@ -350,16 +571,6 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
                           (!compare_full || full_fingerprint == local_full) &&
                           resource_count == g_state.cfg.resource_count &&
                           group_count == g_state.cfg.group_count;
-    bool remote_candidate_is_active = candidate_present &&
-                                      candidate_voting_fingerprint == local_voting &&
-                                      (!compare_full ||
-                                       candidate_full_fingerprint == local_full);
-    bool candidate_is_committed_active = candidate_present &&
-                                         candidate_agreed && candidate_ready &&
-                                         g_state.config_reload.committed_transition &&
-                                         candidate_voting_fingerprint == local_voting &&
-                                         candidate_full_fingerprint == local_full;
-
     *transition_only = false;
     if (commit_proof && g_state.config_reload.loaded &&
         voting_fingerprint == g_state.config_reload.voting_fingerprint &&
@@ -373,8 +584,26 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
                      name);
         return -1;
     }
-    if (!active_matches && remote_candidate_is_active &&
-        g_state.config_reload.committed_transition)
+    if (commit_proof && !active_matches)
+    {
+        bool local_full =
+            g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL;
+        bool remote_full = role == LCS_NODE_FULL;
+        if (!local_full || remote_full)
+        {
+            config_reload_runtime_t *reload = &g_state.config_reload;
+            reload->catchup_proof = true;
+            reload->catchup_require_full_fingerprint = local_full;
+            reload->catchup_voting_fingerprint = voting_fingerprint;
+            reload->catchup_full_fingerprint = full_fingerprint;
+            lcs_log_warn("configuration mismatch with %s: committed configuration proof received; deploy the matching file and run lcs reload",
+                         name);
+        }
+        snprintf(error, error_len,
+                 "configuration mismatch: peer has committed a newer resource configuration; deploy the matching config on this node and run lcs reload");
+        return -1;
+    }
+    if (!active_matches && g_state.config_reload.committed_transition)
         *transition_only = true;
     else if (!active_matches)
     {
@@ -395,20 +624,6 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
         return -1;
     }
 
-    if (candidate_present && !*transition_only &&
-        !candidate_is_committed_active)
-    {
-        config_reload_runtime_t *reload = &g_state.config_reload;
-        reload->peer_loaded[idx] = true;
-        reload->peer_agreed[idx] = candidate_agreed != 0;
-        reload->peer_ready[idx] = candidate_ready != 0;
-        reload->peer_voting_fingerprint[idx] = candidate_voting_fingerprint;
-        reload->peer_full_fingerprint[idx] = candidate_full_fingerprint;
-        if (!reload->loaded && !reload->request_pending &&
-            !reload->auto_load_blocked)
-            reload->request_pending = true;
-    }
-        
     *node_idx = idx;
     *voting_ready = ready != 0;
     return 0;
@@ -1612,9 +1827,11 @@ void peer_broadcast_config_reload(int epoll_fd)
 void peer_broadcast_config_reload_commit(int epoll_fd, const void *payload,
                                          uint32_t len)
 {
+    uint32_t participants = g_state.config_reload.participant_mask;
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         if ((int)i == g_state.self_index ||
+            !(participants & (UINT32_C(1) << i)) ||
             g_state.peers[i].conn_state != LCS_PEER_ESTABLISHED)
             continue;
         if (peer_queue_frame(epoll_fd, (int)i, LCS_MSG_CONFIG_RELOAD_COMMIT,
@@ -1643,6 +1860,7 @@ void peer_close_all_for_config_reload(int epoll_fd)
 
 void peer_poll(int epoll_fd)
 {
+    peer_dns_refresh_process();
     uint64_t now = lcs_now_ms();
 
     // Check state of each peer defined in config and sync state via timer

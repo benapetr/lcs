@@ -225,7 +225,7 @@ Commands:
 |---------|-------------|
 | `status` | Print cluster quorum, node status, VIP state, ownership, epochs, group metadata, and conflict details as seen by the local daemon. |
 | `nrpe` | Print one monitoring-plugin style line and exit with Nagios-compatible status codes. |
-| `reload` | Ask the local daemon to begin the same coordinated resource-configuration reload as `SIGHUP`. |
+| `reload` | Refresh cached peer DNS addresses and ask the local daemon to begin the same coordinated resource-configuration reload as `SIGHUP`. DNS failures retain the previous cache. |
 | `resource list` | Print a compact resource-only view. |
 | `resource move RESOURCE NODE` | Request a controlled cluster-level handoff of `RESOURCE` to `NODE`. The target must be an online `full-member`. |
 | `resource start RESOURCE` | Clear an administrative stop and allow normal placement again. |
