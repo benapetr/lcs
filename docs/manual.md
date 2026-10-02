@@ -217,6 +217,7 @@ Options:
 |--------|-------------|
 | `-s SOCKET`, `--socket SOCKET` | Connect to this local `lcsd` Unix socket instead of `/run/lcs/lcsd.sock`. Useful for tests, multiple local daemons, or non-default packaging paths. |
 | `--version`, `-V` | Print the CLI version and exit. |
+| `--no-colors` | Disable terminal colors. |
 | `--help`, `-h` | Print usage information and exit. |
 
 Commands:
@@ -237,6 +238,14 @@ Commands:
 Each node is reported with one state: `offline` when it is unreachable,
 `recovering` when it is reachable but not yet eligible to vote after a restart,
 or `online` when it is reachable and voting-ready.
+
+In terminals, `lcs status` and `lcs resource list` use green for healthy quorum,
+online nodes, and active resources; red for lost quorum, offline nodes, stopped
+resources, and failures; and yellow for recovering nodes, starting/stopping
+resources, and administrative stops. Status section headings are bold.
+Use `lcs --no-colors status` to disable colors. Colors are also disabled for
+redirected or piped output, JSON output, `TERM=dumb`, or a nonempty `NO_COLOR`
+environment variable. The `nrpe` command always produces output without colors.
 
 Example:
 

@@ -1,6 +1,8 @@
 # Changelog
 
-This changelog was generated from the repository tag history and the code changes between consecutive tags. It combines the git commit subjects with the substantive changes visible in the source and tests.
+## Next
+
+- Added terminal colors to `lcs status` and `lcs resource list`: green for healthy states, red for unavailable or failed states, and yellow for transitional or administratively stopped states. Use `--no-colors` to disable colors. Redirected output, JSON, and `nrpe` remain plain.
 
 ## v1.1.0
 

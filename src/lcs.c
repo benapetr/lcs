@@ -14,6 +14,34 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+static bool colors_enabled;
+
+#define COLOR_RESET "\033[0m"
+#define COLOR_BOLD "\033[1m"
+#define COLOR_RED "\033[31m"
+#define COLOR_GREEN "\033[32m"
+#define COLOR_YELLOW "\033[33m"
+
+static const char *color(const char *code)
+{
+    return colors_enabled ? code : "";
+}
+
+static const char *node_color(uint8_t state)
+{
+    return color(state == LCS_NODE_ONLINE ? COLOR_GREEN :
+                 state == LCS_NODE_RECOVERING ? COLOR_YELLOW : COLOR_RED);
+}
+
+static const char *resource_color(uint8_t state, bool disabled)
+{
+    if (state == LCS_RES_CONFLICT || state == LCS_RES_STOP_FAILED)
+        return color(COLOR_RED);
+    if (disabled || state == LCS_RES_STARTING || state == LCS_RES_STOPPING)
+        return color(COLOR_YELLOW);
+    return color(state == LCS_RES_ACTIVE ? COLOR_GREEN : COLOR_RED);
+}
+
 static void usage(FILE *out)
 {
     fprintf(out, "usage: lcs [--version]\n");
@@ -25,6 +53,7 @@ static void usage(FILE *out)
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource start RESOURCE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource stop RESOURCE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource clear-conflict RESOURCE\n");
+    fprintf(out, "\nColors are enabled on terminals. Use --no-colors to disable them.\n");
 }
 
 static int connect_socket(const char *path)
@@ -353,9 +382,10 @@ static int cmd_status(const char *socket_path, bool json_output)
 
     char membership_for[64];
     lcs_format_duration(status.membership_seconds, membership_for, sizeof(membership_for));
-    printf("Cluster\n");
-    printf("  quorum: %s (%u votes, need %u, membership for %s)\n",
-           status.has_quorum ? "yes" : "no", status.votes_seen,
+    printf("%sCluster%s\n", color(COLOR_BOLD), color(COLOR_RESET));
+    printf("  quorum: %s%s%s (%u votes, need %u, membership for %s)\n",
+           color(status.has_quorum ? COLOR_GREEN : COLOR_RED),
+           status.has_quorum ? "yes" : "no", color(COLOR_RESET), status.votes_seen,
            status.quorum_needed, membership_for);
     const char *protocol_release =
         lcs_peer_protocol_release(status.effective_protocol);
@@ -364,16 +394,18 @@ static int cmd_status(const char *socket_path, bool json_output)
                status.effective_protocol);
     else
         printf("  protocol: wire %u\n", status.effective_protocol);
-    printf("Nodes\n");
+    printf("%sNodes%s\n", color(COLOR_BOLD), color(COLOR_RESET));
     char node_names[LCS_MAX_NODES][LCS_NAME_MAX + 1];
     memset(node_names, 0, sizeof(node_names));
     for (uint16_t i = 0; i < status.node_count; i++)
     {
         status_node_t *node = &status.nodes[i];
         snprintf(node_names[node->id], sizeof(node_names[node->id]), "%s", node->name);
-        printf("  %s role=%s state=%s%s\n", node->name, role_name(node->role), node_state_name(node->state), node->self ? " (self)" : "");
+        printf("  %s role=%s state=%s%s%s%s\n", node->name, role_name(node->role),
+               node_color(node->state), node_state_name(node->state), color(COLOR_RESET),
+               node->self ? " (self)" : "");
     }
-    printf("Resources\n");
+    printf("%sResources%s\n", color(COLOR_BOLD), color(COLOR_RESET));
     for (uint16_t i = 0; i < status.resource_count; i++)
     {
         status_resource_t *resource = &status.resources[i];
@@ -383,13 +415,15 @@ static int cmd_status(const char *socket_path, bool json_output)
 
         if (strcmp(resource->resource_type, "service") == 0)
         {
-            printf("  %s type=service unit=%s state=%s owner=%s epoch=%llu",
-                   resource->name, resource->systemd_unit, lcs_resource_state_name((lcs_resource_state_t)resource->state),
+            printf("  %s type=service unit=%s state=%s%s%s owner=%s epoch=%llu",
+                   resource->name, resource->systemd_unit, resource_color(resource->state, resource->disabled),
+                   lcs_resource_state_name((lcs_resource_state_t)resource->state), color(COLOR_RESET),
                    owner, (unsigned long long)resource->epoch);
         } else
         {
-            printf("  %s %s dev=%s state=%s owner=%s epoch=%llu",
-                   resource->name, resource->address, resource->interface, lcs_resource_state_name((lcs_resource_state_t)resource->state),
+            printf("  %s %s dev=%s state=%s%s%s owner=%s epoch=%llu",
+                   resource->name, resource->address, resource->interface, resource_color(resource->state, resource->disabled),
+                   lcs_resource_state_name((lcs_resource_state_t)resource->state), color(COLOR_RESET),
                    owner, (unsigned long long)resource->epoch);
         }
         if (*resource->group)
@@ -397,11 +431,13 @@ static int cmd_status(const char *socket_path, bool json_output)
         if (*resource->home_node)
             printf(" home=%s%s", resource->home_node, resource->home_blocked ? " blocked=yes" : "");
         if (resource->disabled)
-            printf(" disabled=yes");
+            printf(" %sdisabled=yes%s", color(COLOR_YELLOW), color(COLOR_RESET));
         printf("\n");
 
         if ((resource->state == LCS_RES_CONFLICT || resource->state == LCS_RES_STOP_FAILED) && *resource->reason)
-            printf("    %s: %s\n", resource->state == LCS_RES_CONFLICT ? "conflict" : "stop_failed", resource->reason);
+            printf("    %s%s: %s%s\n", color(COLOR_RED),
+                   resource->state == LCS_RES_CONFLICT ? "conflict" : "stop_failed",
+                   resource->reason, color(COLOR_RESET));
     }
     return 0;
 }
@@ -484,15 +520,16 @@ static int cmd_resource_list(const char *socket_path, bool json_output)
         if (resource->owner_node != UINT16_MAX && resource->owner_node < status.node_count)
             owner = node_names[resource->owner_node];
 
-        printf("%s type=%s state=%s owner=%s",
+        printf("%s type=%s state=%s%s%s owner=%s",
                resource->name, *resource->resource_type ? resource->resource_type : "vip",
-               lcs_resource_state_name((lcs_resource_state_t)resource->state), owner);
+               resource_color(resource->state, resource->disabled),
+               lcs_resource_state_name((lcs_resource_state_t)resource->state), color(COLOR_RESET), owner);
         if (*resource->address)
             printf(" address=%s dev=%s", resource->address, resource->interface);
         if (*resource->systemd_unit)
             printf(" unit=%s", resource->systemd_unit);
         if (resource->disabled)
-            printf(" disabled=yes");
+            printf(" %sdisabled=yes%s", color(COLOR_YELLOW), color(COLOR_RESET));
         if (*resource->group)
             printf(" group=%s priority=%u", resource->group, resource->priority);
         if (*resource->home_node)
@@ -889,10 +926,12 @@ int main(int argc, char **argv)
     const char *socket_path = LCS_DEFAULT_SOCKET_PATH;
     bool json_output = false;
     bool show_version = false;
+    bool no_colors = false;
     int opt;
     static const struct option long_opts[] = {
         { "socket", required_argument, NULL, 's' },
         { "json", no_argument, NULL, 'j' },
+        { "no-colors", no_argument, NULL, 1000 },
         { "version", no_argument, NULL, 'V' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
@@ -907,6 +946,9 @@ int main(int argc, char **argv)
             case 'j':
                 json_output = true;
                 break;
+            case 1000:
+                no_colors = true;
+                break;
             case 'V':
                 show_version = true;
                 break;
@@ -918,6 +960,10 @@ int main(int argc, char **argv)
                 return 2;
         }
     }
+    const char *term = getenv("TERM");
+    const char *no_color = getenv("NO_COLOR");
+    colors_enabled = !no_colors && !json_output && isatty(STDOUT_FILENO) &&
+                     !(no_color && *no_color) && !(term && strcmp(term, "dumb") == 0);
     if (show_version)
     {
         if (json_output)

@@ -74,6 +74,14 @@ handoffs, clearing inspected conflict states, and producing simple monitoring
 output.
 .SH OPTIONS
 .TP
+.B \-\-no-colors
+Disable terminal colors. By default, status and resource list use green
+for healthy states, red for unavailable or failed states, and yellow for
+transitional or administratively stopped states. Colors are disabled when
+standard output is not a terminal, with JSON output, when TERM is dumb, or
+when the NO_COLOR environment variable is nonempty.
+The nrpe command always produces output without colors.
+.TP
 .BI \-s " SOCKET" "\fR, \fB\-\-socket " SOCKET
 Connect to the given local daemon socket instead of the default
 .IR /run/lcs/lcsd.sock .
