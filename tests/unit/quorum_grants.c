@@ -54,6 +54,11 @@ void lcs_log_warn(const char *fmt, ...)
     (void)fmt;
 }
 
+void lcs_log_debug(const char *fmt, ...)
+{
+    (void)fmt;
+}
+
 static void initialize_state(void)
 {
     memset(&g_state, 0, sizeof(g_state));
@@ -168,11 +173,113 @@ static void test_commit_does_not_extend_matching_grant(void)
            fake_now_ms + g_state.cfg.lease_ms);
 }
 
+static void test_observation_below_promise_cannot_create_a_vote(void)
+{
+    initialize_state();
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t len = encode(payload, 2, 8, 88, 202);
+    assert(lease_accept_message(LCS_MSG_LEASE_REQ, payload, len, 2) == 0);
+    lease_grant_t promise = g_state.lease_grants[0];
+
+    len = encode(payload, 1, 7, 77, 101);
+    assert(lease_apply_commit(payload, len, 1, -1) == 0);
+    assert(g_state.resources[0].owner_node == 1);
+    assert(g_state.resources[0].epoch == 7);
+    assert(memcmp(&promise, &g_state.lease_grants[0], sizeof(promise)) == 0);
+    assert(lease_accept_message(LCS_MSG_LEASE_RENEW, payload, len, 1) != 0);
+    assert(lease_accept_message(LCS_MSG_LEASE_REQ, payload, len, 1) != 0);
+
+    fake_now_ms += g_state.cfg.lease_ms;
+    assert(lease_accept_message(LCS_MSG_LEASE_RENEW, payload, len, 1) != 0);
+    assert(g_state.lease_grants[0].promised_epoch == 8);
+    assert(!g_state.lease_grants[0].active);
+
+    /* Only an explicit new acquisition may commit a later ownership epoch. */
+    assert(lease_next_epoch(0) == 9);
+    len = encode(payload, 1, 9, 99, 101);
+    assert(lease_accept_message(LCS_MSG_LEASE_REQ, payload, len, 1) == 0);
+    assert(g_state.resources[0].epoch == 7);
+    assert(lease_apply_commit(payload, len, 1, -1) == 0);
+    assert(g_state.resources[0].epoch == 9);
+}
+
+static void test_stale_or_unsafe_commits_are_not_protocol_errors(void)
+{
+    initialize_state();
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t len = encode(payload, 1, 7, 77, 101);
+    assert(lease_apply_commit(payload, len, 1, -1) == 0);
+    resource_runtime_t before = g_state.resources[0];
+
+    len = encode(payload, 2, 6, 66, 202);
+    assert(lease_apply_commit(payload, len, 2, -1) == 0);
+    assert(memcmp(&before, &g_state.resources[0], sizeof(before)) == 0);
+    len = encode(payload, 2, 7, 78, 202);
+    assert(lease_apply_commit(payload, len, 2, -1) == 0);
+    assert(memcmp(&before, &g_state.resources[0], sizeof(before)) == 0);
+
+    const lcs_resource_state_t unsafe[] = { LCS_RES_CONFLICT, LCS_RES_STOP_FAILED };
+    for (size_t i = 0; i < sizeof(unsafe) / sizeof(unsafe[0]); i++)
+    {
+        g_state.resources[0].state = unsafe[i];
+        before = g_state.resources[0];
+        len = encode(payload, 2, 8, 88, 202);
+        assert(lease_apply_commit(payload, len, 2, -1) == 0);
+        assert(memcmp(&before, &g_state.resources[0], sizeof(before)) == 0);
+    }
+}
+
+static void test_malformed_commits_are_still_rejected(void)
+{
+    initialize_state();
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t len = encode(payload, 1, 7, 77, 101);
+    resource_runtime_t before = g_state.resources[0];
+    assert(lease_apply_commit(payload, len - 1, 1, -1) != 0);
+    payload[len] = 0;
+    assert(lease_apply_commit(payload, len + 1, 1, -1) != 0);
+    assert(lease_apply_commit(payload, len, 2, -1) != 0);
+    len = encode(payload, 1, 7, 77, 999);
+    assert(lease_apply_commit(payload, len, 1, -1) != 0);
+    len = encode(payload, 1, 7, 0, 101);
+    assert(lease_apply_commit(payload, len, 1, -1) != 0);
+    len = encode(payload, 1, 0, 77, 101);
+    assert(lease_apply_commit(payload, len, 1, -1) != 0);
+    assert(lease_encode_msg(payload, sizeof(payload), &len,
+                            0, 1, 7, 77, 5001, 101) == 0);
+    assert(lease_apply_commit(payload, len, 1, -1) != 0);
+    assert(lease_encode_msg(payload, sizeof(payload), &len,
+                            0, 1, 7, 77, 0, 101) == 0);
+    assert(lease_apply_commit(payload, len, 1, -1) != 0);
+    assert(memcmp(&before, &g_state.resources[0], sizeof(before)) == 0);
+}
+
+static void test_next_epoch_respects_observation_and_promise(void)
+{
+    initialize_state();
+    assert(lease_next_epoch(0) == 1);
+    g_state.resources[0].epoch = 7;
+    assert(lease_next_epoch(0) == 8);
+    g_state.lease_grants[0].promised_epoch = 2167;
+    assert(lease_next_epoch(0) == 2168);
+    g_state.resources[0].epoch = 3000;
+    assert(lease_next_epoch(0) == 3001);
+    g_state.lease_grants[0].promised_epoch = UINT64_MAX;
+    assert(lease_next_epoch(0) == 0);
+    g_state.lease_grants[0].promised_epoch = 0;
+    g_state.resources[0].epoch = UINT64_MAX;
+    assert(lease_next_epoch(0) == 0);
+}
+
 int main(void)
 {
     test_grant_conflict_and_release();
     test_tentative_grant_expires_without_commit();
     test_commit_without_vote_is_observation_only();
     test_commit_does_not_extend_matching_grant();
+    test_observation_below_promise_cannot_create_a_vote();
+    test_stale_or_unsafe_commits_are_not_protocol_errors();
+    test_malformed_commits_are_still_rejected();
+    test_next_epoch_respects_observation_and_promise();
     return 0;
 }

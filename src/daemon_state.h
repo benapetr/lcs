@@ -150,6 +150,7 @@ typedef struct
     lcs_resource_state_t state;
     int owner_node;
     uint64_t owner_instance_id;
+    /* Observed ownership/safety epoch; never a failed acquisition proposal. */
     uint64_t epoch;
     uint64_t lease_id;
     uint64_t lease_deadline_ms;

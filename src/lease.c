@@ -42,7 +42,8 @@ int lease_decode_msg(const void *payload, size_t len, uint16_t *resource_id, uin
         lcs_buf_get_u64(&r, sender_instance_id) != 0 ||
         *resource_id >= g_state.cfg.resource_count ||
         *owner_node >= g_state.cfg.node_count ||
-        g_state.cfg.nodes[*owner_node].role != LCS_NODE_FULL)
+        g_state.cfg.nodes[*owner_node].role != LCS_NODE_FULL ||
+        r.off != r.len)
         return -1;
     return 0;
 }
@@ -52,6 +53,14 @@ static bool lease_identity_matches(const lease_grant_t *grant, int owner_node, u
     return grant->active && grant->owner_node == owner_node &&
            grant->owner_instance_id == owner_instance_id &&
            grant->epoch == epoch && grant->lease_id == lease_id;
+}
+
+uint64_t lease_next_epoch(int resource_idx)
+{
+    uint64_t epoch = g_state.resources[resource_idx].epoch;
+    if (g_state.lease_grants[resource_idx].promised_epoch > epoch)
+        epoch = g_state.lease_grants[resource_idx].promised_epoch;
+    return epoch == UINT64_MAX ? 0 : epoch + 1;
 }
 
 static void lease_expire_grant(lease_grant_t *grant, uint64_t now)
@@ -200,21 +209,34 @@ int lease_apply_commit(const void *payload, size_t len, int source_node_idx, int
         source_node_idx < 0 || owner_node != (uint16_t)source_node_idx ||
         (size_t)source_node_idx >= g_state.cfg.node_count ||
         sender_instance_id != g_state.peers[source_node_idx].instance_id ||
+        epoch == 0 || lease_id == 0 || sender_instance_id == 0 ||
         remaining_ms == 0 || remaining_ms > g_state.cfg.lease_ms)
         return -1;
 
     resource_runtime_t *res = &g_state.resources[resource_id];
-    lease_grant_t *grant = &g_state.lease_grants[resource_id];
-    lease_expire_grant(grant, lcs_now_ms());
-    if (grant->active && !lease_identity_matches(grant, owner_node, sender_instance_id, epoch, lease_id))
-        return -1;
+    /* A private tentative grant (including a higher failed local proposal)
+     * cannot veto observation of a majority committed by other voters. This
+     * message never changes that grant or permits us to vote below its promise.
+     */
     if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED ||
         epoch < res->epoch)
-        return -1;
+    {
+        lcs_log_debug("ignoring lease commit for resource %s epoch=%llu local_epoch=%llu state=%s",
+                      g_state.cfg.resources[resource_id].name,
+                      (unsigned long long)epoch,
+                      (unsigned long long)res->epoch,
+                      lcs_resource_state_name(res->state));
+        return 0;
+    }
 
     bool same_lease = res->owner_node == (int)owner_node && res->owner_instance_id == sender_instance_id && res->epoch == epoch && res->lease_id == lease_id;
     if (epoch == res->epoch && res->owner_node >= 0 && !same_lease)
-        return -1;
+    {
+        lcs_log_debug("ignoring conflicting same-epoch lease commit for resource %s epoch=%llu",
+                      g_state.cfg.resources[resource_id].name,
+                      (unsigned long long)epoch);
+        return 0;
+    }
     if (res->owner_node == g_state.self_index && res->owner_instance_id == g_state.instance_id && !same_lease && res->state != LCS_RES_STOPPED)
     {
         int replacement_rc = resources_begin_state_replacement(
@@ -223,7 +245,9 @@ int lease_apply_commit(const void *payload, size_t len, int source_node_idx, int
             lcs_now_ms() + remaining_ms, "", epoll_fd);
         if (replacement_rc == 0)
             return 0;
-        return -1;
+        lcs_log_debug("deferring lease commit for resource %s until local shutdown is confirmed",
+                      g_state.cfg.resources[resource_id].name);
+        return 0;
     }
 
     res->epoch = epoch;
@@ -461,8 +485,6 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
     if (!cluster_has_quorum())
     {
         lcs_log_warn("discarding lease acquire for resource %s epoch=%llu because quorum is lost", g_state.cfg.resources[op->resource_idx].name, (unsigned long long)op->epoch);
-        if (op->epoch > res->epoch)
-            res->epoch = op->epoch;
         lease_op_send_release_to_acked(epoll_fd, op);
         res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
         if (op->pending_rpcs > 0)
@@ -484,8 +506,6 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                      (unsigned long long)op->epoch, (unsigned)res->state,
                      cluster_node_name_or_none(res->owner_node),
                      (unsigned long long)res->epoch);
-        if (op->epoch > res->epoch)
-            res->epoch = op->epoch;
         lease_op_send_release_to_acked(epoll_fd, op);
         if (op->pending_rpcs > 0)
             return;
@@ -498,8 +518,6 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
         if (!op->grant_deadline_ms || now >= op->grant_deadline_ms)
         {
             lcs_log_warn("discarding expired lease acquire result for resource %s epoch=%llu", g_state.cfg.resources[op->resource_idx].name, (unsigned long long)op->epoch);
-            if (op->epoch > res->epoch)
-                res->epoch = op->epoch;
             lease_op_send_release_to_acked(epoll_fd, op);
             res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
             if (op->pending_rpcs > 0)
@@ -527,8 +545,9 @@ static void lease_finish_acquire(int epoll_fd, lease_runtime_t *op)
                       g_state.cfg.resources[op->resource_idx].name,
                       (unsigned long long)op->epoch, op->votes,
                       g_state.quorum_needed);
-        if (op->epoch > res->epoch)
-            res->epoch = op->epoch;
+        /* Keep the attempted epoch in the private voter promise, not in the
+         * resource snapshot. A current owner may still hold an older lease
+         * with a different majority and must remain observable. */
         lease_op_send_release_to_acked(epoll_fd, op);
         res->next_activation_attempt_ms = lcs_now_ms() + lcs_jittered_delay_ms(g_state.cfg.renew_ms);
         if (op->pending_rpcs > 0)

@@ -355,7 +355,18 @@ Lease validity is measured against each node's local monotonic clock. Wall-clock
 
 Each resource carries a monotonically increasing epoch number held in memory. Epochs are not persisted to disk.
 
-Every lease grant, renewal, ownership change, and move request includes the epoch it applies to. Nodes reject any claim, renewal, or move request referencing an epoch older than the highest epoch they have already accepted for that resource. This prevents stale packets, delayed messages, or restarted daemons from reactivating an obsolete owner.
+Every lease grant, renewal, ownership change, and move request includes the epoch
+it applies to. Each voter separately remembers its private promised epoch, which
+prevents it from granting older proposals. New acquisition proposals exceed both
+that promise and the observed resource epoch. A failed acquisition advances only
+the private promise; it does not advertise a new ownership epoch.
+
+A node can observe the current majority owner's lease even when its own failed
+proposal has a higher promised epoch. Learning that ownership never changes its
+voter grant or lowers its promise, and does not authorize a vote for the older
+lease. Stale ownership announcements and announcements blocked by local unsafe
+state are ignored without disconnecting the peer; malformed protocol messages
+are still rejected. State synchronization cannot extend owner or voter leases.
 
 On startup, `lcsd` does not activate any resource immediately. It first confirms
 that configured local resources are inactive, then connects to peers and merges

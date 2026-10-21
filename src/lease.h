@@ -19,7 +19,12 @@ int lease_decode_msg(const void *payload, size_t len,
                      uint64_t *sender_instance_id);
 
 int  lease_accept_message(uint16_t type, const void *payload, size_t len, int source_node_idx);
+// Returns -1 for invalid wire data, 0 for an applied or safely ignored commit.
 int  lease_apply_commit(const void *payload, size_t len, int source_node_idx, int epoll_fd);
+
+// Propose above both observed ownership and private voter promises. Zero means
+// the epoch space is exhausted; callers must not wrap around and acquire.
+uint64_t lease_next_epoch(int resource_idx);
 
 // Record/release this daemon's own voter promise.  Move operations use the
 // same grant rules as normal automatic acquisition.

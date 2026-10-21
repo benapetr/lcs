@@ -648,8 +648,6 @@ static void resources_clear_volatile_state_after_quorum_loss(int epoll_fd)
     for (size_t i = 0; i < g_state.cfg.resource_count; i++)
     {
         uint64_t epoch = g_state.resources[i].epoch;
-        if (g_state.lease_grants[i].promised_epoch > epoch)
-            epoch = g_state.lease_grants[i].promised_epoch;
         uint64_t failover_count = g_state.resources[i].failover_count;
         uint64_t home_generation = g_state.resources[i].home_generation;
         uint64_t disabled_generation = g_state.resources[i].disabled_generation;
@@ -1712,12 +1710,15 @@ void resources_auto_place(int epoll_fd)
                            g_state.cfg.nodes[g_state.self_index].name);
             continue;
         }
+        uint64_t next_epoch = lease_next_epoch((int)i);
+        if (!next_epoch)
+            continue;
         lcs_log_debug2("auto-place try resource %s on %s current_epoch=%llu next_epoch=%llu",
                        g_state.cfg.resources[i].name,
                        g_state.cfg.nodes[g_state.self_index].name,
                        (unsigned long long)res->epoch,
-                       (unsigned long long)(res->epoch + 1));
-        resources_activate_local((int)i, res->epoch + 1, epoll_fd);
+                       (unsigned long long)next_epoch);
+        resources_activate_local((int)i, next_epoch, epoll_fd);
     }
 }
 

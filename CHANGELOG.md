@@ -2,6 +2,7 @@
 
 ## Next
 
+- Fixed a reconnect loop after failed resource acquisition: tentative epochs remain private voter state, valid ownership observations can recover without weakening voter promises, and stale lease announcements no longer disconnect peers. Lease and state broadcasts now wait for the peer handshake to complete.
 - Added terminal colors to `lcs status` and `lcs resource list`: green for healthy states, red for unavailable or failed states, and yellow for transitional or administratively stopped states. Use `--no-colors` to disable colors. Redirected output, JSON, and `nrpe` remain plain.
 
 ## v1.1.0

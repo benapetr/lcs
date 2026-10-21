@@ -8,7 +8,16 @@ RECOVERY_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-recovery.XXXXXX")"
 SYNC_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-state-sync.XXXXXX")"
 CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-fingerprint.XXXXXX")"
 PROTOCOL_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-protocol-negotiation.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN"' EXIT
+PEER_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-peer-broadcasts.XXXXXX")"
+trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN"' EXIT
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
+    "$ROOT_DIR/tests/unit/peer_broadcasts.c" \
+    "$ROOT_DIR/src/peer.c" "$ROOT_DIR/src/protocol.c" \
+    -Wl,--gc-sections -o "$PEER_BIN"
+"$PEER_BIN"
+echo "peer broadcast unit tests passed"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \

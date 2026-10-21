@@ -317,7 +317,13 @@ static void move_start_lease_acquire(int epoll_fd, move_runtime_t *move)
         move_complete(epoll_fd, move);
         return;
     }
-    move->epoch = res->epoch + 1;
+    move->epoch = lease_next_epoch(move->resource_idx);
+    if (!move->epoch)
+    {
+        move_set_failed(move, "resource lease epoch space is exhausted");
+        move_complete(epoll_fd, move);
+        return;
+    }
     move->lease_id = lcs_random_u64();
     move->grant_deadline_ms = lcs_now_ms() + g_state.cfg.lease_ms;
     move->votes = 1;

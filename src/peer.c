@@ -1744,7 +1744,8 @@ void peer_broadcast_state_sync(int epoll_fd)
 {
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
-        if ((int)i == g_state.self_index || g_state.peers[i].fd < 0)
+        if ((int)i == g_state.self_index || g_state.peers[i].fd < 0 ||
+            g_state.peers[i].conn_state != LCS_PEER_ESTABLISHED)
             continue;
 
         if (peer_send_state_sync(epoll_fd, (int)i) != 0)
@@ -1758,7 +1759,8 @@ void peer_broadcast_lease_commit(int epoll_fd, const void *payload, uint32_t len
 {
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
-        if ((int)i == g_state.self_index || g_state.peers[i].fd < 0)
+        if ((int)i == g_state.self_index || g_state.peers[i].fd < 0 ||
+            g_state.peers[i].conn_state != LCS_PEER_ESTABLISHED)
             continue;
         if (peer_queue_frame(epoll_fd, (int)i, LCS_MSG_LEASE_COMMIT,
                              lcs_next_seq(), payload, len) != 0)

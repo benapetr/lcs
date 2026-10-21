@@ -133,6 +133,26 @@ void resources_drop_local(int resource_idx, int epoll_fd)
     res->renew_after_ms = 0;
 }
 
+int resources_begin_state_replacement(int resource_idx, int owner_node,
+                                      uint64_t owner_instance_id,
+                                      lcs_resource_state_t state,
+                                      uint64_t epoch, uint64_t lease_id,
+                                      uint64_t deadline_ms,
+                                      const char *reason, int epoll_fd)
+{
+    (void)resource_idx;
+    (void)owner_node;
+    (void)owner_instance_id;
+    (void)state;
+    (void)epoch;
+    (void)lease_id;
+    (void)deadline_ms;
+    (void)reason;
+    (void)epoll_fd;
+    assert(!"unexpected local ownership replacement");
+    return -1;
+}
+
 int resources_release_for_handoff(int resource_idx, uint64_t epoch,
                                   uint64_t lease_id, int epoll_fd)
 {
@@ -313,11 +333,116 @@ static void test_slow_majority_uses_operation_deadline(void)
     assert(commit_count == 1);
 }
 
+static void test_failed_acquire_preserves_committed_epoch(void)
+{
+    initialize_state();
+    g_state.cfg.nodes[2].role = LCS_NODE_QUORUM_ONLY;
+    g_state.peers[1].instance_id = 101;
+    resource_runtime_t *res = &g_state.resources[0];
+    res->epoch = 7;
+
+    /* Node1 still owns epoch 7 with the witness. Our observation expired. */
+    for (uint64_t epoch = 8; epoch < 12; epoch += 2)
+    {
+        assert(lease_next_epoch(0) == epoch);
+        assert(lease_start_acquire(0, 0, epoch, epoch * 10, -1) == 0);
+        finish_rpc(1, -1);
+        finish_rpc(2, -1);
+        lease_process_operations(-1);
+        assert(!lease_operation_active(0));
+        assert(res->epoch == 7);
+        assert(res->owner_node == -1);
+        assert(g_state.lease_grants[0].promised_epoch == epoch + 1);
+    }
+
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t len = 0;
+    assert(lease_encode_msg(payload, sizeof(payload), &len,
+                            0, 1, 7, 77, 4000, 101) == 0);
+    lease_grant_t promise = g_state.lease_grants[0];
+    assert(lease_apply_commit(payload, len, 1, -1) == 0);
+    assert(res->owner_node == 1);
+    assert(res->epoch == 7);
+    assert(res->lease_id == 77);
+    assert(res->lease_deadline_ms == fake_now_ms + 4000);
+    assert(memcmp(&promise, &g_state.lease_grants[0], sizeof(promise)) == 0);
+    assert(activation_count == 0);
+    assert(commit_count == 0);
+}
+
+static void test_commit_during_unsuccessful_acquire_preserves_promise(void)
+{
+    initialize_state();
+    g_state.peers[1].instance_id = 101;
+    g_state.resources[0].epoch = 7;
+    assert(lease_start_acquire(0, 0, 8, 88, -1) == 0);
+    lease_grant_t promise = g_state.lease_grants[0];
+
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t len = 0;
+    assert(lease_encode_msg(payload, sizeof(payload), &len,
+                            0, 1, 7, 77, 4000, 101) == 0);
+    assert(lease_apply_commit(payload, len, 1, -1) == 0);
+    assert(g_state.resources[0].owner_node == 1);
+    assert(g_state.resources[0].epoch == 7);
+    assert(memcmp(&promise, &g_state.lease_grants[0], sizeof(promise)) == 0);
+
+    finish_rpc(1, -1);
+    finish_rpc(2, -1);
+    lease_process_operations(-1);
+    assert(!lease_operation_active(0));
+    assert(g_state.resources[0].owner_node == 1);
+    assert(g_state.resources[0].epoch == 7);
+    assert(g_state.lease_grants[0].promised_epoch == 9);
+    assert(activation_count == 0);
+}
+
+static void test_no_quorum_cannot_propose_or_commit(void)
+{
+    initialize_state();
+    quorum_available = false;
+    g_state.resources[0].epoch = 7;
+    assert(lease_start_acquire(0, 0, 8, 88, -1) != 0);
+    assert(g_state.resources[0].epoch == 7);
+    assert(g_state.lease_grants[0].promised_epoch == 0);
+    assert(!pending[1].active && !pending[2].active);
+}
+
+static void test_lost_quorum_and_expired_acquires_preserve_observation(void)
+{
+    for (int expired = 0; expired <= 1; expired++)
+    {
+        initialize_state();
+        g_state.resources[0].epoch = 7;
+        assert(lease_start_acquire(0, 0, 8, 88, -1) == 0);
+        finish_rpc(1, 0);
+        finish_rpc(2, -1);
+        if (expired)
+            fake_now_ms += g_state.cfg.lease_ms;
+        else
+            quorum_available = false;
+        lease_process_operations(-1);
+        assert(g_state.resources[0].epoch == 7);
+        assert(g_state.resources[0].owner_node == -1);
+        assert(g_state.lease_grants[0].promised_epoch == 9);
+        assert(activation_count == 0);
+        assert(commit_count == 0);
+        assert(pending[1].type == LCS_MSG_LEASE_RELEASE);
+        finish_rpc(1, 0);
+        lease_process_operations(-1);
+        assert(!lease_operation_active(0));
+    }
+}
+
 int main(void)
 {
     test_acquire_requires_processed_majority();
     test_acquire_commits_after_majority();
     test_failed_renew_does_not_extend_owner_deadline();
     test_slow_majority_uses_operation_deadline();
+    test_failed_acquire_preserves_committed_epoch();
+    test_commit_during_unsuccessful_acquire_preserves_promise();
+    test_no_quorum_cannot_propose_or_commit();
+    test_lost_quorum_and_expired_acquires_preserve_observation();
     return 0;
 }
