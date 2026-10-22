@@ -24,12 +24,6 @@ The goals:
 - Written in C - minimal footprint when it comes to RAM and CPU
 - Minimal 3rd dependencies - just standard C and GNU/Linux libs
 
-Concepts:
-- Only a trivial config file that defines all cluster members, resource groups and resources (VIPs and systemd services; see examples)
-- Listens only on specified interfaces / IPs (or any by default)
-- lcsd uses TCP for daemon-to-daemon cluster communication
-- Supports both IPv4 and IPv6 for cluster node addresses and VIP resources
-
 # Building
 
 Just run `make`.
@@ -95,60 +89,7 @@ depends_on = vip1
 systemd_unit = app.service
 ```
 
-The service unit should not be enabled to start independently on every node;
-LCS should be the actor that starts and stops it. On every full-member startup,
-LCS stops and verifies all configured local resources before becoming eligible
-to vote. A failed startup cleanup leaves the node recovering and advertises
-`stop_failed` until a retry succeeds or the node is fenced.
-
 Similar config needs to exist on each node, only difference is IP to listen on and node name. That's all you need. Now launch lcsd on all nodes, it should form the quorum and set up resources. For troubleshooting use -vvv for maximal logs.
-
-# Resource groups
-
-Resources can be assigned to optional groups:
-
-- `keep-together` prefers grouped resources on the same full-member.
-- `anti-affinity` prefers grouped resources on different full-members.
-- `strict` mode may keep lower-priority resources stopped when the rule cannot be satisfied.
-- `best-effort` mode keeps resources available if possible, then rebalances when topology allows.
-
-Priority is local to each group. Higher numbers are higher priority. If a priority is not set, LCS derives it from inverse sorted resource order, so earlier sorted resources get higher default priority.
-
-Automatic rebalance uses the same safe move path as `lcs resource move`: the old owner releases first, quorum records a newer lease epoch, and the target activates only after it obtains a majority lease. Only one automatic rebalance move runs at a time.
-
-For `keep-together` groups, moving any member through `lcs resource move` moves the highest-priority group member first. Other group members then follow through normal rebalance.
-
-# Home nodes
-
-Each resource can optionally set `home_node` to the name of a full-member node. When configured and not blocked, LCS places the resource on that node whenever it is online. Resources without a home node keep the existing behavior: after placement or failover, they remain wherever they last landed unless group rebalance or another failover moves them.
-
-Manual `lcs resource move RESOURCE NODE` to a non-home node blocks automatic return for that resource. A later manual move back to the configured home node clears the block.
-
-# Resource dependencies
-
-Resources can declare hard startup/shutdown dependencies with `depends_on`.
-Multiple dependencies are comma-separated and dependency chains are supported:
-
-```
-[service app]
-depends_on = public-vip, database-vip
-systemd_unit = app.service
-```
-
-LCS only starts a resource after all dependencies are active on the same node.
-When a dependency is stopped or moved away, local dependents are stopped first,
-so shutdown order is the reverse of startup order. Configuration validation
-rejects unknown dependencies, self-dependencies, and dependency cycles.
-
-# Resource control
-
-Use `lcs resource list` for a compact resource-only view. `lcs resource stop RESOURCE` marks a resource administratively stopped in cluster memory and releases it through the normal stop path, including hooks. It stays stopped until `lcs resource start RESOURCE` is called, or until the whole cluster is restarted. If local resource removal cannot be confirmed, the owner enters `stop_failed`; fix the local backend condition and run `lcs resource stop RESOURCE` again to retry, or fence/reboot the node if the resource cannot be proven stopped.
-
-After deploying resource configuration to every online node, run `lcs reload`
-on any one node to begin the coordinated reload. Restarting a daemon with an edited
-configuration is not a substitute for reload. Reload also refreshes cached peer
-DNS results asynchronously; failed lookups retain the previous addresses and
-do not disturb established connections.
 
 # Observability
 
