@@ -90,6 +90,16 @@ bind = 192.0.2.11
 # Maximum 16 CIDRs / 255 characters. Changes require a daemon restart.
 allow_from = 192.0.2.0/24
 
+# OPTIONAL: additionally restrict incoming connections to configured peer IPs.
+# Default: false. When true, EVERY node (including this node and quorum-only
+# nodes) must explicitly set address to a numeric IPv4 or IPv6 address.
+# Hostnames and omitted addresses are rejected; DNS is not used for this check.
+# Both allow_from and peers_only must permit the source. 0.0.0.0/0 disables
+# only allow_from, not peers_only. HELLO's claimed node must match its source IP.
+# Configure the actual source IP seen by peers (routing/NAT can change it).
+# Changes require a daemon restart.
+peers_only = false
+
 # OPTIONAL: daemon-to-daemon TCP port.
 # Default: 3322.
 port = 3322
@@ -163,6 +173,7 @@ role = full-member
 # OPTIONAL: peer address for daemon-to-daemon TCP. It may be an IPv4 address,
 # IPv6 address, or hostname. If omitted, the node section name is resolved.
 # An explicit address takes precedence over the node name.
+# With peers_only = true, every node must explicitly set a numeric IP here.
 address = 192.0.2.11
 
 # OPTIONAL: per-node peer TCP port.

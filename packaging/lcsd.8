@@ -95,6 +95,14 @@ filtering for both IPv4 and IPv6; ::/0 permits IPv6 only.
 Disallowed sources are closed before HELLO processing. Up to 16 CIDRs and
 255 characters are supported. Changes require daemon restart.
 .TP
+.B peers_only
+Additional incoming source restriction, disabled by default. When true, every
+node section must explicitly configure a numeric IPv4 or IPv6 address;
+hostnames and missing addresses prevent startup. Sources must match a configured
+remote node IP, and HELLO's claimed node must match the source IP.
+Both this check and allow_from must pass. Setting allow_from to 0.0.0.0/0 does
+not disable peers_only. Changes require daemon restart.
+.TP
 .B socket
 Local Unix control socket path for
 .BR lcs (8).
@@ -146,6 +154,8 @@ or
 .B address
 Optional peer address, either IPv4, IPv6, or a hostname. If omitted, the node
 section name is resolved. An explicit address takes precedence.
+When peers_only is true, an explicit numeric IPv4/IPv6 address is required
+for every node, including the local and quorum-only nodes.
 .TP
 .B port
 Optional per-node peer TCP port override.

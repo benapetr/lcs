@@ -108,6 +108,13 @@ wait_until 5 "source allowlist reload rejection" \
     grep -Fq "allow_from cannot be changed by resource reload" "$TEST_TMP/logs/node1.log"
 sed -i 's|allow_from = 0.0.0.0/0|allow_from = 127.0.0.0/8|' "$(node_config node1)"
 
+log "verifying peers-only changes require a daemon restart"
+sed -i '/^\[cluster\]$/a peers_only = true' "$(node_config node1)"
+kill -HUP "${LCS_PIDS[0]}"
+wait_until 5 "peers-only reload rejection" \
+    grep -Fq "peers_only cannot be changed by resource reload" "$TEST_TMP/logs/node1.log"
+sed -i '/^peers_only = true$/d' "$(node_config node1)"
+
 sed -i '/^\[node node3\]$/,/^$/ s/role = quorum-only/role = full-member/' \
     "$(node_config node1)"
 log "verifying live node membership changes are rejected"

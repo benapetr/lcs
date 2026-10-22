@@ -80,6 +80,7 @@ int main(void)
     snprintf(local.socket_path, sizeof(local.socket_path), "/tmp/node2.sock");
     snprintf(local.secret, sizeof(local.secret), "different-check");
     snprintf(local.allow_from, sizeof(local.allow_from), "127.0.0.0/8");
+    local.peers_only = true;
     local.port = 9001;
     local.metrics_enabled = true;
     local.syslog_enabled = true;

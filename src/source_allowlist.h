@@ -27,6 +27,8 @@ typedef struct
 } lcs_source_allowlist_t;
 
 int lcs_source_allowlist_parse(lcs_source_allowlist_t *list, const char *value);
+int lcs_source_parse_ip(const char *value, struct sockaddr_storage *address);
+bool lcs_source_same_ip(const struct sockaddr *a, const struct sockaddr *b);
 bool lcs_source_allowlist_contains(const lcs_source_allowlist_t *list,
                                    const struct sockaddr *source);
 

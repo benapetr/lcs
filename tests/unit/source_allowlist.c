@@ -136,11 +136,99 @@ static void test_config_validation(void)
     unlink(path);
 }
 
+static void test_peers_only_validation(void)
+{
+    const struct
+    {
+        bool enabled;
+        const char *local_address;
+        const char *remote_address;
+        bool valid;
+    } cases[] = {
+        { false, NULL, "node2.example.test", true },
+        { true, "127.0.0.1", "127.0.0.2", true },
+        { true, "::1", "2001:db8::2", true },
+        { true, "127.0.0.1", "2001:db8::2", true },
+        { true, NULL, "127.0.0.2", false },
+        { true, "127.0.0.1", NULL, false },
+        { true, "127.0.0.1", "node2.example.test", false },
+        { true, "localhost", "127.0.0.2", false },
+        { true, "127.0.0.1", "127.0.0.2/32", false },
+        { true, "127.0.0.1", "127.0.0.2:3322", false },
+    };
+    char path[] = "/tmp/lcs-peers-only-config.XXXXXX";
+    int fd = mkstemp(path);
+    assert(fd >= 0);
+    close(fd);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        FILE *file = fopen(path, "w");
+        assert(file);
+        fprintf(file, "[cluster]\nname=test\nnode=node1\npeers_only=%s\n"
+                      "[node node1]\nrole=full-member\n",
+                      cases[i].enabled ? "true" : "false");
+        if (cases[i].local_address)
+            fprintf(file, "address=%s\n", cases[i].local_address);
+        fputs("[node node2]\nrole=quorum-only\n", file);
+        if (cases[i].remote_address)
+            fprintf(file, "address=%s\n", cases[i].remote_address);
+        assert(fclose(file) == 0);
+        lcs_config_t cfg;
+        char error[256] = {0};
+        int rc = lcs_config_load(path, &cfg, error, sizeof(error));
+        if (cases[i].valid)
+        {
+            assert(rc == 0);
+            assert(cfg.peers_only == cases[i].enabled);
+        } else
+        {
+            assert(rc != 0);
+            assert(strstr(error, "peers_only"));
+        }
+    }
+    unlink(path);
+}
+
+static void test_peer_source_matching(void)
+{
+    lcs_config_t cfg;
+    lcs_config_init_defaults(&cfg);
+    assert(!cfg.peers_only);
+    strcpy(cfg.self_name, "node1");
+    cfg.node_count = 3;
+    const char *ips[] = { "127.0.0.1", "192.0.2.2", "2001:db8::3" };
+    for (size_t i = 0; i < cfg.node_count; i++)
+    {
+        snprintf(cfg.nodes[i].name, sizeof(cfg.nodes[i].name), "node%zu", i + 1);
+        assert(lcs_source_parse_ip(ips[i], &cfg.nodes[i].numeric_address) == 0);
+    }
+    const char *sources[] = {
+        "127.0.0.1", "192.0.2.2", "2001:db8::3", "192.0.2.4", "::ffff:192.0.2.2",
+    };
+    const bool expected[] = { false, true, true, false, true };
+    for (size_t i = 0; i < sizeof(sources) / sizeof(sources[0]); i++)
+    {
+        struct sockaddr_storage source;
+        assert(lcs_source_parse_ip(sources[i], &source) == 0);
+        assert(lcs_config_source_is_peer(&cfg, (const struct sockaddr *)&source) == expected[i]);
+    }
+    struct sockaddr_storage a, b;
+    assert(lcs_source_parse_ip("2001:db8::3", &a) == 0);
+    assert(lcs_source_parse_ip("2001:0db8:0:0:0:0:0:3", &b) == 0);
+    assert(lcs_source_same_ip((const struct sockaddr *)&a, (const struct sockaddr *)&b));
+    assert(lcs_source_parse_ip("2001:db8::4", &b) == 0);
+    assert(!lcs_source_same_ip((const struct sockaddr *)&a, (const struct sockaddr *)&b));
+    assert(lcs_source_parse_ip("localhost", &a) != 0);
+    assert(!lcs_config_source_is_peer(&cfg, (const struct sockaddr *)&a));
+}
+
 int main(void)
 {
     test_private_ipv4_defaults();
     test_custom_policy_and_bypass();
     test_invalid_policies_are_atomic();
     test_config_validation();
+    test_peers_only_validation();
+    test_peer_source_matching();
     return 0;
 }

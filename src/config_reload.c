@@ -188,6 +188,7 @@ static int validate_resource_only_change(const lcs_config_t *candidate, char *er
     REQUIRE_STRING_UNCHANGED(pidfile_path);
     REQUIRE_STRING_UNCHANGED(secret);
     REQUIRE_STRING_UNCHANGED(allow_from);
+    REQUIRE_UNCHANGED(peers_only);
     REQUIRE_UNCHANGED(port);
     REQUIRE_UNCHANGED(metrics_port);
     REQUIRE_UNCHANGED(lease_ms);

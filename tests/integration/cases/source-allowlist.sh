@@ -21,8 +21,11 @@ daemon, cli, template, root = sys.argv[1:]
 base = Path(template).read_text()
 
 
-def exercise(name, policy, bind, source, allowed):
+def exercise(name, policy, bind, source, allowed, peers_only=False, peer_address="127.0.0.2"):
     config = re.sub(r"^allow_from\s*=.*\n", "", base, flags=re.M)
+    config = config.replace("[cluster]\n", f"[cluster]\npeers_only = {'true' if peers_only else 'false'}\n", 1)
+    config = re.sub(r"(\[node node2\]\nrole = full-member\naddress = ).*",
+                    lambda match: match[1] + peer_address, config)
     if policy is not None:
         config = config.replace("[cluster]\n", f"[cluster]\nallow_from = {policy}\n", 1)
     config = re.sub(r"^bind\s*=.*$", f"bind = {bind}", config, flags=re.M)
@@ -91,6 +94,10 @@ exercise("default-denies-loopback", None, "127.0.0.1", "127.0.0.1", False)
 exercise("explicit-host-allowed", "127.0.0.1/32", "127.0.0.1", "127.0.0.1", True)
 exercise("other-host-denied", "127.0.0.1/32", "127.0.0.1", "127.0.0.2", False)
 exercise("ipv4-bypass", "0.0.0.0/0", "127.0.0.1", "127.0.0.2", True)
+exercise("peers-only-disabled", "0.0.0.0/0", "127.0.0.1", "127.0.0.3", True)
+exercise("configured-peer-allowed", "0.0.0.0/0", "127.0.0.1", "127.0.0.2", True, peers_only=True)
+exercise("unconfigured-source-denied", "0.0.0.0/0", "127.0.0.1", "127.0.0.3", False, peers_only=True)
+exercise("configured-peer-subnet-denied", "127.0.0.1/32", "127.0.0.1", "127.0.0.2", False, peers_only=True)
 try:
     with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
         probe.bind(("::1", 0))
@@ -100,6 +107,9 @@ else:
     exercise("default-denies-ipv6", None, "::1", "::1", False)
     exercise("explicit-ipv6-allowed", "::1/128", "::1", "::1", True)
     exercise("ipv6-bypass", "0.0.0.0/0", "::1", "::1", True)
+    exercise("configured-ipv6-peer-allowed", "::1/128", "::1", "::1", True,
+             peers_only=True, peer_address="::1")
+    exercise("unconfigured-ipv6-source-denied", "0.0.0.0/0", "::1", "::1", False, peers_only=True)
 PY
 
 log "source IP allowlist regression passed"

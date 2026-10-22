@@ -401,6 +401,9 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
         if (strcmp(key, "allow_from") == 0)
             return set_string(cfg->allow_from, sizeof(cfg->allow_from), value);
 
+        if (strcmp(key, "peers_only") == 0)
+            return parse_bool(value, &cfg->peers_only);
+
         if (strcmp(key, "port") == 0)
             return lcs_parse_u16(value, &cfg->port);
 
@@ -444,7 +447,12 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
             return parse_role(value, &node->role);
 
         if (strcmp(key, "address") == 0)
-            return set_string(node->address, sizeof(node->address), value);
+        {
+            if (set_string(node->address, sizeof(node->address), value) != 0)
+                return -1;
+            node->address_set = true;
+            return 0;
+        }
 
         if (strcmp(key, "port") == 0)
             return lcs_parse_u16(value, &node->port);
@@ -617,6 +625,18 @@ int lcs_config_node_index(const lcs_config_t *cfg, const char *name)
             return (int)i;
     }
     return -1;
+}
+
+bool lcs_config_source_is_peer(const lcs_config_t *cfg, const struct sockaddr *source)
+{
+    for (size_t i = 0; i < cfg->node_count; i++)
+    {
+        const lcs_node_config_t *node = &cfg->nodes[i];
+        if (strcmp(node->name, cfg->self_name) != 0 &&
+            lcs_source_same_ip(source, (const struct sockaddr *)&node->numeric_address))
+            return true;
+    }
+    return false;
 }
 
 int lcs_config_group_index(const lcs_config_t *cfg, const char *name)
@@ -831,6 +851,13 @@ int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
         if (node->role != LCS_NODE_FULL && node->role != LCS_NODE_QUORUM_ONLY)
         {
             set_err(err, err_len, 0, "node role is required");
+            return -1;
+        }
+        int numeric = lcs_source_parse_ip(node->address, &node->numeric_address);
+        if (cfg->peers_only && (!node->address_set || numeric != 0))
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "peers_only requires an explicit numeric IPv4/IPv6 address for every node; check node %s", node->name);
             return -1;
         }
         if (!*node->address &&

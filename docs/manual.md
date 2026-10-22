@@ -30,6 +30,7 @@ Configuration uses an INI-style file. The same format is used on every node; onl
 | `node` | yes | — | Local node name. Must match one `[node NAME]` section. |
 | `bind` | no | *(all addresses)* | Local bind address for daemon-to-daemon TCP. |
 | `allow_from` | no | `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | Comma-separated source CIDRs accepted on the peer TCP listener. `0.0.0.0/0` disables filtering for both IPv4 and IPv6. Changes require restart. |
+| `peers_only` | no | `false` | Additionally require an incoming source to match a configured remote node IP, and HELLO's claimed node to match that source. Requires an explicit numeric `address` for every node. Changes require restart. |
 | `socket` | no | `/run/lcs/lcsd.sock` | Unix socket path for the local CLI. |
 | `pidfile` | no | *(none)* | Pidfile path, used only with `--daemonize`. |
 | `secret` | no | *(none)* | Shared cluster secret verified during peer handshake. |
@@ -51,7 +52,7 @@ Configuration uses an INI-style file. The same format is used on every node; onl
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `role` | yes | — | `full-member` or `quorum-only`. |
-| `address` | yes | — | Peer address: IPv4, IPv6, or hostname. |
+| `address` | when `peers_only = true` | node name | Peer address: IPv4, IPv6, or hostname. With `peers_only`, every node must explicitly supply a numeric IPv4/IPv6 address. |
 | `port` | no | cluster `port` | TCP port override for this peer. |
 
 ## `[group NAME]`
@@ -326,13 +327,27 @@ allow_from = 192.168.10.0/24, fd12:3456:789a::/64
 Loopback, link-local, public IPv4, and all IPv6 sources are excluded by default.
 Localhost clusters need an explicit entry such as `127.0.0.0/8`; IPv6 peer
 networks must also be listed explicitly. IPv4-mapped IPv6 sources are checked
-against the IPv4 entries. Setting `allow_from = 0.0.0.0/0` disables all source
-filtering, including IPv6 filtering. `::/0` permits IPv6 sources only. Empty or
+against the IPv4 entries. Setting `allow_from = 0.0.0.0/0` disables the CIDR
+filter for both IPv4 and IPv6. `::/0` permits IPv6 sources only. Empty or
 malformed lists prevent startup. The policy is local to each node and changes
 require restarting that daemon; resource reload cannot change it.
 
 Source filtering limits network access; it does not authenticate members of an
 allowed network. Use firewall rules and the shared secret as additional layers.
+
+For a tighter restriction, enable `[cluster] peers_only = true`. It defaults to
+false. Every node section, including the local and quorum-only nodes, must then
+explicitly configure a numeric IPv4 or IPv6 `address`; missing addresses and
+hostnames prevent startup. A source must match another configured node's IP
+before HELLO is processed, and HELLO's claimed identity must match that same IP.
+IPv4-mapped IPv6 addresses match their IPv4 equivalents. Ports do not identify
+peers for this check, and multiple nodes may share an IP.
+
+This is an additional check: `allow_from` must also permit the source. Setting
+`allow_from = 0.0.0.0/0` does not disable `peers_only`. Configure the source IP
+actually seen by the receiving node; multihomed routing or NAT can otherwise
+cause rejection. This policy also requires daemon restart to change. It is an
+IP restriction, not cryptographic node authentication.
 
 Cluster traffic runs over plain TCP and is intended for a dedicated, isolated management network or VLAN. There is no TLS or per-message cryptographic signing.
 

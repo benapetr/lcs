@@ -16,6 +16,8 @@ typedef struct
     lcs_node_role_t role;
     char address[LCS_ADDR_MAX + 1];
     uint16_t port;
+    bool address_set;
+    struct sockaddr_storage numeric_address;
 } lcs_node_config_t;
 
 // Resource group
@@ -72,6 +74,7 @@ typedef struct
     uint32_t hook_timeout_ms;
     bool syslog_enabled;
     bool metrics_enabled;
+    bool peers_only;
     lcs_vip_backend_t vip_backend;
     size_t node_count;
     size_t group_count;
@@ -91,5 +94,6 @@ int       lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len);
 uint32_t  lcs_config_quorum(const lcs_config_t *cfg);
 uint64_t  lcs_config_voting_fingerprint(const lcs_config_t *cfg);
 uint64_t  lcs_config_full_fingerprint(const lcs_config_t *cfg);
+bool      lcs_config_source_is_peer(const lcs_config_t *cfg, const struct sockaddr *source);
 
 #endif

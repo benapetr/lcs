@@ -248,6 +248,7 @@ typedef struct
 {
     bool active;
     int fd;
+    struct sockaddr_storage source_address;
     uint64_t deadline_ms;
     unsigned char *inbuf;
     size_t in_len;

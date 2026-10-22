@@ -444,7 +444,7 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
     return 0;
 }
 
-static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
+static int peer_decode_hello(const void *payload, size_t len, const struct sockaddr *source, int *node_idx,
                              uint64_t *instance_id, uint8_t *mode,
                              bool *voting_ready, uint16_t *protocol_version,
                              bool *transition_only,
@@ -526,6 +526,16 @@ static int peer_decode_hello(const void *payload, size_t len, int *node_idx,
     if (*g_state.cfg.secret && strcmp(secret, g_state.cfg.secret) != 0)
     {
         snprintf(error, error_len, "cluster secret mismatch");
+        return -1;
+    }
+
+    /* Check identity before considering configuration-transition proofs below,
+     * since processing those proofs can change local reload state. Outbound
+     * connections already target the configured numeric peer IP. */
+    if (g_state.cfg.peers_only && source &&
+        !lcs_source_same_ip(source, (const struct sockaddr *)&g_state.cfg.nodes[idx].numeric_address))
+    {
+        snprintf(error, error_len, "peer source IP does not match the claimed node's configured address");
         return -1;
     }
 
@@ -830,7 +840,8 @@ static int handshake_process_frame(int epoll_fd, int slot_idx, const lcs_frame_h
     uint16_t protocol_version = 0;
     bool transition_only = false;
     char hello_error[512];
-    if (peer_decode_hello(payload, hdr->length, &node_idx, &instance_id,
+    if (peer_decode_hello(payload, hdr->length, (const struct sockaddr *)&hs->source_address,
+                          &node_idx, &instance_id,
                           &mode, &voting_ready, &protocol_version,
                           &transition_only,
                           hello_error, sizeof(hello_error)) != 0)
@@ -1320,7 +1331,7 @@ static int peer_complete_outbound_hello(int epoll_fd, int node_idx, const lcs_fr
     uint16_t protocol_version = 0;
     bool transition_only = false;
     char hello_error[512];
-    if (peer_decode_hello(payload, hdr->length, &remote_idx, &instance_id,
+    if (peer_decode_hello(payload, hdr->length, NULL, &remote_idx, &instance_id,
                           &mode, &voting_ready, &protocol_version,
                           &transition_only,
                           hello_error, sizeof(hello_error)) != 0)
@@ -1626,12 +1637,14 @@ void peer_pump_epoll_event(int epoll_fd, const struct epoll_event *ev)
                 break;
             }
             if (!lcs_source_allowlist_contains(&g_state.cfg.source_allowlist,
-                                               (const struct sockaddr *)&source))
+                                               (const struct sockaddr *)&source) ||
+                (g_state.cfg.peers_only &&
+                 !lcs_config_source_is_peer(&g_state.cfg, (const struct sockaddr *)&source)))
             {
                 char address[NI_MAXHOST] = "unknown";
                 (void)getnameinfo((const struct sockaddr *)&source, source_len,
                                   address, sizeof(address), NULL, 0, NI_NUMERICHOST);
-                lcs_log_debug("rejecting peer connection from %s: source address is not allowed by allow_from",
+                lcs_log_debug("rejecting peer connection from %s: source address is not allowed by allow_from or peers_only",
                               address);
                 close(peer_fd);
                 continue;
@@ -1669,6 +1682,7 @@ void peer_pump_epoll_event(int epoll_fd, const struct epoll_event *ev)
             }
             hs->active = true;
             hs->fd = peer_fd;
+            hs->source_address = source;
             hs->node_idx = -1;
             hs->deadline_ms = lcs_now_ms() + peer_handshake_timeout_ms();
             if (lcs_add_epoll_fd_events(epoll_fd, peer_fd, handshake_epoll_id(slot_idx), EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) != 0)
