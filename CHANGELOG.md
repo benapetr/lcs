@@ -1,9 +1,11 @@
 # Changelog
 
-## Next
+## v1.1.1
 
 - Fixed a reconnect loop after failed resource acquisition: tentative epochs remain private voter state, valid ownership observations can recover without weakening voter promises, and stale lease announcements no longer disconnect peers. Lease and state broadcasts now wait for the peer handshake to complete.
 - Added terminal colors to `lcs status` and `lcs resource list`: green for healthy states, red for unavailable or failed states, and yellow for transitional or administratively stopped states. Use `--no-colors` to disable colors. Redirected output, JSON, and `nrpe` remain plain.
+- Added deterministic lease and handshake regression coverage, a grouped IPv4/IPv6 rolling-restart integration test, and unit-test execution in CI.
+- Peer wire protocol remains version 5, compatible with v1.1.0.
 
 ## v1.1.0
 

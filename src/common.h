@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define LCS_VERSION "1.1.0"
+#define LCS_VERSION "1.1.1"
 
 #ifdef HAVE_SYSTEMD
 #define LCS_SYSTEMD_SUPPORT 1
