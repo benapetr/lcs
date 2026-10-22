@@ -29,6 +29,7 @@ Configuration uses an INI-style file. The same format is used on every node; onl
 | `name` | yes | — | Cluster name. Must be identical on all nodes. |
 | `node` | yes | — | Local node name. Must match one `[node NAME]` section. |
 | `bind` | no | *(all addresses)* | Local bind address for daemon-to-daemon TCP. |
+| `allow_from` | no | `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | Comma-separated source CIDRs accepted on the peer TCP listener. `0.0.0.0/0` disables filtering for both IPv4 and IPv6. Changes require restart. |
 | `socket` | no | `/run/lcs/lcsd.sock` | Unix socket path for the local CLI. |
 | `pidfile` | no | *(none)* | Pidfile path, used only with `--daemonize`. |
 | `secret` | no | *(none)* | Shared cluster secret verified during peer handshake. |
@@ -309,6 +310,29 @@ lcs_resource_stop_failed{cluster="ingress",resource="app",type="service"} 0
 ---
 
 # Security
+
+The peer TCP listener accepts sources from the RFC 1918 private IPv4 ranges by
+default: `10.0.0.0/8`, `172.16.0.0/12`, and `192.168.0.0/16`. Other sources are
+closed before HELLO processing and handshake-buffer allocation. This applies to
+incoming peer connections, not the local Unix CLI socket or metrics listener.
+
+Set `[cluster] allow_from` to replace the defaults with up to 16 comma-separated
+IPv4 or IPv6 CIDRs (maximum 255 characters). For example:
+
+```ini
+allow_from = 192.168.10.0/24, fd12:3456:789a::/64
+```
+
+Loopback, link-local, public IPv4, and all IPv6 sources are excluded by default.
+Localhost clusters need an explicit entry such as `127.0.0.0/8`; IPv6 peer
+networks must also be listed explicitly. IPv4-mapped IPv6 sources are checked
+against the IPv4 entries. Setting `allow_from = 0.0.0.0/0` disables all source
+filtering, including IPv6 filtering. `::/0` permits IPv6 sources only. Empty or
+malformed lists prevent startup. The policy is local to each node and changes
+require restarting that daemon; resource reload cannot change it.
+
+Source filtering limits network access; it does not authenticate members of an
+allowed network. Use firewall rules and the shared secret as additional layers.
 
 Cluster traffic runs over plain TCP and is intended for a dedicated, isolated management network or VLAN. There is no TLS or per-message cryptographic signing.
 

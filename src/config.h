@@ -5,6 +5,7 @@
 #define LCS_CONFIG_H
 
 #include "common.h"
+#include "source_allowlist.h"
 
 #include <netdb.h>
 
@@ -59,6 +60,8 @@ typedef struct
     char socket_path[LCS_PATH_MAX + 1];
     char pidfile_path[LCS_PATH_MAX + 1];
     char secret[LCS_NAME_MAX + 1];
+    char allow_from[LCS_ALLOW_FROM_MAX + 1];
+    lcs_source_allowlist_t source_allowlist;
     uint16_t port;
     uint16_t metrics_port;
     uint32_t lease_ms;

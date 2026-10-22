@@ -9,7 +9,16 @@ SYNC_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-state-sync.XXXXXX")"
 CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-fingerprint.XXXXXX")"
 PROTOCOL_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-protocol-negotiation.XXXXXX")"
 PEER_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-peer-broadcasts.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN"' EXIT
+ALLOWLIST_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-source-allowlist.XXXXXX")"
+trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN"' EXIT
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
+    "$ROOT_DIR/tests/unit/source_allowlist.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--gc-sections -o "$ALLOWLIST_BIN"
+"$ALLOWLIST_BIN"
+echo "source IP allowlist unit tests passed"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
@@ -30,7 +39,7 @@ echo "protocol negotiation unit tests passed"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
     "$ROOT_DIR/tests/unit/config_fingerprint.c" \
-    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
     -Wl,--gc-sections -o "$CONFIG_BIN"
 "$CONFIG_BIN"
 echo "configuration fingerprint unit tests passed"

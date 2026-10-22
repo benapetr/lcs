@@ -82,6 +82,14 @@ node = node1
 # Default: empty, which binds on all local addresses.
 bind = 192.0.2.11
 
+# OPTIONAL: source networks accepted on the peer TCP listener.
+# Default: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 (RFC 1918 IPv4 only).
+# An explicit list replaces the defaults; this example permits its peer subnet.
+# Add loopback or IPv6 peer networks explicitly when needed.
+# Use 0.0.0.0/0 to disable filtering for BOTH IPv4 and IPv6.
+# Maximum 16 CIDRs / 255 characters. Changes require a daemon restart.
+allow_from = 192.0.2.0/24
+
 # OPTIONAL: daemon-to-daemon TCP port.
 # Default: 3322.
 port = 3322

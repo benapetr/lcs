@@ -1615,12 +1615,26 @@ void peer_pump_epoll_event(int epoll_fd, const struct epoll_event *ev)
     {
         for (;;)
         {
-            int peer_fd = accept4(g_peer_listener_fd, NULL, NULL, SOCK_CLOEXEC);
+            struct sockaddr_storage source;
+            socklen_t source_len = sizeof(source);
+            int peer_fd = accept4(g_peer_listener_fd, (struct sockaddr *)&source,
+                                 &source_len, SOCK_CLOEXEC);
             if (peer_fd < 0)
             {
                 if (errno != EAGAIN && errno != EWOULDBLOCK)
                     lcs_log_debug("peer accept failed: %s", strerror(errno));
                 break;
+            }
+            if (!lcs_source_allowlist_contains(&g_state.cfg.source_allowlist,
+                                               (const struct sockaddr *)&source))
+            {
+                char address[NI_MAXHOST] = "unknown";
+                (void)getnameinfo((const struct sockaddr *)&source, source_len,
+                                  address, sizeof(address), NULL, 0, NI_NUMERICHOST);
+                lcs_log_debug("rejecting peer connection from %s: source address is not allowed by allow_from",
+                              address);
+                close(peer_fd);
+                continue;
             }
             if (lcs_set_fd_nonblocking(peer_fd) != 0)
             {

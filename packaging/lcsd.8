@@ -86,6 +86,15 @@ addresses.
 .B port
 Default peer TCP port. The default is 3322. Individual nodes may override it.
 .TP
+.B allow_from
+Comma-separated source IPv4/IPv6 CIDRs accepted on the peer TCP listener.
+Defaults to 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 (private IPv4 only).
+An explicit list replaces the defaults. Loopback and IPv6 peers require explicit
+entries. IPv4-mapped IPv6 sources use IPv4 rules. Set 0.0.0.0/0 to disable
+filtering for both IPv4 and IPv6; ::/0 permits IPv6 only.
+Disallowed sources are closed before HELLO processing. Up to 16 CIDRs and
+255 characters are supported. Changes require daemon restart.
+.TP
 .B socket
 Local Unix control socket path for
 .BR lcs (8).

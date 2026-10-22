@@ -83,6 +83,7 @@ write_config()
     local metrics_port="$((PORT_BASE + 100 + ${self#node}))"
     cat >"$(node_config "$self")" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = $self
 bind = 127.0.0.1

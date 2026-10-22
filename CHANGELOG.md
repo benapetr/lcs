@@ -1,5 +1,9 @@
 # Changelog
 
+## Next
+
+- Added an incoming peer source-IP allowlist. Defaults accept RFC 1918 private IPv4 ranges only; configure `allow_from` for localhost, IPv6, or public peer networks, or set `0.0.0.0/0` to disable filtering for both address families. Disallowed sources are rejected before HELLO processing. Policy changes require daemon restart; wire protocol remains version 5.
+
 ## v1.1.1
 
 - Fixed a reconnect loop after failed resource acquisition: tentative epochs remain private voter state, valid ownership observations can recover without weakening voter promises, and stale lease announcements no longer disconnect peers. Lease and state broadcasts now wait for the peer handshake to complete.

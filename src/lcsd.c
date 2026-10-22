@@ -428,6 +428,9 @@ static void log_startup_config(const daemon_options_t *opts, bool syslog_enabled
                  g_state.cfg.node_count,
                  g_state.cfg.resource_count,
                  g_state.quorum_needed);
+    lcs_log_info("startup config: allow_from=%s source_filter=%s",
+                 g_state.cfg.allow_from,
+                 g_state.cfg.source_allowlist.disabled ? "disabled" : "enabled");
     lcs_log_info("startup config: lease_ms=%u renew_ms=%u peer_timeout_ms=%u probe_count=%u probe_timeout_ms=%u hook_timeout_ms=%u secret_configured=%s",
                  g_state.cfg.lease_ms,
                  g_state.cfg.renew_ms,

@@ -55,6 +55,8 @@ void lcs_config_init_defaults(lcs_config_t *cfg)
     cfg->syslog_enabled = true;
     cfg->metrics_enabled = true;
     cfg->vip_backend = LCS_VIP_BACKEND_NETLINK;
+    snprintf(cfg->allow_from, sizeof(cfg->allow_from), "%s", LCS_DEFAULT_ALLOW_FROM);
+    (void)lcs_source_allowlist_parse(&cfg->source_allowlist, cfg->allow_from);
     snprintf(cfg->metrics_bind_address, sizeof(cfg->metrics_bind_address), "%s", LCS_DEFAULT_METRICS_BIND);
     snprintf(cfg->socket_path, sizeof(cfg->socket_path), "%s", LCS_DEFAULT_SOCKET_PATH);
     snprintf(cfg->pidfile_path, sizeof(cfg->pidfile_path), "%s", LCS_DEFAULT_PIDFILE_PATH);
@@ -395,6 +397,9 @@ static int apply_key(lcs_config_t *cfg, section_t sec, char *key, char *value, c
 
         if (strcmp(key, "secret") == 0)
             return set_string(cfg->secret, sizeof(cfg->secret), value);
+
+        if (strcmp(key, "allow_from") == 0)
+            return set_string(cfg->allow_from, sizeof(cfg->allow_from), value);
 
         if (strcmp(key, "port") == 0)
             return lcs_parse_u16(value, &cfg->port);
@@ -772,6 +777,11 @@ static int validate_groups_and_assign_resources(lcs_config_t *cfg, char *err, si
 
 int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
 {
+    if (lcs_source_allowlist_parse(&cfg->source_allowlist, cfg->allow_from) != 0)
+    {
+        set_err(err, err_len, 0, "allow_from must contain 1 to 16 comma-separated IPv4/IPv6 CIDRs (maximum 255 characters)");
+        return -1;
+    }
     if (!lcs_valid_name(cfg->cluster_name))
     {
         set_err(err, err_len, 0, "cluster name is required and must be a valid name");

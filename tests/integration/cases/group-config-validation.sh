@@ -55,6 +55,7 @@ prepare_cluster
 
 run_bad_config duplicate-priority "duplicate resource priority in group" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -83,6 +84,7 @@ EOF
 
 run_bad_config unknown-group "resource references unknown group" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -100,6 +102,7 @@ EOF
 
 run_bad_config unknown-home-node "resource references unknown home node" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -117,6 +120,7 @@ EOF
 
 run_bad_config quorum-only-home-node "resource home node must be a full-member" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -138,6 +142,7 @@ EOF
 
 run_bad_config service-missing-unit "service systemd_unit must be a valid .service unit name" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -153,6 +158,7 @@ EOF
 
 run_bad_config service-vip-fields "service resources cannot set address or interface" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -169,6 +175,7 @@ EOF
 
 run_bad_config unknown-dependency "resource references unknown dependency" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -186,6 +193,7 @@ EOF
 
 run_bad_config self-dependency "resource cannot depend on itself" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -203,6 +211,7 @@ EOF
 
 run_bad_config dependency-cycle "resource dependency cycle detected" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -227,6 +236,7 @@ run_good_config_starts service-resource-config \
     "startup config:" \
     "vips=1" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 socket = $(node_socket node1)
@@ -245,6 +255,7 @@ run_good_config_starts interface-display-name \
     "interface bond1.3675@bond1 normalized to bond1.3675" \
     "dry-run netlink VIP del 127.0.0.201/32 on bond1.3675" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = node1
 bind = 127.0.0.1

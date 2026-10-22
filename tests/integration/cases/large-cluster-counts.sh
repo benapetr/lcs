@@ -13,6 +13,7 @@ write_large_config()
 
     cat >"$(node_config "$self")" <<EOF
 [cluster]
+allow_from = 127.0.0.0/8
 name = integration
 node = $self
 bind = 127.0.0.1
