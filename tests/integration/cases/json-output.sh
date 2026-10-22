@@ -6,6 +6,9 @@ source "$SCRIPT_DIR/../lib.sh"
 
 trap cleanup_cluster EXIT
 
+expected_version="$(sed -n 's/^#define LCS_VERSION "\([^"]*\)"/\1/p' "$ROOT_DIR/src/common.h")"
+[[ -n "$expected_version" ]] || die "could not read release version from src/common.h"
+
 json_get()
 {
     local expr="$1"
@@ -65,7 +68,9 @@ version_json_a="$("$LCS" --json --version)"
 version_json_b="$("$LCS" --version --json)"
 [[ "$(printf '%s\n' "$version_json_a" | json_get 'data["build_flags"]["WITH_SYSTEMD"]')" == "$(printf '%s\n' "$version_json_b" | json_get 'data["build_flags"]["WITH_SYSTEMD"]')" ]] ||
     die "version JSON changed with option order"
-[[ "$(printf '%s\n' "$version_json_b" | json_get 'data["version"]')" == "1.1.0" ]] ||
-    die "version JSON did not report version with --version --json"
+for version_json in "$version_json_a" "$version_json_b"; do
+    [[ "$(printf '%s\n' "$version_json" | json_get 'data["version"]')" == "$expected_version" ]] ||
+        die "version JSON did not report release version $expected_version"
+done
 
 log "json output regression passed"

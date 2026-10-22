@@ -6,6 +6,11 @@ Update these files when bumping the LCS release version:
 - `packaging/lcs.8`
 - `packaging/lcsd.8`
 
+Release-version checks in tests should read `LCS_VERSION` from `src/common.h`
+instead of hard-coding an application version. Protocol release labels describe
+the release that introduced a wire version: wire version 5 remains mapped to
+`1.1.0` when the application release changes to `1.1.1`.
+
 ## Peer protocol compatibility
 
 `LCS_PEER_PROTO_MIN_VERSION` and `LCS_PEER_PROTO_VERSION` in
