@@ -85,6 +85,16 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     resources_process_hooks(sched->epoll_fd);
     resources_maintain_owned_leases(sched->epoll_fd);
     config_reload_process(sched->epoll_fd);
+    if (g_state.config_bootstrap_initialized)
+    {
+        char error[256];
+        int result = lcs_config_bootstrap_process(&g_state.config_bootstrap,
+                                                 &g_state.cfg, error, sizeof(error));
+        if (result < 0)
+            lcs_log_error("resource JSON background preparation failed: %s", error);
+        else if (result > 0)
+            lcs_log_debug("resource JSON bootstrap refreshed after INI reload");
+    }
     if (run_placement && !config_reload_in_progress())
     {
         g_state.next_placement_ms = now + LCS_PLACEMENT_INTERVAL_MS;

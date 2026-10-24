@@ -4,6 +4,11 @@ LCS is a lightweight high-availability daemon that manages resources such as vir
 
 `lcsd` is the cluster daemon. `lcs` is the CLI used to query and control the local daemon.
 
+The daemon prepares a local JSON resource snapshot while retaining INI as the
+configuration authority. See [resource JSON and storage](resource-json.md) for
+the current implementation stage, build dependencies, state paths, and recovery
+behavior. Runtime resource definition commands are not enabled yet.
+
 ---
 
 # Node roles

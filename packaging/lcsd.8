@@ -240,6 +240,15 @@ be independently enabled on every cluster node.
 .I /etc/lcs/lcs.conf
 Default daemon configuration.
 .TP
+.I /etc/lcs/resources.json
+Automatically prepared local resource snapshot. INI remains authoritative;
+distributed dynamic resource management is not enabled in this implementation stage.
+.TP
+.I /var/lib/lcs/
+Persistent bootstrap initialization metadata and exclusive daemon lock.
+Missing or corrupt initialized snapshots require recovery rather than automatic
+INI reimport. Custom INI paths use sibling CONFIG.resources.json and CONFIG.state/.
+.TP
 .I /run/lcs/lcsd.sock
 Default local control socket.
 .TP

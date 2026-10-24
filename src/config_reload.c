@@ -672,6 +672,8 @@ static void apply_candidate(int epoll_fd)
     }
 
     g_state.cfg = reload->candidate;
+    if (g_state.config_bootstrap_initialized)
+        lcs_config_bootstrap_request(&g_state.config_bootstrap);
     g_state.self_index = lcs_config_self_index(&g_state.cfg);
     g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
     g_state.next_placement_ms = lcs_now_ms() + 500u;

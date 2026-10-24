@@ -10,7 +10,45 @@ CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-fingerprint.XXXXXX")"
 PROTOCOL_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-protocol-negotiation.XXXXXX")"
 PEER_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-peer-broadcasts.XXXXXX")"
 ALLOWLIST_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-source-allowlist.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN"' EXIT
+RESOURCE_CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-resource-json.XXXXXX")"
+STORE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-store.XXXXXX")"
+BOOTSTRAP_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-bootstrap.XXXXXX")"
+AGREEMENT_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-agreement.XXXXXX")"
+trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN"' EXIT
+
+read -ra JSON_CFLAGS <<< "$(pkg-config --cflags jansson)"
+read -ra JSON_LIBS <<< "$(pkg-config --libs jansson)"
+read -ra CRYPTO_CFLAGS <<< "$(pkg-config --cflags libcrypto)"
+read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_agreement.c" "$ROOT_DIR/src/config_agreement.c" \
+    "$ROOT_DIR/src/config_agreement_worker.c" \
+    "$ROOT_DIR/src/config_transfer.c" "$ROOT_DIR/src/protocol.c" \
+    "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/resource_config.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$AGREEMENT_BIN"
+"$AGREEMENT_BIN"
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/resource_config.c" "$ROOT_DIR/src/resource_config.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    "${JSON_LIBS[@]}" -o "$RESOURCE_CONFIG_BIN"
+"$RESOURCE_CONFIG_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_store.c" "$ROOT_DIR/src/config_store.c" \
+    -Wl,--wrap=fsync -Wl,--wrap=renameat -o "$STORE_BIN"
+"$STORE_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_bootstrap.c" "$ROOT_DIR/src/config_bootstrap.c" \
+    "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/resource_config.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    "${JSON_LIBS[@]}" -o "$BOOTSTRAP_BIN"
+"$BOOTSTRAP_BIN"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \

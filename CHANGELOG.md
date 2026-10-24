@@ -2,6 +2,9 @@
 
 ## Next
 
+- Added the durable configuration-agreement core, majority proposal tracking, background storage workers, and bounded snapshot-transfer codecs. These are not yet connected to live peer transactions or activation; INI remains authoritative and wire protocol remains version 5. Agreement hashing adds an OpenSSL libcrypto build dependency.
+- Added the JSON resource snapshot and durable local bootstrap foundation for distributed configuration, including automatic preparation, background refresh after INI reload, and state-directory packaging. INI remains authoritative and runtime definition commands are not enabled yet; wire protocol remains version 5. Building the daemon now requires Jansson development files.
+- Added a validated internal candidate editor for future pcs-style resource and group commands, including affinity policies and revision checks. This is not yet exposed through the runtime CLI.
 - Added optional `peers_only` source checking, disabled by default. When enabled, every node requires an explicit numeric IP address, incoming sources must match configured peers, and HELLO identities must match their source IPs. It works alongside `allow_from` and requires daemon restart to change.
 - Added an incoming peer source-IP allowlist. Defaults accept RFC 1918 private IPv4 ranges only; configure `allow_from` for localhost, IPv6, or public peer networks, or set `0.0.0.0/0` to disable filtering for both address families. Disallowed sources are rejected before HELLO processing. Policy changes require daemon restart; wire protocol remains version 5.
 
