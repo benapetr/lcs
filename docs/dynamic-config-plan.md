@@ -64,12 +64,16 @@ can serve dynamic mutations or participate under the new configuration rules.
   dependency order, including cluster identity and schema compatibility checks.
 - [x] Define the content digest and agreement-history identity for distributed
   transactions; do not treat the legacy voting fingerprint as the full JSON digest.
-- [ ] Define stable resource identity across edits, sorted wire-ID remapping,
+- [x] Define stable resource identity across edits, sorted wire-ID remapping,
   deletion/recreation, and stale resource messages after configuration changes.
 - [x] Define storage paths, ownership, permissions, and isolated paths
   for multiple local daemons and integration tests.
-- [ ] Specify CLI success, rejection, pending, and outcome-unknown responses;
+- [x] Specify CLI success, rejection, pending, and outcome-unknown responses;
   a client timeout must not imply an aborted transaction.
+
+Application, identity, recovery and client-outcome rules are specified in
+[the application contract](dynamic-config-application.md). Checked design items
+do not imply that their daemon integration has been implemented.
 
 ## 2. Design durable distributed agreement and recovery
 
@@ -84,20 +88,20 @@ durable distributed configuration protocol.
   online nonparticipants and incompatible members explicitly.
 - [x] Prove that intersecting majorities cannot commit different successors to
   the same configuration, including after coordinator failure and restart.
-- [ ] Define proposal, agreement, resource drain, commit, application, and client
+- [x] Define proposal, agreement, resource drain, commit, application, and client
   acknowledgement ordering. State exactly which records must reach durable
   storage before each response or resource operation.
-- [ ] Define safe handling of active changed/deleted resources, dependents,
+- [x] Define safe handling of active changed/deleted resources, dependents,
   unreachable former owners, lease expiry, and `stop_failed` before activation
   under a new configuration. Preserve current reload safety guarantees.
-- [ ] Specify crash recovery at every boundary, including configuration committed
+- [x] Specify crash recovery at every boundary, including configuration committed
   durably but not yet applied, and drains completed before a failed transaction.
 - [ ] Persist last-applied definitions and pending backend cleanup information
   before resource transitions. Retain enough information to stop deleted/replaced
   backends after a crash, even when catch-up crosses multiple revisions.
 - [ ] Add persistent resource incarnation identity so deletion/recreation cannot
   reuse an old name's lease/grant state on returning nodes.
-- [ ] Specify recovery when JSON and journal disagree or one is missing/corrupt.
+- [x] Specify recovery when JSON and journal disagree or one is missing/corrupt.
   Fail safely with actionable diagnostics; never silently reset to empty state.
 - [x] Implement local atomic record replacement, file and parent-directory
   syncing, exclusive locking, and bounded regular-file reads.
@@ -109,10 +113,10 @@ durable distributed configuration protocol.
   state import, and cancellation that waits for child exit before disk recovery.
 - [ ] Implement multi-revision catch-up, durable request-status history, and
   safe compaction/checkpointing for the complete distributed transaction manager.
-- [ ] Define full-cluster restart, stale-majority prevention, disk loss, backup
+- [x] Define full-cluster restart, stale-majority prevention, disk loss, backup
   restoration, and explicit disaster recovery. A lone high revision or a former
   minority must not establish authority by itself.
-- [ ] Require a stale/recovering node to synchronize configuration and reconcile
+- [x] Require a stale/recovering node to synchronize configuration and reconcile
   old local resources before voting or hosting resources. Quorum-only members
   persist the same committed definitions and relevant agreement metadata.
 

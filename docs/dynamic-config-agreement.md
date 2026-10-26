@@ -155,6 +155,10 @@ HELLO. Keep the released wire-5 HELLO payload unchanged; negotiate support and
 exchange dynamic configuration status after establishment rather than appending
 fields that old strict-length decoders reject.
 
+Application ordering, stable identities, crash recovery and client outcomes are
+specified in [the application contract](dynamic-config-application.md). The
+following integration requirements remain unimplemented.
+
 ## Remaining daemon activation and application rules
 
 - Confirm support, durable readiness, matching full definitions, and compatible
