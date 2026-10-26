@@ -76,15 +76,25 @@ static int decode_group(const char *name, json_t *object, lcs_group_config_t *gr
 }
 
 static int decode_resource(const char *name, json_t *object,
-                           lcs_resource_config_t *resource)
+                           lcs_resource_config_t *resource, bool dynamic, uint64_t revision)
 {
     static const char *const keys[] = {
         "type", "address", "interface", "systemd_unit", "group", "home_node",
-        "priority", "depends_on", "pre_start", "post_start", "pre_stop", "post_stop", NULL
+        "priority", "depends_on", "pre_start", "post_start", "pre_stop", "post_stop", "birth_revision", NULL
     };
     char type[32] = "";
     if (!name_valid(name) || !keys_valid(object, keys) ||
         string_field(object, "type", type, sizeof(type), true))
+        return -1;
+    json_t *birth = json_object_get(object, "birth_revision");
+    if (dynamic)
+    {
+        if (!json_is_integer(birth) || json_integer_value(birth) < 0 ||
+            (uint64_t)json_integer_value(birth) > revision)
+            return -1;
+        resource->birth_revision = (uint64_t)json_integer_value(birth);
+    }
+    else if (birth)
         return -1;
     snprintf(resource->name, sizeof(resource->name), "%s", name);
     resource->type = strcmp(type, "vip") == 0 ? LCS_RESOURCE_VIP :
@@ -164,8 +174,10 @@ int lcs_resource_config_decode(const char *document, size_t length,
     json_t *resources = json_object_get(root, "resources");
     char cluster[LCS_NAME_MAX + 1] = "";
     if (!keys_valid(root, keys) || !json_is_integer(schema) ||
-        json_integer_value(schema) != LCS_RESOURCE_SCHEMA_VERSION ||
+        (json_integer_value(schema) != LCS_RESOURCE_SCHEMA_VERSION &&
+         json_integer_value(schema) != LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION) ||
         !json_is_integer(rev) || json_integer_value(rev) < 0 ||
+        (json_integer_value(schema) == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION && !json_integer_value(rev)) ||
         string_field(root, "cluster", cluster, sizeof(cluster), true) ||
         strcmp(cluster, base->cluster_name) != 0 || !json_is_object(groups) ||
         !json_is_object(resources) || json_object_size(groups) > LCS_MAX_GROUPS ||
@@ -181,6 +193,7 @@ int lcs_resource_config_decode(const char *document, size_t length,
         goto out;
     }
     *next = *base;
+    next->resource_schema_version = (uint32_t)json_integer_value(schema);
     next->group_count = next->resource_count = 0;
     memset(next->groups, 0, sizeof(next->groups));
     memset(next->resources, 0, sizeof(next->resources));
@@ -196,7 +209,9 @@ int lcs_resource_config_decode(const char *document, size_t length,
     }
     json_object_foreach(resources, name, value)
     {
-        if (decode_resource(name, value, &next->resources[next->resource_count++]))
+        if (decode_resource(name, value, &next->resources[next->resource_count++],
+                            next->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION,
+                            (uint64_t)json_integer_value(rev)))
         {
             fail(err, err_len, "invalid resource definition in resource JSON");
             goto out;
@@ -219,6 +234,9 @@ static json_t *encode_resource(const lcs_resource_config_t *resource,
     json_t *object = json_object();
     json_t *deps = json_array();
     if (!object || !deps)
+        goto error;
+    if (cfg->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION &&
+        json_object_set_new(object, "birth_revision", json_integer((json_int_t)resource->birth_revision)))
         goto error;
     if (put_string(object, "type", lcs_resource_type_name(resource->type)))
         goto error;
@@ -258,6 +276,10 @@ int lcs_resource_config_encode(const lcs_config_t *cfg, uint64_t revision,
                                char **document, size_t *length,
                                char *err, size_t err_len)
 {
+    if (cfg->resource_schema_version > LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
+        return fail(err, err_len, "unsupported resource schema version");
+    if (cfg->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION && !revision)
+        return fail(err, err_len, "dynamic incarnation snapshots require an activation revision");
     if (revision > LCS_RESOURCE_REVISION_MAX)
         return fail(err, err_len, "resource revision exceeds signed 64-bit range");
     lcs_config_t *ordered = malloc(sizeof(*ordered));
@@ -269,11 +291,22 @@ int lcs_resource_config_encode(const lcs_config_t *cfg, uint64_t revision,
         free(ordered);
         return -1;
     }
+    for (size_t i = 0; i < ordered->resource_count; i++)
+    {
+        if (ordered->resources[i].birth_revision > revision ||
+            (ordered->resource_schema_version != LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION &&
+             ordered->resources[i].birth_revision))
+        {
+            free(ordered);
+            return fail(err, err_len, "invalid resource incarnation for snapshot revision/schema");
+        }
+    }
     json_t *root = json_object(), *groups = json_object(), *resources = json_object();
     char *result = NULL;
     int rc = -1;
     if (!root || !groups || !resources ||
-        json_object_set_new(root, "schema_version", json_integer(LCS_RESOURCE_SCHEMA_VERSION)) ||
+        json_object_set_new(root, "schema_version", json_integer(ordered->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION ?
+            LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION : LCS_RESOURCE_SCHEMA_VERSION)) ||
         put_string(root, "cluster", ordered->cluster_name) ||
         json_object_set_new(root, "revision", json_integer((json_int_t)revision)))
         goto out;
@@ -573,6 +606,20 @@ int lcs_resource_config_edit(const lcs_config_t *base, uint64_t current_revision
             goto out;
         }
     }
+    if (base->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
+    {
+        const char *name;
+        json_t *resource;
+        json_object_foreach(resources, name, resource)
+        {
+            if (!json_object_get(resource, "birth_revision") &&
+                json_object_set_new(resource, "birth_revision", json_integer((json_int_t)current_revision + 1)))
+            {
+                fail(err, err_len, "cannot allocate resource incarnation");
+                goto out;
+            }
+        }
+    }
     if (json_object_set_new(root, "revision", json_integer((json_int_t)current_revision + 1)))
     {
         fail(err, err_len, "cannot assign candidate revision");
@@ -585,10 +632,122 @@ int lcs_resource_config_edit(const lcs_config_t *base, uint64_t current_revision
         goto out;
     }
     uint64_t revision;
-    rc = lcs_resource_config_decode(document, strlen(document), base, candidate,
-                                    &revision, err, err_len);
+    lcs_config_t *edited = malloc(sizeof(*edited));
+    if (!edited)
+        rc = fail(err, err_len, "out of memory editing resource candidate");
+    else
+    {
+        rc = lcs_resource_config_decode(document, strlen(document), base, edited,
+                                        &revision, err, err_len);
+        if (!rc && base->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
+            rc = lcs_resource_config_assign_identities(base, current_revision, edited,
+                                                        candidate, err, err_len);
+        else if (!rc)
+            *candidate = *edited;
+        free(edited);
+    }
     free(document);
 out:
     json_decref(root);
     return rc;
+}
+
+/* Compare full definition intent using the same canonical encoding as agreement,
+ * while deliberately excluding the identity metadata being allocated here. */
+static int activation_definitions_equal(const lcs_config_t *base,
+                                         const lcs_config_t *candidate,
+                                         char *err, size_t err_len)
+{
+    lcs_config_t *plain = malloc(sizeof(*plain));
+    char *a = NULL, *b = NULL;
+    size_t a_len = 0, b_len = 0;
+    if (!plain)
+        return fail(err, err_len, "out of memory checking activation definitions");
+    *plain = *base;
+    plain->resource_schema_version = LCS_RESOURCE_SCHEMA_VERSION;
+    for (size_t i = 0; i < plain->resource_count; i++)
+        plain->resources[i].birth_revision = 0;
+    int result = lcs_resource_config_encode(plain, 0, &a, &a_len, err, err_len);
+    *plain = *candidate;
+    plain->resource_schema_version = LCS_RESOURCE_SCHEMA_VERSION;
+    for (size_t i = 0; i < plain->resource_count; i++)
+        plain->resources[i].birth_revision = 0;
+    if (!result)
+        result = lcs_resource_config_encode(plain, 0, &b, &b_len, err, err_len);
+    if (!result && (a_len != b_len || memcmp(a, b, a_len)))
+        result = fail(err, err_len, "activation must preserve complete resource/group definitions");
+    free(a);
+    free(b);
+    free(plain);
+    return result;
+}
+
+int lcs_resource_config_assign_identities(const lcs_config_t *base,
+                                          uint64_t current_revision,
+                                          const lcs_config_t *proposed,
+                                          lcs_config_t *candidate,
+                                          char *err, size_t err_len)
+{
+    if (current_revision >= LCS_RESOURCE_REVISION_MAX ||
+        base->resource_schema_version > LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
+        return fail(err, err_len, "invalid base schema or exhausted configuration revision");
+    lcs_config_t *next = malloc(sizeof(*next));
+    if (!next)
+        return fail(err, err_len, "out of memory allocating resource incarnations");
+    int result = lcs_config_candidate_prepare(base, proposed, next, err, err_len);
+    bool active = base->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION;
+    if (!result && !active)
+        result = activation_definitions_equal(base, next, err, err_len);
+    if (!result)
+    {
+        next->resource_schema_version = LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION;
+        for (size_t i = 0; i < next->resource_count; i++)
+        {
+            int old = lcs_config_resource_index(base, next->resources[i].name);
+            next->resources[i].birth_revision = !active ? 0 :
+                old >= 0 && lcs_config_backend_equal(&base->resources[old], &next->resources[i]) ?
+                base->resources[old].birth_revision : current_revision + 1;
+        }
+        result = lcs_resource_config_validate_successor(base, current_revision, next,
+                                                         current_revision + 1, err, err_len);
+        if (!result)
+            *candidate = *next;
+    }
+    free(next);
+    return result;
+}
+
+int lcs_resource_config_validate_successor(const lcs_config_t *base,
+                                           uint64_t current_revision,
+                                           const lcs_config_t *candidate,
+                                           uint64_t revision,
+                                           char *err, size_t err_len)
+{
+    if (base->resource_count > LCS_MAX_RESOURCES || candidate->resource_count > LCS_MAX_RESOURCES ||
+        current_revision >= LCS_RESOURCE_REVISION_MAX || revision != current_revision + 1 ||
+        base->resource_schema_version > LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION ||
+        candidate->resource_schema_version > LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
+        return fail(err, err_len, "invalid resource successor revision/schema");
+    if (lcs_config_candidate_validate(base, candidate, err, err_len))
+        return -1;
+    bool active = base->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION;
+    bool dynamic = candidate->resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION;
+    if (active && !dynamic)
+        return fail(err, err_len, "dynamic resource schema cannot revert to legacy authority");
+    for (size_t i = 0; i < base->resource_count; i++)
+        if (base->resources[i].birth_revision > current_revision ||
+            (!active && base->resources[i].birth_revision))
+            return fail(err, err_len, "invalid predecessor resource incarnation");
+    if (!active && dynamic && activation_definitions_equal(base, candidate, err, err_len))
+        return -1;
+    for (size_t i = 0; i < candidate->resource_count; i++)
+    {
+        int old = lcs_config_resource_index(base, candidate->resources[i].name);
+        uint64_t expected = !active ? 0 :
+            old >= 0 && lcs_config_backend_equal(&base->resources[old], &candidate->resources[i]) ?
+            base->resources[old].birth_revision : revision;
+        if (candidate->resources[i].birth_revision != expected)
+            return fail(err, err_len, "resource incarnation does not match committed predecessor");
+    }
+    return 0;
 }

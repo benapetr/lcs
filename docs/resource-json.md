@@ -47,6 +47,34 @@ replacement is not evidence of cluster agreement. Files are synced before
 replacement, followed by a directory sync; a failed sync after replacement is
 reported as an uncertain outcome.
 
+## Schema version 2: backend incarnations
+
+The library and agreement core also support schema 2 for future dynamic authority.
+The running daemon still prepares schema-1 bootstrap snapshots; merely placing a
+schema-2 file on disk does not activate the feature.
+
+Schema 2 has the same envelope and resource fields as schema 1, plus a required
+integer `birth_revision` on every resource. It ranges from zero to the snapshot
+revision. Schema-2 snapshots require a positive revision. Bootstrap incarnations
+have birth zero; activation changes only schema/authority metadata and must
+preserve the complete resource/group definitions, including explicit defaults.
+
+Subsequent creation, or changing a resource type, VIP address/interface or service
+unit, assigns the new committed revision as birth. Edits to hooks, dependencies,
+priorities and groups preserve birth. Deletion followed by recreation always
+allocates a new birth even when the name and backend properties are identical.
+Full-snapshot catch-up carries births explicitly, so an offline node cannot infer
+identity from identical endpoint definitions. Resource identity is `(name, birth)`
+within one activated history; array indices are not persistent identities.
+
+The internal candidate editor assigns these fields. Clients cannot set them.
+Acceptor and learner validation reject invalid successor identities, definition
+changes bundled into activation, and schema-2-to-1 downgrade attempts. Agreement
+journals and canonical digests retain identities across restart. Schema 1 rejects
+`birth_revision` rather than silently discarding it. These checks do not replace
+future message generation gates, application catalogs or backend cleanup; see
+[the application contract](dynamic-config-application.md).
+
 ## Schema version 1
 
 ```json

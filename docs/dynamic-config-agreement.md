@@ -186,9 +186,9 @@ following integration requirements remain unimplemented.
 - Apply changed/deleted backends through safe drain/dependency ordering and
   lease rules. Preserve runtime identity by resource name for unchanged resources;
   do not preserve an old incarnation's grants after deletion/recreation.
-  Define and persist a resource incarnation identifier (for example, creation
-  revision plus name), so a returning node cannot confuse a recreated name with
-  an unchanged resource merely because its backend properties match.
+  Schema-2 snapshots now persist `(name, birth_revision)` incarnations and the
+  core validates their successor rules. The daemon must consume these identities
+  when reconciling resources and processing peer messages.
 - Bind resource messages to the applied configuration generation, and flush old
   sessions before index remapping. Delayed old-schema resource IDs must never be
   interpreted against a new sorted resource table.

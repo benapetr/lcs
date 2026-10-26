@@ -11,6 +11,9 @@
 
 #define JOURNAL "agreement.json"
 
+static int checked_successor(const lcs_config_agreement_t *agreement,
+                               const lcs_config_value_t *value, char *err, size_t err_len);
+
 static int fail(char *err, size_t len, const char *message)
 {
     if (err && len)
@@ -372,7 +375,8 @@ static int load(lcs_config_agreement_t *agreement, const char *document, size_t 
         if (!lcs_config_agreement_ballot_valid(agreement, agreement->accepted_ballot) ||
             agreement->accepted_ballot > agreement->promised ||
             agreement->accepted_ballot < agreement->committed_ballot ||
-            agreement->accepted.revision != agreement->committed.revision + 1)
+            agreement->accepted.revision != agreement->committed.revision + 1 ||
+            checked_successor(agreement, &agreement->accepted, err, err_len))
             goto invalid;
     }
     else if (agreement->accepted_ballot)
@@ -458,7 +462,8 @@ int lcs_config_agreement_import(lcs_config_agreement_t *agreement,
             next.accepted_ballot < agreement->accepted_ballot ||
             (next.accepted_ballot && next.accepted_ballot == agreement->accepted_ballot &&
              !lcs_config_value_equal(&next.accepted, &agreement->accepted)))) ||
-        (!same_revision && strcmp(next.parent_digest, agreement->committed.digest)))
+        (!same_revision && (strcmp(next.parent_digest, agreement->committed.digest) ||
+            checked_successor(agreement, &next.committed, err, err_len))))
     {
         lcs_config_agreement_close(&next);
         agreement->poisoned = true;
@@ -502,6 +507,31 @@ int lcs_config_agreement_prepare(lcs_config_agreement_t *agreement,
     return publish(agreement, &next, err, err_len);
 }
 
+static int checked_successor(const lcs_config_agreement_t *agreement,
+                               const lcs_config_value_t *value, char *err, size_t err_len)
+{
+    lcs_config_t *previous = malloc(sizeof(*previous));
+    lcs_config_t *candidate = malloc(sizeof(*candidate));
+    if (!previous || !candidate)
+    {
+        free(previous);
+        free(candidate);
+        return fail(err, err_len, "out of memory validating incarnation history");
+    }
+    uint64_t before = 0, after = 0;
+    int result = lcs_resource_config_decode(agreement->committed.document,
+        agreement->committed.length, agreement->base, previous, &before, err, err_len);
+    if (!result)
+        result = lcs_resource_config_decode(value->document, value->length,
+            agreement->base, candidate, &after, err, err_len);
+    if (!result)
+        result = lcs_resource_config_validate_successor(previous, before, candidate,
+                                                          after, err, err_len);
+    free(previous);
+    free(candidate);
+    return result;
+}
+
 static int checked_value(const lcs_config_agreement_t *agreement,
                            const lcs_config_value_t *value, char *err, size_t err_len)
 {
@@ -524,7 +554,8 @@ int lcs_config_agreement_accept(lcs_config_agreement_t *agreement,
         return rc;
     if (ballot < agreement->promised)
         return LCS_CONFIG_REJECTED;
-    if (checked_value(agreement, value, err, err_len))
+    if (checked_value(agreement, value, err, err_len) ||
+        checked_successor(agreement, value, err, err_len))
         return -1;
     if (agreement->accepted_ballot == ballot)
         return lcs_config_value_equal(&agreement->accepted, value) ?
@@ -561,7 +592,8 @@ int lcs_config_agreement_learn(lcs_config_agreement_t *agreement,
     }
     if (rc)
         return rc;
-    if (checked_value(agreement, value, err, err_len))
+    if (checked_value(agreement, value, err, err_len) ||
+        checked_successor(agreement, value, err, err_len))
         return -1;
     if (agreement->accepted_ballot >= ballot &&
         !lcs_config_value_equal(&agreement->accepted, value))
@@ -594,6 +626,7 @@ int lcs_config_proposal_init(lcs_config_proposal_t *proposal,
         !lcs_config_agreement_ballot_valid(local, ballot) ||
         (ballot & 31) != (uint64_t)lcs_config_self_index(local->base) ||
         checked_value(local, requested, NULL, 0) ||
+        checked_successor(local, requested, NULL, 0) ||
         lcs_config_value_copy(&next.requested, requested))
         return -1;
     snprintf(next.parent_digest, sizeof(next.parent_digest), "%s", local->committed.digest);

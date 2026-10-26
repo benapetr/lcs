@@ -51,6 +51,7 @@ typedef struct
     uint32_t priority;
     bool priority_set;
     bool interface_normalized;
+    uint64_t birth_revision; /* Dynamic backend incarnation; zero for INI/bootstrap. */
 } lcs_resource_config_t;
 
 typedef struct
@@ -79,6 +80,7 @@ typedef struct
     size_t node_count;
     size_t group_count;
     size_t resource_count;
+    uint32_t resource_schema_version; /* 0/1: legacy shadow; 2: incarnation snapshot. */
     lcs_node_config_t nodes[LCS_MAX_NODES];
     lcs_group_config_t groups[LCS_MAX_GROUPS];
     lcs_resource_config_t resources[LCS_MAX_RESOURCES];

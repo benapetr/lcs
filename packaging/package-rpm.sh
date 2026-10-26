@@ -167,6 +167,7 @@ install -Dm644 docs/config.md %{buildroot}%{_docdir}/%{name}/docs/config.md
 install -Dm644 docs/resource-json.md %{buildroot}%{_docdir}/%{name}/docs/resource-json.md
 install -Dm644 docs/dynamic-config-plan.md %{buildroot}%{_docdir}/%{name}/docs/dynamic-config-plan.md
 install -Dm644 docs/dynamic-config-agreement.md %{buildroot}%{_docdir}/%{name}/docs/dynamic-config-agreement.md
+install -Dm644 docs/dynamic-config-application.md %{buildroot}%{_docdir}/%{name}/docs/dynamic-config-application.md
 install -Dm644 docs/version.md %{buildroot}%{_docdir}/%{name}/docs/version.md
 mkdir -p %{buildroot}%{_docdir}/%{name}/examples
 cp -a examples/. %{buildroot}%{_docdir}/%{name}/examples/

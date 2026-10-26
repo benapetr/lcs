@@ -6,6 +6,7 @@
 #include "config.h"
 
 #define LCS_RESOURCE_SCHEMA_VERSION 1
+#define LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION 2
 #define LCS_RESOURCE_DOCUMENT_MAX (512u * 1024u)
 #define LCS_RESOURCE_REVISION_MAX INT64_MAX
 
@@ -27,5 +28,21 @@ int lcs_resource_config_edit(const lcs_config_t *base, uint64_t current_revision
                              uint64_t expected_revision, int argc,
                              const char *const *argv, lcs_config_t *candidate,
                              char *err, size_t err_len);
+
+/* Identity-aware candidates for future dynamic authority. Activation is a
+ * definitions-preserving successor from schema 1 to 2; later edits allocate
+ * birth_revision only for new/replaced backends. validate_successor verifies
+ * immediate history (including schema downgrade rejection), not quorum proof.
+ * assign validates a private candidate and leaves output untouched on error. */
+int lcs_resource_config_assign_identities(const lcs_config_t *base,
+                                          uint64_t current_revision,
+                                          const lcs_config_t *proposed,
+                                          lcs_config_t *candidate,
+                                          char *err, size_t err_len);
+int lcs_resource_config_validate_successor(const lcs_config_t *base,
+                                           uint64_t current_revision,
+                                           const lcs_config_t *candidate,
+                                           uint64_t revision,
+                                           char *err, size_t err_len);
 
 #endif

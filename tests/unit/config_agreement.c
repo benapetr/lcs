@@ -653,6 +653,91 @@ static void test_32_member_masks(void)
     cleanup();
 }
 
+static lcs_config_value_t configuration_value(const lcs_config_t *cfg, uint64_t revision,
+                                               const char *request)
+{
+    char *document;
+    size_t length;
+    assert(lcs_resource_config_encode(cfg, revision, &document, &length, error, sizeof(error)) == 0);
+    lcs_config_value_t result = {0};
+    assert(lcs_config_value_init(&result, &baseline, request, document, length, error, sizeof(error)) == 0);
+    free(document);
+    return result;
+}
+
+static void choose_identity_value(const lcs_config_value_t *selected, uint64_t ballot)
+{
+    char parent[65];
+    snprintf(parent, sizeof(parent), "%s", voters[0].state.committed.digest);
+    for (size_t i = 0; i < 2; i++)
+        assert(lcs_config_agreement_accept(&voters[i].state, parent, ballot, selected,
+                                            error, sizeof(error)) == 0);
+    for (size_t i = 0; i < 3; i++)
+    {
+        assert(lcs_config_agreement_learn(&voters[i].state, parent, ballot, 3, selected,
+                                           error, sizeof(error)) == 0);
+        reopen(i);
+        assert(lcs_config_value_equal(&voters[i].state.committed, selected));
+    }
+}
+
+static void test_incarnation_agreement(void)
+{
+    initialize();
+    static lcs_config_t active, next, forged;
+    assert(lcs_resource_config_assign_identities(&baseline, 0, &baseline,
+                                                  &active, error, sizeof(error)) == 0);
+    forged = active;
+    strcpy(forged.resources[0].address, "192.0.2.99/24");
+    lcs_config_value_t invalid = configuration_value(&forged, 1, "activation-edit");
+    assert(lcs_config_agreement_accept(&voters[0].state, voters[0].state.committed.digest,
+                                       32, &invalid, error, sizeof(error)) == -1);
+    assert(strstr(error, "preserve complete"));
+    lcs_config_value_clear(&invalid);
+    lcs_config_value_t activation = configuration_value(&active, 1, "activation");
+    choose_identity_value(&activation, 32);
+    lcs_config_value_clear(&activation);
+    /* A legacy successor remains syntactically valid, but no longer belongs to
+     * this activated history. Reject it before both acceptance and learning. */
+    invalid = value(2, "downgrade", "192.0.2.1/24");
+    char parent[65];
+    snprintf(parent, sizeof(parent), "%s", voters[0].state.committed.digest);
+    assert(lcs_config_agreement_accept(&voters[0].state, parent, 64, &invalid,
+                                       error, sizeof(error)) == -1);
+    assert(strstr(error, "revert"));
+    assert(lcs_config_agreement_learn(&voters[0].state, parent, 64, 3, &invalid,
+                                      error, sizeof(error)) == -1);
+    lcs_config_proposal_t proposal = {0};
+    assert(lcs_config_proposal_init(&proposal, &voters[0].state, 64, &invalid) == -1);
+    lcs_config_value_clear(&invalid);
+    const char *remove[] = {"resource", "delete", "vip"};
+    assert(lcs_resource_config_edit(&active, 1, 1, 3, remove, &next, error, sizeof(error)) == 0);
+    lcs_config_value_t deletion = configuration_value(&next, 2, "delete-vip");
+    choose_identity_value(&deletion, 64);
+    lcs_config_value_clear(&deletion);
+    active = next;
+    const char *create[] = {"resource", "create", "vip", "vip", "address=192.0.2.1/24", "interface=eth0"};
+    assert(lcs_resource_config_edit(&active, 2, 2, 6, create, &next, error, sizeof(error)) == 0);
+    assert(next.resources[0].birth_revision == 3);
+    forged = next;
+    forged.resources[0].birth_revision = 0; /* Attempt to revive old grants. */
+    invalid = configuration_value(&forged, 3, "revive-old-vip");
+    snprintf(parent, sizeof(parent), "%s", voters[0].state.committed.digest);
+    assert(lcs_config_agreement_accept(&voters[0].state, parent, 96, &invalid,
+                                       error, sizeof(error)) == -1);
+    assert(strstr(error, "incarnation"));
+    assert(!voters[0].state.accepted_ballot);
+    lcs_config_value_clear(&invalid);
+    lcs_config_value_t recreation = configuration_value(&next, 3, "recreate-vip");
+    assert(lcs_config_agreement_accept(&voters[0].state, parent, 96, &recreation,
+                                       error, sizeof(error)) == 0);
+    reopen(0); /* Accepted identities also survive journal restart. */
+    assert(lcs_config_value_equal(&voters[0].state.accepted, &recreation));
+    choose_identity_value(&recreation, 96);
+    lcs_config_value_clear(&recreation);
+    cleanup();
+}
+
 int main(void)
 {
     test_recovery_of_chosen_value();
@@ -664,6 +749,7 @@ int main(void)
     test_snapshot_transfer();
     test_reordered_rounds_and_restarts();
     test_32_member_masks();
+    test_incarnation_agreement();
     puts("durable configuration agreement unit tests passed");
     return 0;
 }

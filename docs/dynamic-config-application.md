@@ -20,7 +20,8 @@ The committed dynamic snapshot must carry these identities, including during
 full-snapshot catch-up. Inferring identity from just the old and new endpoint
 definitions is insufficient: a node can miss deletion and recreation between
 two identical definitions. The existing schema-1 shadow JSON has no incarnation
-metadata; the active schema and its validation must be extended before activation.
+metadata. The implemented schema-2 library carries and validates these identities;
+its daemon activation and resource-message gates remain to be implemented.
 The coordinator allocates identities; acceptors check them against the immediate
 predecessor. Clients cannot supply or reuse birth revisions.
 

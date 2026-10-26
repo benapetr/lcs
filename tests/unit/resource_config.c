@@ -96,6 +96,85 @@ static void rejected(json_t *root)
     json_decref(root);
 }
 
+static void test_incarnations(void)
+{
+    static lcs_config_t active, next, forged, returning;
+    char err[256], *document = NULL;
+    size_t length;
+    uint64_t revision;
+    load_base();
+    forged = base;
+    strcpy(forged.resources[0].post_start, "/bin/false");
+    assert(lcs_resource_config_assign_identities(&base, 0, &forged, &next, err, sizeof(err)) == -1);
+    assert(strstr(err, "preserve complete"));
+    forged = base;
+    forged.resources[0].priority_set = false;
+    assert(lcs_resource_config_assign_identities(&base, 0, &forged, &next, err, sizeof(err)) == -1);
+    assert(lcs_resource_config_assign_identities(&base, 0, &base, &active, err, sizeof(err)) == 0);
+    assert(active.resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION);
+    assert(!active.resources[0].birth_revision && !active.resources[1].birth_revision);
+    assert(lcs_resource_config_encode(&active, 0, &document, &length, err, sizeof(err)) == -1);
+    assert(lcs_resource_config_encode(&active, 1, &document, &length, err, sizeof(err)) == 0);
+    assert(lcs_resource_config_decode(document, length, &base, &returning, &revision, err, sizeof(err)) == 0);
+    assert(revision == 1 && returning.resource_schema_version == 2);
+    json_error_t parse_error;
+    json_t *root = json_loads(document, 0, &parse_error);
+    free(document);
+    json_t *resource = json_object_get(json_object_get(root, "resources"), "public");
+    json_object_del(resource, "birth_revision");
+    rejected(root); /* Dynamic identity cannot be omitted or guessed. */
+    root = snapshot();
+    resource = json_object_get(json_object_get(root, "resources"), "public");
+    json_object_set_new(resource, "birth_revision", json_integer(0));
+    rejected(root); /* Schema 1 never silently accepts identity metadata. */
+
+#define DYNAMIC_EDIT(rev, ...) do { \
+    const char *args[] = {__VA_ARGS__}; \
+    assert(lcs_resource_config_edit(&active, rev, rev, (int)(sizeof(args) / sizeof(*args)), \
+                                    args, &next, err, sizeof(err)) == 0); \
+    assert(lcs_resource_config_validate_successor(&active, rev, &next, (rev) + 1, err, sizeof(err)) == 0); \
+    active = next; \
+} while (0)
+    DYNAMIC_EDIT(1, "resource", "create", "aaa", "vip", "address=192.0.2.22/24", "interface=eth0");
+    assert(active.resources[0].birth_revision == 2); /* Sorted before existing resources. */
+    assert(active.resources[1].depends_on_idx[0] == 2);
+    returning = active; /* Node goes offline before deletion and recreation. */
+    DYNAMIC_EDIT(2, "resource", "delete", "aaa");
+    DYNAMIC_EDIT(3, "resource", "create", "aaa", "vip", "address=192.0.2.22/24", "interface=eth0");
+    assert(active.resources[0].birth_revision == 4);
+    assert(returning.resources[0].birth_revision == 2);
+    forged = active;
+    forged.resources[0].birth_revision = 2;
+    assert(lcs_resource_config_validate_successor(&next, 4, &forged, 5, err, sizeof(err)) == -1);
+    DYNAMIC_EDIT(4, "resource", "update", "aaa", "address=192.0.2.23/24");
+    assert(active.resources[0].birth_revision == 5);
+    DYNAMIC_EDIT(5, "resource", "update", "aaa", "post_stop=/bin/true", "priority=9");
+    assert(active.resources[0].birth_revision == 5); /* Policies/hooks do not replace backend. */
+    DYNAMIC_EDIT(6, "resource", "update", "app", "systemd_unit=other.service");
+    assert(active.resources[1].birth_revision == 7);
+    assert(!active.resources[2].birth_revision); /* Untouched bootstrap VIP. */
+    DYNAMIC_EDIT(7, "resource", "group", "update", "web", "mode=strict");
+    assert(active.resources[0].birth_revision == 5 && active.resources[1].birth_revision == 7);
+#undef DYNAMIC_EDIT
+    assert(lcs_resource_config_encode(&active, 8, &document, &length, err, sizeof(err)) == 0);
+    assert(lcs_resource_config_decode(document, length, &base, &returning, &revision, err, sizeof(err)) == 0);
+    assert(revision == 8 && returning.resources[0].birth_revision == 5);
+    assert(returning.resources[1].birth_revision == 7);
+    root = json_loads(document, 0, &parse_error);
+    free(document);
+    resource = json_object_get(json_object_get(root, "resources"), "aaa");
+    json_object_set_new(resource, "birth_revision", json_integer(9));
+    rejected(root); /* A birth cannot be ahead of the snapshot revision. */
+    forged = active;
+    forged.resource_schema_version = 1;
+    assert(lcs_resource_config_validate_successor(&active, 8, &forged, 9, err, sizeof(err)) == -1);
+    assert(strstr(err, "revert"));
+    next = active;
+    assert(lcs_resource_config_assign_identities(&active, LCS_RESOURCE_REVISION_MAX,
+                                                 &active, &next, err, sizeof(err)) == -1);
+    assert(memcmp(&active, &next, sizeof(active)) == 0);
+}
+
 int main(void)
 {
     load_base();
@@ -228,6 +307,7 @@ int main(void)
     assert(lcs_resource_config_edit(&base, LCS_RESOURCE_REVISION_MAX,
         LCS_RESOURCE_REVISION_MAX, 3, remove_extra, &candidate, err, sizeof(err)) == -1);
     assert(strstr(err, "exhausted"));
+    test_incarnations();
     puts("resource JSON unit tests passed");
     return 0;
 }

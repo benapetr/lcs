@@ -99,8 +99,10 @@ durable distributed configuration protocol.
 - [ ] Persist last-applied definitions and pending backend cleanup information
   before resource transitions. Retain enough information to stop deleted/replaced
   backends after a crash, even when catch-up crosses multiple revisions.
-- [ ] Add persistent resource incarnation identity so deletion/recreation cannot
-  reuse an old name's lease/grant state on returning nodes.
+- [x] Add persistent resource incarnation identity so deletion/recreation cannot
+  reuse an old name's lease/grant state on returning nodes. Schema-2 snapshots,
+  candidate allocation and agreement validation are implemented; daemon resource
+  message admission and runtime remapping still require integration.
 - [x] Specify recovery when JSON and journal disagree or one is missing/corrupt.
   Fail safely with actionable diagnostics; never silently reset to empty state.
 - [x] Implement local atomic record replacement, file and parent-directory
