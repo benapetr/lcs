@@ -1,7 +1,8 @@
 # Durable configuration agreement
 
 Implementation status: the agreement core, storage worker, and snapshot-transfer
-codecs are implemented and unit-tested. They are not connected to daemon peer
+codecs, incarnation validation and local application catalog are implemented
+and unit-tested. They are not connected to daemon peer
 sessions, automatic activation, resource application, or CLI mutation endpoints.
 The running daemon still uses wire version 5 and INI authority. This document
 records the rules the remaining integration must preserve.

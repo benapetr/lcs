@@ -96,9 +96,12 @@ durable distributed configuration protocol.
   under a new configuration. Preserve current reload safety guarantees.
 - [x] Specify crash recovery at every boundary, including configuration committed
   durably but not yet applied, and drains completed before a failed transaction.
-- [ ] Persist last-applied definitions and pending backend cleanup information
+- [x] Persist last-applied definitions and pending backend cleanup information
   before resource transitions. Retain enough information to stop deleted/replaced
-  backends after a crash, even when catch-up crosses multiple revisions.
+  backends after a crash, even when catch-up crosses multiple revisions. The
+  tested local application-catalog core retains complete old/pending snapshots
+  and computes incarnation/dependency cleanup plans; daemon workers and backend
+  application are not connected yet.
 - [x] Add persistent resource incarnation identity so deletion/recreation cannot
   reuse an old name's lease/grant state on returning nodes. Schema-2 snapshots,
   candidate allocation and agreement validation are implemented; daemon resource

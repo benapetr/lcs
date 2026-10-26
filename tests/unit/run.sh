@@ -31,7 +31,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_agreement.c" "$ROOT_DIR/src/config_agreement.c" \
-    "$ROOT_DIR/src/config_agreement_worker.c" \
+    "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_application.c" \
     "$ROOT_DIR/src/config_transfer.c" "$ROOT_DIR/src/protocol.c" \
     "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
     "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \

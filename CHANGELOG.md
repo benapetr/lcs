@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added the local durable application catalog for future dynamic configuration, retaining old and pending backend definitions through cleanup/restart and planning incarnation/dependency drains. It is not yet connected to the daemon resource coordinator.
+
 - Added schema-2 resource incarnation snapshots and successor validation for the future dynamic authority, including deletion/recreation and backend replacement identities persisted through agreement restart. Live activation and runtime message gating remain pending; legacy bootstrap still uses schema 1.
 
 - Added the durable configuration-agreement core, majority proposal tracking, background storage workers, and bounded snapshot-transfer codecs. These are not yet connected to live peer transactions or activation; INI remains authoritative and wire protocol remains version 5. Agreement hashing adds an OpenSSL libcrypto build dependency.

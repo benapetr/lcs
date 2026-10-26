@@ -117,6 +117,42 @@ unsupported; operators must retain a verified majority's durable state or stop
 and fence the cluster before an explicit history reset. Backup/restore tooling
 must capture journal and application catalogs together, never only resources.json.
 
+## Implemented local application catalog
+
+`config_application.c` implements the local durable catalog independently of the
+running daemon. It is not yet connected to live resource application, and its
+synchronous writes must run in storage workers when integrated. It uses the same
+exclusively locked state directory as agreement and a node/membership-bound,
+checksummed `application.json` record. The record contains canonical complete
+last-applied and optional pending configuration values, including incarnations,
+backend properties and hooks. It does not contain lease ownership or epochs.
+
+A missing catalog may only be initialized with explicit authorization while the
+agreement is still at revision-zero bootstrap. It cannot be recreated from a
+current active snapshot. Begin accepts only a decision already learned by the
+local agreement handle, and persists old plus pending definitions before any
+backend operations. Repeating the same begin is idempotent; a different newer
+decision cannot overwrite an unfinished pending catalog. It must wait until
+cleanup and completion are durably recorded. After that, a newer full snapshot
+can be applied directly without forgetting local cleanup history.
+
+The planner maps matching name/incarnation/backend identities across sorted
+arrays. Deleted or replaced incarnations require old-backend cleanup; changes to
+dependencies require drain, including transitive dependents. Backend identity
+conflicts under one incarnation and reuse of an incarnation absent at the applied
+revision are rejected. Policy/group placement reconciliation and actual
+stop/start execution remain responsibilities of the future daemon coordinator.
+
+Finish requires the exact pending digest and the caller's completed cleanup and
+old-owner barrier. It persists pending as applied and removes the old snapshot in
+one atomic record replacement. Finish itself does not stop a backend or prove
+that cleanup occurred. Failed persistence poisons the handle; reopen from disk
+before further work. A directory-sync failure after rename is uncertain, so
+recovery may observe either old/pending or completed state. Missing, corrupt,
+foreign or agreement-conflicting records fail rather than resetting authority.
+Tests cover restart mid-transition, newer decisions arriving during cleanup,
+catch-up over deletion/recreation, dependency drains and failed durability.
+
 ## Client outcomes
 
 Every mutation carries an idempotent request ID and expected base revision/digest.

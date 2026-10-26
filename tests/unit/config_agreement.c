@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "config_agreement.h"
+#include "config_application.h"
 #include "config_agreement_worker.h"
 #include "config_transfer.h"
 #include "protocol.h"
@@ -738,6 +739,138 @@ static void test_incarnation_agreement(void)
     cleanup();
 }
 
+static void test_application_catalog(void)
+{
+    initialize();
+    lcs_config_application_t application = {0};
+    assert(lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)) == -1);
+    assert(lcs_config_application_open(&application, &voters[0].state, true, error, sizeof(error)) == 0);
+    assert(application.applied.revision == 0);
+    static lcs_config_t active, next, old, target;
+    lcs_config_application_plan_t plan;
+    assert(lcs_resource_config_assign_identities(&baseline, 0, &baseline, &active, error, sizeof(error)) == 0);
+    lcs_config_value_t selected = configuration_value(&active, 1, "activation");
+    choose_identity_value(&selected, 32);
+    lcs_config_value_clear(&selected);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(!plan.cleanup && !plan.drain && plan.new_to_old[0] == 0);
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == 0);
+    /* Add a dependent, and retain the old VIP's stop hook for future cleanup. */
+    next = active;
+    strcpy(next.resources[0].post_stop, "/bin/true");
+    next.resource_count = 3;
+    lcs_resource_config_t *app = &next.resources[1];
+    memset(app, 0, sizeof(*app));
+    app->type = LCS_RESOURCE_SERVICE;
+    strcpy(app->name, "app");
+    strcpy(app->systemd_unit, "app.service");
+    strcpy(app->depends_on_names[0], "vip");
+    app->depends_on_count = 1;
+    lcs_resource_config_t *frontend = &next.resources[2];
+    *frontend = *app;
+    strcpy(frontend->name, "frontend");
+    strcpy(frontend->systemd_unit, "frontend.service");
+    strcpy(frontend->depends_on_names[0], "app");
+    assert(lcs_resource_config_assign_identities(&active, 1, &next, &active, error, sizeof(error)) == 0);
+    selected = configuration_value(&active, 2, "create-dependent");
+    choose_identity_value(&selected, 64);
+    lcs_config_value_clear(&selected);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == 0);
+    next = active;
+    next.resources[0].depends_on_count = 0;
+    lcs_config_value_t policy = configuration_value(&next, 3, "dependency-edit");
+    lcs_config_application_t staged = application;
+    staged.pending = policy;
+    assert(lcs_config_application_plan(&staged, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(!plan.cleanup && plan.drain == 3); /* app plus transitive frontend. */
+    lcs_config_value_clear(&policy);
+    const char *replace[] = {"resource", "update", "vip", "address=192.0.2.9/24"};
+    assert(lcs_resource_config_edit(&active, 2, 2, 4, replace, &next, error, sizeof(error)) == 0);
+    active = next;
+    selected = configuration_value(&active, 3, "replace-vip");
+    choose_identity_value(&selected, 96);
+    lcs_config_value_clear(&selected);
+    fail_sync = 1;
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == -1);
+    assert(application.poisoned && !application.pending.document && application.applied.revision == 2);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == -1);
+    lcs_config_application_close(&application);
+    assert(lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)) == 0);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0); /* Retry. */
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(plan.cleanup == 4 && plan.drain == 7);
+    assert(!strcmp(old.resources[2].post_stop, "/bin/true"));
+    assert(!strcmp(old.resources[2].address, "192.0.2.1/24"));
+    assert(!strcmp(target.resources[2].address, "192.0.2.9/24"));
+    assert(plan.new_to_old[0] == 0 && plan.new_to_old[1] == 1 && plan.new_to_old[2] == -1);
+    /* Atomic bulk deletion of the dependent chain. */
+    next = active;
+    next.resources[0] = active.resources[2];
+    next.resource_count = 1;
+    assert(lcs_resource_config_assign_identities(&active, 3, &next, &next, error, sizeof(error)) == 0);
+    active = next;
+    selected = configuration_value(&active, 4, "delete-dependent");
+    choose_identity_value(&selected, 128);
+    lcs_config_value_clear(&selected);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 1);
+    assert(application.pending.revision == 3 && application.applied.revision == 2);
+    lcs_config_application_close(&application); /* Crash during cleanup. */
+    assert(lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)) == 0);
+    assert(application.pending.revision == 3 && application.applied.revision == 2);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(plan.cleanup == 4 && plan.drain == 7);
+    assert(lcs_config_application_finish(&application, "wrong", error, sizeof(error)) == -1);
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == 0);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(plan.cleanup == 3 && plan.new_to_old[0] == 2);
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == 0);
+    const char *remove_vip[] = {"resource", "delete", "vip"};
+    assert(lcs_resource_config_edit(&active, 4, 4, 3, remove_vip, &next, error, sizeof(error)) == 0);
+    active = next;
+    selected = configuration_value(&active, 5, "delete-vip");
+    choose_identity_value(&selected, 160);
+    lcs_config_value_clear(&selected);
+    const char *create_vip[] = {"resource", "create", "vip", "vip", "address=192.0.2.9/24", "interface=eth0"};
+    assert(lcs_resource_config_edit(&active, 5, 5, 6, create_vip, &next, error, sizeof(error)) == 0);
+    active = next;
+    selected = configuration_value(&active, 6, "recreate-vip");
+    choose_identity_value(&selected, 192);
+    lcs_config_value_clear(&selected);
+    /* Catch up directly from 4 to 6: identical backend, different incarnation. */
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(plan.cleanup == 1 && plan.drain == 1 && plan.new_to_old[0] == -1);
+    assert(old.resources[0].birth_revision == 3 && target.resources[0].birth_revision == 6);
+    fail_sync = 2; /* Rename succeeded, directory fsync outcome uncertain. */
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == -1);
+    assert(application.poisoned && application.applied.revision == 4 && application.pending.revision == 6);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == -1);
+    lcs_config_application_close(&application);
+    assert(lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)) == 0);
+    assert(application.applied.revision == 6 && !application.pending.document);
+    char *catalog;
+    size_t length;
+    assert(lcs_config_store_read(&voters[0].store, "application.json", &catalog, &length, 3 * 1024 * 1024,
+                                 error, sizeof(error)) == 0);
+    lcs_config_application_close(&application);
+    assert(lcs_config_store_write(&voters[2].store, "application.json", catalog, length, error, sizeof(error)) == 0);
+    lcs_config_application_t foreign = {0};
+    assert(lcs_config_application_open(&foreign, &voters[2].state, false, error, sizeof(error)) == -1);
+    assert(unlinkat(voters[2].store.directory_fd, "application.json", 0) == 0);
+    catalog[length / 2] ^= 1;
+    assert(lcs_config_store_write(&voters[0].store, "application.json", catalog, length, error, sizeof(error)) == 0);
+    assert(lcs_config_application_open(&application, &voters[0].state, true, error, sizeof(error)) == -1);
+    free(catalog);
+    assert(unlinkat(voters[0].store.directory_fd, "application.json", 0) == 0);
+    assert(lcs_config_application_open(&application, &voters[0].state, true, error, sizeof(error)) == -1);
+    assert(strstr(error, "missing"));
+    cleanup();
+}
+
 int main(void)
 {
     test_recovery_of_chosen_value();
@@ -750,6 +883,7 @@ int main(void)
     test_reordered_rounds_and_restarts();
     test_32_member_masks();
     test_incarnation_agreement();
+    test_application_catalog();
     puts("durable configuration agreement unit tests passed");
     return 0;
 }
