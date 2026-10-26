@@ -122,7 +122,7 @@ durable distributed configuration protocol.
 
 ## 3. Separate configuration loading from resource application
 
-- [ ] Extract a shared candidate model and validator used by INI reload, JSON
+- [x] Extract a shared candidate model and validator used by INI reload, JSON
   import, distributed proposals, and CLI edits.
 - [x] Automatically prepare JSON on first upgraded startup while keeping INI
   startup/reload authoritative until coordinated automatic activation.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "resource_config.h"
+#include "config_candidate.h"
 #include "util.h"
 
 #include <jansson.h>
@@ -201,7 +202,7 @@ int lcs_resource_config_decode(const char *document, size_t length,
             goto out;
         }
     }
-    if (lcs_config_finalize(next, err, err_len))
+    if (lcs_config_candidate_prepare(base, next, next, err, err_len))
         goto out;
     *candidate = *next;
     *revision = (uint64_t)json_integer_value(rev);
