@@ -4,6 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib.sh"
 
+# Each committed reload closes peer sessions to remap resource indices. A new
+# transaction must wait for those fixed participants to reconnect; otherwise a
+# peer returning during proposal correctly aborts the new transaction.
+wait_for_reload_members()
+{
+    for observer in node1 node2 node3; do
+        wait_for_quorum "$observer"
+        wait_until 10 "node1 online at $observer" node_status_has "$observer" "node1 role=full-member state=online"
+        wait_until 10 "node2 online at $observer" node_status_has "$observer" "node2 role=full-member state=online"
+        wait_until 10 "node3 online at $observer" node_status_has "$observer" "node3 role=quorum-only state=online"
+    done
+}
+
 trap cleanup_cluster EXIT
 
 start_cluster
@@ -11,7 +24,7 @@ wait_for_socket node1
 wait_for_socket node2
 wait_for_socket node3
 wait_for_quorum node1
-wait_for_quorum node2
+wait_for_reload_members
 wait_for_quorum node3
 wait_for_owner node1 node1
 
@@ -54,7 +67,7 @@ for node in node1 node2 node3; do
     wait_until 10 "$node committed added resource" \
         grep -Fq "configuration reload committed generation=2 resources=2" "$TEST_TMP/logs/$node.log"
 done
-wait_for_quorum node2
+wait_for_reload_members
 
 for node in node1 node2 node3; do
     config="$(node_config "$node")"
@@ -72,6 +85,8 @@ for node in node1 node2 node3; do
         grep -Fq "configuration reload committed generation=3 resources=1" "$TEST_TMP/logs/$node.log"
 done
 wait_for_quorum node3
+
+wait_for_reload_members
 
 for node in node1 node2 node3; do
     sed -i 's|address = 127.0.0.201/32|address = 127.0.0.202/32|' \
