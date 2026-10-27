@@ -119,11 +119,14 @@ must capture journal and application catalogs together, never only resources.jso
 
 ## Implemented local application catalog
 
-`config_application.c` implements the local durable catalog independently of the
-running daemon. It is not yet connected to live resource application, and its
-synchronous primitives are now available through the same background storage
-worker used for agreement. It uses the same
-exclusively locked state directory as agreement and a node/membership-bound,
+`config_application.c` implements the local durable catalog. Daemon startup now
+loads existing agreement and application records before considering INI snapshot
+refresh. It retains an immutable static base for both handles and refuses to run
+persisted distributed state until activation-aware peering/application exists.
+The catalog is not yet connected to live resource application; its synchronous
+primitives are available through the same background storage worker used for
+agreement. It uses the same exclusively locked state directory as agreement and
+a node/membership-bound,
 checksummed `application.json` record. The record contains canonical complete
 last-applied and optional pending configuration values, including incarnations,
 backend properties and hooks. It does not contain lease ownership or epochs.

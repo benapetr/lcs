@@ -133,6 +133,10 @@ durable distributed configuration protocol.
   import, distributed proposals, and CLI edits.
 - [x] Automatically prepare JSON on first upgraded startup while keeping INI
   startup/reload authoritative until coordinated automatic activation.
+- [x] Recover and validate existing agreement/application records before INI
+  bootstrap can write snapshots or the daemon can open listeners. The current
+  wire-5 daemon refuses persisted distributed state until activation-aware
+  recovery is implemented; it never silently falls back to INI.
 - [ ] Use one resource/group authority at a time: INI before activation, JSON
   after activation. Do not introduce a permanent mixed static/dynamic namespace.
 - [ ] Route existing coordinated reload and dynamic updates through compatible

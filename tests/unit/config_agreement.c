@@ -4,6 +4,7 @@
 #include "config_application.h"
 #include "config_agreement_worker.h"
 #include "config_transfer.h"
+#include "config_runtime.h"
 #include "protocol.h"
 
 #include <assert.h>
@@ -973,6 +974,68 @@ static void test_application_background_durability(void)
     cleanup();
 }
 
+static void test_daemon_configuration_recovery(void)
+{
+    initialize();
+    lcs_config_runtime_t runtime;
+    lcs_config_agreement_t *state = &voters[0].state;
+    /* A journal without its application history cannot be bootstrapped anew. */
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == -1);
+    assert(strstr(error, "catalog missing"));
+    lcs_config_application_t application = {0};
+    assert(lcs_config_application_open(&application, state, true, error, sizeof(error)) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == 0);
+    assert(runtime.requires_recovery && runtime.base != &voters[0].cfg);
+    assert(runtime.agreement.base == runtime.base && runtime.application.base == runtime.base);
+    assert(runtime.application.applied.revision == 0);
+    /* The handles do not borrow mutable daemon resource arrays. */
+    voters[0].cfg.resources[0].priority++;
+    assert(runtime.base->resources[0].priority == baseline.resources[0].priority);
+    voters[0].cfg = baseline;
+    lcs_config_runtime_close(&runtime);
+    static lcs_config_t active;
+    assert(lcs_resource_config_assign_identities(&baseline, 0, &baseline, &active, error, sizeof(error)) == 0);
+    lcs_config_value_t selected = configuration_value(&active, 1, "activation");
+    choose_identity_value(&selected, 32);
+    lcs_config_value_clear(&selected);
+    assert(lcs_config_application_begin(&application, state, error, sizeof(error)) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == 0);
+    assert(runtime.requires_recovery && runtime.agreement.committed.revision == 1);
+    assert(runtime.application.applied.revision == 0 && runtime.application.pending.revision == 1);
+    lcs_config_runtime_close(&runtime);
+    lcs_config_application_close(&application);
+    char *journal, *catalog;
+    size_t journal_length, catalog_length;
+    assert(lcs_config_store_read(&voters[0].store, "agreement.json", &journal, &journal_length,
+                                 LCS_CONFIG_JOURNAL_MAX, error, sizeof(error)) == 0);
+    assert(lcs_config_store_read(&voters[0].store, "application.json", &catalog, &catalog_length,
+                                 LCS_CONFIG_APPLICATION_MAX, error, sizeof(error)) == 0);
+    assert(unlinkat(voters[0].store.directory_fd, "agreement.json", 0) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == -1);
+    assert(strstr(error, "journal is missing"));
+    assert(faccessat(voters[0].store.directory_fd, "agreement.json", F_OK, 0) == -1);
+    assert(lcs_config_store_write(&voters[0].store, "agreement.json", journal, journal_length, error, sizeof(error)) == 0);
+    catalog[catalog_length / 2] ^= 1;
+    assert(lcs_config_store_write(&voters[0].store, "application.json", catalog, catalog_length, error, sizeof(error)) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == -1);
+    assert(strstr(error, "catalog"));
+    assert(unlinkat(voters[0].store.directory_fd, "application.json", 0) == 0);
+    journal[journal_length / 2] ^= 1;
+    assert(lcs_config_store_write(&voters[0].store, "agreement.json", journal, journal_length, error, sizeof(error)) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == -1);
+    assert(unlinkat(voters[0].store.directory_fd, "agreement.json", 0) == 0);
+    /* Only genuinely absent records enter the legacy path; open performs no writes. */
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == 0);
+    assert(!runtime.requires_recovery && !runtime.base);
+    assert(faccessat(voters[0].store.directory_fd, "agreement.json", F_OK, 0) == -1);
+    assert(faccessat(voters[0].store.directory_fd, "application.json", F_OK, 0) == -1);
+    lcs_config_runtime_close(&runtime);
+    journal[journal_length / 2] ^= 1;
+    assert(lcs_config_store_write(&voters[0].store, "agreement.json", journal, journal_length, error, sizeof(error)) == 0);
+    free(journal); free(catalog);
+    cleanup();
+}
+
 int main(void)
 {
     test_recovery_of_chosen_value();
@@ -987,6 +1050,7 @@ int main(void)
     test_incarnation_agreement();
     test_application_catalog();
     test_application_background_durability();
+    test_daemon_configuration_recovery();
     puts("durable configuration agreement unit tests passed");
     return 0;
 }

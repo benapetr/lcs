@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "config_bootstrap.h"
+#include "config_runtime.h"
 #include "protocol.h"
 
 #include <sys/socket.h>
@@ -447,6 +448,7 @@ typedef struct
     lease_grant_t lease_grants[LCS_MAX_RESOURCES];
     config_reload_runtime_t config_reload;
     lcs_config_bootstrap_t config_bootstrap;
+    lcs_config_runtime_t config_runtime;
     bool config_bootstrap_initialized;
 } daemon_state_t;
 

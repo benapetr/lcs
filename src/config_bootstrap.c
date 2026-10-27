@@ -115,9 +115,9 @@ out:
     return rc;
 }
 
-int lcs_config_bootstrap_open(lcs_config_bootstrap_t *bootstrap,
-                              const char *config_path, const lcs_config_t *cfg,
-                              char *err, size_t err_len)
+int lcs_config_bootstrap_open_storage(lcs_config_bootstrap_t *bootstrap,
+                                      const char *config_path,
+                                      char *err, size_t err_len)
 {
     memset(bootstrap, 0, sizeof(*bootstrap));
     bootstrap->worker_pipe = -1;
@@ -164,14 +164,27 @@ int lcs_config_bootstrap_open(lcs_config_bootstrap_t *bootstrap,
         fail(err, err_len, "snapshot directory must be owned by the daemon user and not writable by group/others");
         goto error;
     }
-    /* The state lock protects this instance's snapshot as well as its metadata. */
-    if (lcs_config_bootstrap_refresh(bootstrap, cfg, err, err_len))
-        goto error;
-    bootstrap->prepared = true;
+    /* The state lock protects this instance's snapshot as well as its metadata.
+     * Do not import INI until the caller has inspected durable agreement state. */
     return 0;
 error:
     lcs_config_bootstrap_close(bootstrap);
     return -1;
+}
+
+int lcs_config_bootstrap_open(lcs_config_bootstrap_t *bootstrap,
+                              const char *config_path, const lcs_config_t *cfg,
+                              char *err, size_t err_len)
+{
+    if (lcs_config_bootstrap_open_storage(bootstrap, config_path, err, err_len))
+        return -1;
+    if (lcs_config_bootstrap_refresh(bootstrap, cfg, err, err_len))
+    {
+        lcs_config_bootstrap_close(bootstrap);
+        return -1;
+    }
+    bootstrap->prepared = true;
+    return 0;
 }
 
 void lcs_config_bootstrap_request(lcs_config_bootstrap_t *bootstrap)

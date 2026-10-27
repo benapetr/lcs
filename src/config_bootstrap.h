@@ -18,6 +18,11 @@ typedef struct
     bool prepared;
 } lcs_config_bootstrap_t;
 
+/* Opens/locks storage WITHOUT changing bootstrap markers or snapshots. Daemon
+ * startup must recover agreement/application state before considering INI import. */
+int lcs_config_bootstrap_open_storage(lcs_config_bootstrap_t *bootstrap,
+                                      const char *config_path,
+                                      char *err, size_t err_len);
 /* Prepares revision-zero JSON only. INI remains authoritative; this does not
  * advertise support for distributed activation or enable resource mutations. */
 int lcs_config_bootstrap_open(lcs_config_bootstrap_t *bootstrap,
