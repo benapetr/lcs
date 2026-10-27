@@ -3,7 +3,7 @@
 #ifndef LCS_CONFIG_AGREEMENT_WORKER_H
 #define LCS_CONFIG_AGREEMENT_WORKER_H
 
-#include "config_agreement.h"
+#include "config_application.h"
 #include <sys/types.h>
 
 typedef enum
@@ -11,6 +11,8 @@ typedef enum
     LCS_CONFIG_PREPARE = 1,
     LCS_CONFIG_ACCEPT = 2,
     LCS_CONFIG_LEARN = 3,
+    LCS_CONFIG_APPLICATION_BEGIN = 4,
+    LCS_CONFIG_APPLICATION_FINISH = 5,
 } lcs_config_agreement_action_t;
 
 typedef struct
@@ -20,6 +22,7 @@ typedef struct
     char parent_digest[LCS_CONFIG_DIGEST_SIZE];
     uint64_t ballot;
     uint32_t voters;
+    char application_digest[LCS_CONFIG_DIGEST_SIZE]; /* Exact pending value for FINISH. */
     const lcs_config_value_t *value; /* borrowed until start returns */
 } lcs_config_agreement_job_t;
 
@@ -31,6 +34,7 @@ typedef struct
     size_t used;
     bool eof;
     bool cancelled;
+    lcs_config_application_t *application; /* Borrowed until completion/cancellation is reaped. */
 } lcs_config_agreement_worker_t;
 
 void lcs_config_agreement_worker_init(lcs_config_agreement_worker_t *worker);
@@ -40,6 +44,15 @@ int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
                                       lcs_config_agreement_t *agreement,
                                       const lcs_config_agreement_job_t *job,
                                       char *err, size_t err_len);
+/* Shares the SAME worker with agreement jobs: only one catalog/journal writer
+ * may run at once. BEGIN persists cleanup obligations; FINISH records caller-
+ * completed backend reconciliation. Neither operation touches backends itself.
+ * application and agreement must remain alive and unchanged until poll returns. */
+int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t *worker,
+                                                  lcs_config_agreement_t *agreement,
+                                                  lcs_config_application_t *application,
+                                                  const lcs_config_agreement_job_t *job,
+                                                  char *err, size_t err_len);
 /* Returns 0 for pending/idle, 1 for completion with operation_result, -1 for a
  * failed worker/uncertain persistence (agreement is poisoned in that case). */
 int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,

@@ -871,6 +871,108 @@ static void test_application_catalog(void)
     cleanup();
 }
 
+static void test_application_background_durability(void)
+{
+    initialize();
+    lcs_config_agreement_t *state = &voters[0].state;
+    lcs_config_application_t application = {0};
+    assert(lcs_config_application_open(&application, state, true, error, sizeof(error)) == 0);
+    static lcs_config_t active;
+    assert(lcs_resource_config_assign_identities(&baseline, 0, &baseline, &active, error, sizeof(error)) == 0);
+    lcs_config_value_t selected = configuration_value(&active, 1, "activation");
+    choose_identity_value(&selected, 32);
+    lcs_config_value_clear(&selected);
+    char *before, *pending;
+    size_t before_length, pending_length;
+    assert(lcs_config_application_export(&application, &before, &before_length, error, sizeof(error)) == 0);
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_APPLICATION_BEGIN };
+    assert(lcs_config_agreement_worker_start(&worker, state, &job, error, sizeof(error)) == -1);
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    assert(!application.pending.document && application.applied.revision == 0);
+    /* Application and agreement writes share one serialization gate. */
+    lcs_config_agreement_job_t prepare = { .action = LCS_CONFIG_PREPARE, .revision = 2, .ballot = 64 };
+    strcpy(prepare.parent_digest, state->committed.digest);
+    assert(lcs_config_agreement_worker_start(&worker, state, &prepare, error, sizeof(error)) == 1);
+    int result;
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(application.pending.revision == 1 && application.applied.revision == 0);
+    assert(lcs_config_application_export(&application, &pending, &pending_length, error, sizeof(error)) == 0);
+    assert(lcs_config_application_import(&application, state, before, before_length, error, sizeof(error)) == -1);
+    assert(application.pending.revision == 1 && !application.poisoned);
+    assert(lcs_config_application_import(&application, state, pending, pending_length, error, sizeof(error)) == 0);
+    assert(lcs_config_application_import(&application, state, "{broken", 7, error, sizeof(error)) == -1);
+    job.action = LCS_CONFIG_APPLICATION_FINISH;
+    strcpy(job.application_digest, "wrong");
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == -1);
+    strcpy(job.application_digest, application.pending.digest);
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    assert(application.applied.revision == 0);
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(application.applied.revision == 1 && !application.pending.document);
+    assert(lcs_config_application_import(&application, state, pending, pending_length, error, sizeof(error)) == -1);
+    free(before); free(pending);
+    /* A failed child fsync poisons both handles; memory publication must wait. */
+    lcs_config_value_t large = large_value(2, "large-application");
+    static lcs_config_t proposed;
+    uint64_t revision;
+    assert(lcs_resource_config_decode(large.document, large.length, &baseline, &proposed,
+                                       &revision, error, sizeof(error)) == 0);
+    lcs_config_value_clear(&large);
+    assert(lcs_resource_config_assign_identities(&active, 1, &proposed, &active, error, sizeof(error)) == 0);
+    selected = configuration_value(&active, 2, "large-application");
+    choose_identity_value(&selected, 64);
+    lcs_config_value_clear(&selected);
+    job.action = LCS_CONFIG_APPLICATION_BEGIN;
+    fail_sync = 1;
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    fail_sync = 0;
+    assert(await_worker(&worker, state, &result) == -1);
+    assert(state->poisoned && application.poisoned && application.applied.revision == 1);
+    reopen(0);
+    lcs_config_application_close(&application);
+    assert(lcs_config_application_open(&application, state, false, error, sizeof(error)) == 0);
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(lcs_config_application_export(&application, &pending, &pending_length, error, sizeof(error)) == 0);
+    assert(pending_length > 8192); /* Exceeds a typical pipe capacity. */
+    free(pending);
+    job.action = LCS_CONFIG_APPLICATION_FINISH;
+    strcpy(job.application_digest, application.pending.digest);
+    fail_sync = 2; /* Rename durable result uncertain until recovery. */
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    fail_sync = 0;
+    assert(await_worker(&worker, state, &result) == -1);
+    assert(application.applied.revision == 1 && application.pending.revision == 2);
+    reopen(0);
+    lcs_config_application_close(&application);
+    assert(lcs_config_application_open(&application, state, false, error, sizeof(error)) == 0);
+    assert(application.applied.revision == 2 && !application.pending.document);
+    active.resources[0].priority++;
+    active.resources[0].priority_set = true;
+    selected = configuration_value(&active, 3, "large-policy-change");
+    choose_identity_value(&selected, 96);
+    lcs_config_value_clear(&selected);
+    job.action = LCS_CONFIG_APPLICATION_BEGIN;
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(lcs_config_application_export(&application, &pending, &pending_length, error, sizeof(error)) == 0);
+    assert(pending_length > 65536); /* Two large snapshots exceed the poll budget. */
+    free(pending);
+    /* Cancellation never makes a possibly persisted result safe to reuse. */
+    job.action = LCS_CONFIG_APPLICATION_FINISH;
+    strcpy(job.application_digest, application.pending.digest);
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    lcs_config_agreement_worker_cancel(&worker, state);
+    assert(application.poisoned && state->poisoned);
+    if (worker.pid > 0)
+        assert(await_worker(&worker, state, &result) == -1 && worker.pid == 0);
+    lcs_config_application_close(&application);
+    assert(unlinkat(voters[0].store.directory_fd, "application.json", 0) == 0);
+    cleanup();
+}
+
 int main(void)
 {
     test_recovery_of_chosen_value();
@@ -884,6 +986,7 @@ int main(void)
     test_32_member_masks();
     test_incarnation_agreement();
     test_application_catalog();
+    test_application_background_durability();
     puts("durable configuration agreement unit tests passed");
     return 0;
 }

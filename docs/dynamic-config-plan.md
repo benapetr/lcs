@@ -116,6 +116,8 @@ durable distributed configuration protocol.
   not yet wired into daemon activation. See [agreement design](dynamic-config-agreement.md).
 - [x] Implement nonblocking storage workers, bounded result handoff, monotonic
   state import, and cancellation that waits for child exit before disk recovery.
+  Agreement and application begin/finish now share one writer; catalog imports
+  cannot erase pending cleanup obligations or replay older applied state.
 - [ ] Implement multi-revision catch-up, durable request-status history, and
   safe compaction/checkpointing for the complete distributed transaction manager.
 - [x] Define full-cluster restart, stale-majority prevention, disk loss, backup

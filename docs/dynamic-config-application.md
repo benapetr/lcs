@@ -121,7 +121,8 @@ must capture journal and application catalogs together, never only resources.jso
 
 `config_application.c` implements the local durable catalog independently of the
 running daemon. It is not yet connected to live resource application, and its
-synchronous writes must run in storage workers when integrated. It uses the same
+synchronous primitives are now available through the same background storage
+worker used for agreement. It uses the same
 exclusively locked state directory as agreement and a node/membership-bound,
 checksummed `application.json` record. The record contains canonical complete
 last-applied and optional pending configuration values, including incarnations,
@@ -152,6 +153,17 @@ recovery may observe either old/pending or completed state. Missing, corrupt,
 foreign or agreement-conflicting records fail rather than resetting authority.
 Tests cover restart mid-transition, newer decisions arriving during cleanup,
 catch-up over deletion/recreation, dependency drains and failed durability.
+
+The shared worker serializes agreement and application writes. It persists begin
+or finish in the child and transfers a bounded, checksummed catalog back to the
+parent. Parent import performs no filesystem I/O and accepts only the unchanged
+catalog, staging the latest learned decision without dropping old definitions,
+or completion of the exact pending application. Replays that erase cleanup
+obligations or regress the applied revision are rejected. Cancellation or an
+uncertain worker result poisons both handles until disk recovery after child exit.
+Tests cover shared-writer exclusion, delayed publication, large pipe results,
+stale imports, failed file/directory sync, and cancellation. Backend execution
+and the daemon application coordinator are still pending.
 
 ## Client outcomes
 

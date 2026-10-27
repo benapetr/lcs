@@ -10,7 +10,6 @@
 #include <string.h>
 
 #define CATALOG "application.json"
-#define CATALOG_MAX (LCS_RESOURCE_DOCUMENT_MAX * 4u + 16384u)
 
 static int fail(char *err, size_t len, const char *message)
 {
@@ -76,24 +75,43 @@ static int decode_value(json_t *object, const lcs_config_t *base,
     return 0;
 }
 
+int lcs_config_application_export(const lcs_config_application_t *application,
+                                    char **document, size_t *length,
+                                    char *err, size_t err_len)
+{
+    if (application->poisoned || !application->applied.document)
+        return fail(err, err_len, "application recovery required before export");
+    json_t *root = json_pack("{s:i,s:s,s:s,s:o,s:o}", "record_version", 1,
+        "member", application->member, "membership", application->membership,
+        "applied", encode_value(&application->applied), "pending", encode_value(&application->pending));
+    char hash[65], *text = NULL;
+    if (root && !checksum(root, hash) &&
+        !json_object_set_new(root, "checksum", json_string(hash)))
+        text = json_dumps(root, JSON_SORT_KEYS | JSON_INDENT(2) | JSON_ENSURE_ASCII);
+    json_decref(root);
+    if (!text || strlen(text) > LCS_CONFIG_APPLICATION_MAX)
+    {
+        free(text);
+        return fail(err, err_len, "cannot encode bounded application catalog");
+    }
+    *document = text;
+    *length = strlen(text);
+    return 0;
+}
+
 static int persist(lcs_config_application_t *application,
                      const lcs_config_value_t *applied, const lcs_config_value_t *pending,
                      char *err, size_t err_len)
 {
-    json_t *root = json_pack("{s:i,s:s,s:s,s:o,s:o}", "record_version", 1,
-        "member", application->member, "membership", application->membership,
-        "applied", encode_value(applied), "pending", encode_value(pending));
-    char hash[65], *text = NULL;
-    int result = -1;
-    if (root && !checksum(root, hash) &&
-        !json_object_set_new(root, "checksum", json_string(hash)))
-        text = json_dumps(root, JSON_SORT_KEYS | JSON_INDENT(2) | JSON_ENSURE_ASCII);
-    if (text && strlen(text) <= CATALOG_MAX)
-        result = lcs_config_store_write(application->store, CATALOG, text, strlen(text), err, err_len);
-    else
-        fail(err, err_len, "cannot encode bounded application catalog");
+    lcs_config_application_t next = *application;
+    next.applied = *applied;
+    next.pending = *pending;
+    char *text = NULL;
+    size_t length;
+    int result = lcs_config_application_export(&next, &text, &length, err, err_len);
+    if (!result)
+        result = lcs_config_store_write(application->store, CATALOG, text, length, err, err_len);
     free(text);
-    json_decref(root);
     if (result)
         application->poisoned = true;
     return result;
@@ -201,59 +219,44 @@ static int validate_pair(lcs_config_application_t *application, char *err, size_
     return result;
 }
 
-int lcs_config_application_open(lcs_config_application_t *application,
-                                 const lcs_config_agreement_t *agreement,
-                                 bool allow_initialize, char *err, size_t err_len)
+static int decode_catalog(lcs_config_application_t *application,
+                             const lcs_config_agreement_t *agreement,
+                             const char *text, size_t length, char *err, size_t err_len)
 {
-    if (agreement->poisoned || !agreement->committed.document)
-        return fail(err, err_len, "agreement recovery required before opening application catalog");
+    if (agreement->poisoned || !agreement->committed.document ||
+        !text || !length || length > LCS_CONFIG_APPLICATION_MAX)
+        return fail(err, err_len, "invalid catalog or agreement requires recovery");
     lcs_config_application_t next = { .store = agreement->store, .base = agreement->base };
     snprintf(next.member, sizeof(next.member), "%s", agreement->member);
     snprintf(next.membership, sizeof(next.membership), "%s", agreement->membership);
-    char *text = NULL;
-    size_t length;
-    int result = lcs_config_store_read(next.store, CATALOG, &text, &length, CATALOG_MAX, err, err_len);
-    if (result == 1)
+    int result;
+    static const char *const keys[] = {"record_version", "member", "membership", "applied", "pending", "checksum", NULL};
+    json_error_t error;
+    json_t *root = json_loadb(text, length, JSON_REJECT_DUPLICATES, &error);
+    const char *stored = json_string_value(json_object_get(root, "checksum"));
+    char expected[65] = "", actual[65];
+    const char *member = json_string_value(json_object_get(root, "member"));
+    const char *membership = json_string_value(json_object_get(root, "membership"));
+    json_t *format = json_object_get(root, "record_version");
+    bool valid = exact_keys(root, keys) && json_is_integer(format) && json_integer_value(format) == 1 &&
+        stored && strlen(stored) == 64 && json_string_length(json_object_get(root, "checksum")) == 64 &&
+        member && strlen(member) == json_string_length(json_object_get(root, "member")) && !strcmp(member, next.member) &&
+        membership && json_string_length(json_object_get(root, "membership")) == 64 && !strcmp(membership, next.membership);
+    if (valid)
     {
-        if (!allow_initialize || agreement->committed.revision ||
-            strcmp(agreement->committed.request_id, "bootstrap"))
-            result = fail(err, err_len, "application catalog missing; explicit bootstrap/recovery required");
-        else if (lcs_config_value_copy(&next.applied, &agreement->committed))
-            result = fail(err, err_len, "out of memory initializing application catalog");
-        else
-            result = persist(&next, &next.applied, &next.pending, err, err_len);
+        snprintf(expected, sizeof(expected), "%s", stored);
+        json_object_del(root, "checksum");
+        valid = !checksum(root, actual) && !strcmp(expected, actual);
     }
-    else if (!result)
-    {
-        static const char *const keys[] = {"record_version", "member", "membership", "applied", "pending", "checksum", NULL};
-        json_error_t error;
-        json_t *root = json_loadb(text, length, JSON_REJECT_DUPLICATES, &error);
-        const char *stored = json_string_value(json_object_get(root, "checksum"));
-        char expected[65] = "", actual[65];
-        const char *member = json_string_value(json_object_get(root, "member"));
-        const char *membership = json_string_value(json_object_get(root, "membership"));
-        json_t *format = json_object_get(root, "record_version");
-        bool valid = exact_keys(root, keys) && json_is_integer(format) && json_integer_value(format) == 1 &&
-            stored && strlen(stored) == 64 && json_string_length(json_object_get(root, "checksum")) == 64 &&
-            member && strlen(member) == json_string_length(json_object_get(root, "member")) && !strcmp(member, next.member) &&
-            membership && json_string_length(json_object_get(root, "membership")) == 64 && !strcmp(membership, next.membership);
-        if (valid)
-        {
-            snprintf(expected, sizeof(expected), "%s", stored);
-            json_object_del(root, "checksum");
-            valid = !checksum(root, actual) && !strcmp(expected, actual);
-        }
-        result = valid ? decode_value(json_object_get(root, "applied"), next.base, &next.applied, err, err_len) : -1;
-        json_t *pending = json_object_get(root, "pending");
-        if (!result && !json_is_null(pending))
-            result = decode_value(pending, next.base, &next.pending, err, err_len);
-        if (!result)
-            result = validate_pair(&next, err, err_len);
-        json_decref(root);
-        if (result)
-            fail(err, err_len, "invalid, corrupt, or foreign application catalog; recovery required");
-    }
-    free(text);
+    result = valid ? decode_value(json_object_get(root, "applied"), next.base, &next.applied, err, err_len) : -1;
+    json_t *pending = json_object_get(root, "pending");
+    if (!result && !json_is_null(pending))
+        result = decode_value(pending, next.base, &next.pending, err, err_len);
+    if (!result)
+        result = validate_pair(&next, err, err_len);
+    json_decref(root);
+    if (result)
+        fail(err, err_len, "invalid, corrupt, or foreign application catalog; recovery required");
     if (!result && (next.applied.revision > agreement->committed.revision ||
         (next.applied.revision == agreement->committed.revision &&
          !lcs_config_value_equal(&next.applied, &agreement->committed)) ||
@@ -266,6 +269,70 @@ int lcs_config_application_open(lcs_config_application_t *application,
     else
         *application = next;
     return result;
+}
+
+int lcs_config_application_open(lcs_config_application_t *application,
+                                 const lcs_config_agreement_t *agreement,
+                                 bool allow_initialize, char *err, size_t err_len)
+{
+    if (agreement->poisoned || !agreement->committed.document)
+        return fail(err, err_len, "agreement recovery required before opening application catalog");
+    char *text = NULL;
+    size_t length;
+    int result = lcs_config_store_read(agreement->store, CATALOG, &text, &length,
+                                      LCS_CONFIG_APPLICATION_MAX, err, err_len);
+    if (!result)
+        result = decode_catalog(application, agreement, text, length, err, err_len);
+    else if (result == 1)
+    {
+        lcs_config_application_t next = { .store = agreement->store, .base = agreement->base };
+        snprintf(next.member, sizeof(next.member), "%s", agreement->member);
+        snprintf(next.membership, sizeof(next.membership), "%s", agreement->membership);
+        if (!allow_initialize || agreement->committed.revision ||
+            strcmp(agreement->committed.request_id, "bootstrap"))
+            result = fail(err, err_len, "application catalog missing; explicit bootstrap/recovery required");
+        else if (lcs_config_value_copy(&next.applied, &agreement->committed))
+            result = fail(err, err_len, "out of memory initializing application catalog");
+        else
+            result = persist(&next, &next.applied, &next.pending, err, err_len);
+        if (result)
+            lcs_config_application_close(&next);
+        else
+            *application = next;
+    }
+    free(text);
+    return result;
+}
+
+int lcs_config_application_import(lcs_config_application_t *application,
+                                    const lcs_config_agreement_t *agreement,
+                                    const char *document, size_t length,
+                                    char *err, size_t err_len)
+{
+    if (application->poisoned || !bound_to(application, agreement))
+        return fail(err, err_len, "application requires recovery before worker import");
+    lcs_config_application_t next = {0};
+    if (decode_catalog(&next, agreement, document, length, err, err_len))
+        return -1;
+    bool same_applied = lcs_config_value_equal(&next.applied, &application->applied);
+    bool same_pending = (!next.pending.document && !application->pending.document) ||
+        (next.pending.document && application->pending.document &&
+         lcs_config_value_equal(&next.pending, &application->pending));
+    /* Only an unchanged result, staging the exact latest decision, or finishing
+     * the exact pending application may cross a local worker boundary. An old
+     * cleanup obligation cannot be dropped/replaced by a newer worker replay. */
+    bool staging = same_applied && !application->pending.document && next.pending.document &&
+        lcs_config_value_equal(&next.pending, &agreement->committed);
+    bool finishing = application->pending.document && !next.pending.document &&
+        lcs_config_value_equal(&next.applied, &application->pending);
+    if (!(same_applied && same_pending) && !staging && !finishing)
+    {
+        lcs_config_application_close(&next);
+        return fail(err, err_len, "stale or conflicting application worker result");
+    }
+    lcs_config_application_close(application);
+    *application = next;
+    return 0;
 }
 
 int lcs_config_application_begin(lcs_config_application_t *application,

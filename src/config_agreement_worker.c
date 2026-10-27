@@ -21,7 +21,9 @@ typedef struct
     char error[256];
 } worker_result_t;
 
-#define RESULT_MAX (sizeof(worker_result_t) + LCS_CONFIG_JOURNAL_MAX)
+#define RECORD_MAX ((LCS_CONFIG_APPLICATION_MAX > LCS_CONFIG_JOURNAL_MAX) ? \
+                    LCS_CONFIG_APPLICATION_MAX : LCS_CONFIG_JOURNAL_MAX)
+#define RESULT_MAX (sizeof(worker_result_t) + RECORD_MAX)
 
 static int fail(char *err, size_t len, const char *message)
 {
@@ -67,6 +69,7 @@ static int compare_fd(const void *a, const void *b)
 }
 
 static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
+                            lcs_config_application_t *application,
                             const lcs_config_agreement_job_t *job,
                             int pipe_fd, pid_t parent)
 {
@@ -95,14 +98,25 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
     else if (job->action == LCS_CONFIG_ACCEPT)
         result.result = lcs_config_agreement_accept(agreement, job->parent_digest,
             job->ballot, job->value, result.error, sizeof(result.error));
-    else
+    else if (job->action == LCS_CONFIG_LEARN)
         result.result = lcs_config_agreement_learn(agreement, job->parent_digest,
             job->ballot, job->voters, job->value, result.error, sizeof(result.error));
-    result.poisoned = agreement->poisoned;
+    else if (job->action == LCS_CONFIG_APPLICATION_BEGIN)
+        result.result = lcs_config_application_begin(application, agreement,
+                                                      result.error, sizeof(result.error));
+    else
+        result.result = lcs_config_application_finish(application, job->application_digest,
+                                                       result.error, sizeof(result.error));
+    result.poisoned = agreement->poisoned || (application && application->poisoned);
     char *record = NULL;
     size_t length = 0;
-    if (!result.poisoned && lcs_config_agreement_export(agreement, &record, &length,
-                                                        result.error, sizeof(result.error)))
+    int exported = -1;
+    if (!result.poisoned)
+        exported = application ? lcs_config_application_export(application, &record, &length,
+                                                               result.error, sizeof(result.error)) :
+                                 lcs_config_agreement_export(agreement, &record, &length,
+                                                             result.error, sizeof(result.error));
+    if (!result.poisoned && exported)
     {
         result.poisoned = true;
         result.result = -1;
@@ -115,15 +129,25 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
     _exit(0);
 }
 
-int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
-                                      lcs_config_agreement_t *agreement,
-                                      const lcs_config_agreement_job_t *job,
-                                      char *err, size_t err_len)
+static int start(lcs_config_agreement_worker_t *worker,
+                    lcs_config_agreement_t *agreement,
+                    lcs_config_application_t *application,
+                    const lcs_config_agreement_job_t *job,
+                    char *err, size_t err_len)
 {
     if (worker->pid > 0)
         return 1;
-    if (agreement->poisoned || !job || job->action < LCS_CONFIG_PREPARE ||
-        job->action > LCS_CONFIG_LEARN || (job->action != LCS_CONFIG_PREPARE && !job->value))
+    bool application_job = job && (job->action == LCS_CONFIG_APPLICATION_BEGIN ||
+                                   job->action == LCS_CONFIG_APPLICATION_FINISH);
+    if (agreement->poisoned || !job || application_job != (application != NULL) ||
+        (application && (application->poisoned || application->store != agreement->store ||
+         strcmp(application->member, agreement->member) ||
+         strcmp(application->membership, agreement->membership))) ||
+        (!application_job && (job->action < LCS_CONFIG_PREPARE || job->action > LCS_CONFIG_LEARN ||
+         (job->action != LCS_CONFIG_PREPARE && !job->value))) ||
+        (job->action == LCS_CONFIG_APPLICATION_FINISH &&
+         (!memchr(job->application_digest, 0, sizeof(job->application_digest)) ||
+          !application->pending.document || strcmp(job->application_digest, application->pending.digest))))
         return fail(err, err_len, "invalid job or agreement state requires recovery");
     unsigned char *buffer = malloc(RESULT_MAX);
     if (!buffer)
@@ -147,8 +171,9 @@ int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
         return fail(err, err_len, "cannot fork storage worker");
     }
     if (!child)
-        execute_child(agreement, job, fds[1], parent);
+        execute_child(agreement, application, job, fds[1], parent);
     close(fds[1]);
+    worker->application = application;
     worker->buffer = buffer;
     worker->pipe_fd = fds[0];
     worker->pid = child;
@@ -158,12 +183,38 @@ int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
     return 0;
 }
 
+int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
+                                      lcs_config_agreement_t *agreement,
+                                      const lcs_config_agreement_job_t *job,
+                    char *err, size_t err_len)
+{
+    return start(worker, agreement, NULL, job, err, err_len);
+}
+
+int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t *worker,
+                                                  lcs_config_agreement_t *agreement,
+                                                  lcs_config_application_t *application,
+                                                  const lcs_config_agreement_job_t *job,
+                                                  char *err, size_t err_len)
+{
+    if (!application)
+        return fail(err, err_len, "application catalog is required");
+    return start(worker, agreement, application, job, err, err_len);
+}
+
+static void poison(lcs_config_agreement_worker_t *worker, lcs_config_agreement_t *agreement)
+{
+    agreement->poisoned = true;
+    if (worker->application)
+        worker->application->poisoned = true;
+}
+
 void lcs_config_agreement_worker_cancel(lcs_config_agreement_worker_t *worker,
                                         lcs_config_agreement_t *agreement)
 {
     if (worker->pid > 0)
     {
-        agreement->poisoned = true;
+        poison(worker, agreement);
         worker->cancelled = true;
         pid_t reaped;
         do
@@ -196,7 +247,7 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
         pid_t reaped = waitpid(worker->pid, NULL, WNOHANG);
         if (!reaped || (reaped < 0 && errno == EINTR))
             return 0;
-        agreement->poisoned = true;
+        poison(worker, agreement);
         reset(worker);
         return fail(err, err_len, "cancelled worker has exited; recover the journal before voting");
     }
@@ -237,21 +288,24 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
     worker_result_t result;
     memcpy(&result, worker->buffer, sizeof(result));
     result.error[sizeof(result.error) - 1] = '\0';
-    if (result.length > LCS_CONFIG_JOURNAL_MAX ||
+    if (result.length > (worker->application ? LCS_CONFIG_APPLICATION_MAX : LCS_CONFIG_JOURNAL_MAX) ||
         worker->used != sizeof(result) + result.length ||
         result.result < -1 || result.result > LCS_CONFIG_STALE)
         goto broken;
     if (result.poisoned)
     {
-        agreement->poisoned = true;
+        poison(worker, agreement);
         fail(err, err_len, *result.error ? result.error : "uncertain persistence; recovery required");
         reset(worker);
         return -1;
     }
-    if (!result.length || lcs_config_agreement_import(agreement,
-            (const char *)worker->buffer + sizeof(result), result.length, err, err_len))
+    const char *record = (const char *)worker->buffer + sizeof(result);
+    int imported = !result.length ? -1 : worker->application ?
+        lcs_config_application_import(worker->application, agreement, record, result.length, err, err_len) :
+        lcs_config_agreement_import(agreement, record, result.length, err, err_len);
+    if (imported)
     {
-        agreement->poisoned = true;
+        poison(worker, agreement);
         reset(worker);
         return -1;
     }
@@ -261,7 +315,7 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
     reset(worker);
     return 1;
 broken:
-    agreement->poisoned = true;
+    poison(worker, agreement);
     lcs_config_agreement_worker_cancel(worker, agreement);
     return fail(err, err_len, "worker failed before a complete durable result; recover before voting");
 }

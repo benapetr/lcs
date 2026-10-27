@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added background application-catalog begin/finish writes through the shared configuration storage worker, with monotonic result import and recovery after uncertain writes. Live dynamic configuration coordination remains unfinished.
+
 - Fixed quorum-loss cleanup of asynchronous resource dependency chains: parent resources continue shutting down after dependent stops finish, instead of retaining active VIPs without quorum. Added a regression covering cleanup and recovery.
 
 - Fixed final peer replies being discarded when readable data and connection closure arrive in the same epoll event, including committed configuration proofs needed by stale nodes.

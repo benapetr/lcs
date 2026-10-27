@@ -5,6 +5,8 @@
 
 #include "config_agreement.h"
 
+#define LCS_CONFIG_APPLICATION_MAX (LCS_RESOURCE_DOCUMENT_MAX * 4u + 16384u)
+
 /* Local application catalog, not a consensus/ownership authority. All writes
  * are synchronous and must run outside the daemon lease event loop. The live
  * daemon does not use this core until activation/application integration exists. */
@@ -32,6 +34,15 @@ int lcs_config_application_open(lcs_config_application_t *application,
                                  const lcs_config_agreement_t *agreement,
                                  bool allow_initialize, char *err, size_t err_len);
 void lcs_config_application_close(lcs_config_application_t *application);
+/* Same-host worker handoff only, never peer decision evidence. Import performs
+ * no I/O and admits only monotonic begin/finish transitions of the local catalog. */
+int lcs_config_application_export(const lcs_config_application_t *application,
+                                    char **document, size_t *length,
+                                    char *err, size_t err_len);
+int lcs_config_application_import(lcs_config_application_t *application,
+                                    const lcs_config_agreement_t *agreement,
+                                    const char *document, size_t length,
+                                    char *err, size_t err_len);
 /* Persist the latest locally learned decision as pending BEFORE touching any
  * backends. Returns 1 if a different pending application must finish first.
  * Intermediate revisions may be skipped; local cleanup obligations may not. */
