@@ -122,8 +122,12 @@ must capture journal and application catalogs together, never only resources.jso
 
 `config_application.c` implements the local durable catalog. Daemon startup now
 loads existing agreement and application records before considering INI snapshot
-refresh. It retains an immutable static base for both handles and refuses to run
-persisted distributed state until activation-aware peering/application exists.
+refresh. An existing `activation.json` intent first restores the frozen baseline
+and resumes interrupted local journal/catalog initialization. After local preparation,
+missing records require recovery rather than recreation. This does not authorize
+configuration voting or activate JSON authority. It retains an immutable base for
+both handles and refuses to run persisted distributed state until activation-aware
+peering/application exists.
 The catalog is not yet connected to live resource application; its synchronous
 primitives are available through the same background storage worker used for
 agreement. It uses the same exclusively locked state directory as agreement and

@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added crash-safe local initialization for future dynamic activation: persist the complete frozen baseline before journal/catalog creation, resume partial initialization across restarts, and prevent INI refresh or missing-record regeneration after preparation. Coordinated automatic activation and dynamic mutation commands remain unfinished.
+
 - Added negotiated wire-6 bootstrap metadata and read-only `lcs config status` with JSON output, reporting prepared and matching full definitions across configured members. Wire-5 HELLO, lease and reload compatibility is retained; matching metadata does not activate dynamic configuration or enable mutation commands. Wire 6 is labelled `unreleased` until its first release.
 
 - Daemon startup now validates existing distributed agreement/application records before INI snapshot refresh or listener creation. Incomplete or unsupported distributed recovery blocks startup and preserves stored state instead of falling back to INI.

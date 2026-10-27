@@ -152,6 +152,13 @@ static int parse_value(json_t *object, const lcs_config_t *base,
 
 int lcs_config_agreement_membership(const lcs_config_t *base, char digest[LCS_CONFIG_DIGEST_SIZE])
 {
+    if (!base || !base->node_count || base->node_count > LCS_MAX_NODES)
+        return -1;
+    for (size_t i = 0; i < base->node_count; i++)
+        if (!lcs_valid_name(base->nodes[i].name) ||
+            (base->nodes[i].role != LCS_NODE_FULL && base->nodes[i].role != LCS_NODE_QUORUM_ONLY) ||
+            (i && strcmp(base->nodes[i - 1].name, base->nodes[i].name) >= 0))
+            return -1;
     json_t *nodes = json_array();
     json_t *root = json_pack("{s:s,s:I,s:I,s:I}", "cluster", base->cluster_name,
         "lease_ms", (json_int_t)base->lease_ms, "renew_ms", (json_int_t)base->renew_ms,

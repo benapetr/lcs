@@ -59,6 +59,11 @@ int main(void)
         &text, &length, LCS_RESOURCE_DOCUMENT_MAX, err, sizeof(err)) == 0);
     assert(strstr(text, "192.0.2.40/24"));
     free(text);
+    /* Even direct/background INI refresh cannot overwrite a frozen baseline. */
+    assert(!lcs_config_store_write(&bootstrap.state, "activation.json", "{pending}", 9, err, sizeof(err)));
+    assert(lcs_config_bootstrap_refresh(&bootstrap, &cfg, err, sizeof(err)) == -1);
+    assert(strstr(err, "froze the baseline"));
+    assert(!unlinkat(bootstrap.state.directory_fd, "activation.json", 0));
     lcs_config_bootstrap_close(&bootstrap);
     assert(lcs_config_bootstrap_open(&bootstrap, path, &cfg, err, sizeof(err)) == 0);
 

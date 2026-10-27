@@ -137,6 +137,11 @@ durable distributed configuration protocol.
   bootstrap can write snapshots or the daemon can open listeners. The current
   legacy-mode daemon refuses persisted distributed state until activation-aware
   recovery is implemented; it never silently falls back to INI.
+- [x] Persist the exact revision-zero baseline before creating agreement or
+  application records. Resume interrupted local initialization from that frozen
+  value, reject missing records after preparation, and block INI snapshot refresh
+  once the intent exists. This local prerequisite does not authorize activation;
+  coordinated initialization and its background worker remain unfinished.
 - [ ] Use one resource/group authority at a time: INI before activation, JSON
   after activation. Do not introduce a permanent mixed static/dynamic namespace.
 - [ ] Route existing coordinated reload and dynamic updates through compatible

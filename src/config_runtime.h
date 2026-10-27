@@ -3,7 +3,7 @@
 #ifndef LCS_CONFIG_RUNTIME_H
 #define LCS_CONFIG_RUNTIME_H
 
-#include "config_application.h"
+#include "config_activation.h"
 
 /* Daemon-owned recovery boundary. The base copy remains immutable while durable
  * handles are open, even when the live INI resource arrays are reloaded. Opening
@@ -14,6 +14,7 @@ typedef struct
     lcs_config_t *base;
     lcs_config_agreement_t agreement;
     lcs_config_application_t application;
+    lcs_config_activation_t activation;
     bool requires_recovery;
 } lcs_config_runtime_t;
 

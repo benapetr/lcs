@@ -130,6 +130,38 @@ A known initialized member must never recreate a missing journal from INI.
 The core requires explicit bootstrap authorization to create its first record;
 the daemon activation/recovery manager must decide when that is permitted.
 
+## Frozen local initialization
+
+`config_activation.c` provides a resumable local initialization primitive. Before
+creating either durable journal or application catalog, it syncs `activation.json`
+with the node/membership identity, complete canonical revision-zero baseline and
+its digest, phase, and checksum. Record format 1 uses `initializing` and `prepared`
+phases. These describe local storage preparation, not a chosen activation decision.
+First creation requires explicit coordinated authorization; advisory peer metadata
+is insufficient. Ordinary legacy startup does not create this record.
+
+Recovery uses the frozen baseline even if INI resource definitions changed after
+the intent was written. While `initializing`, it may create missing journal and
+catalog records in that order, provided no promise, accepted value, committed
+successor or pending application exists. It syncs `prepared` only after both records
+are durable. A catalog without a journal is rejected, preserving the requirement
+to recover promises. Once `prepared`, missing records are never regenerated.
+Any uncertain write requires reopening disk state before proceeding.
+
+Startup resumes an existing initialization before opening listeners, but still
+refuses to run distributed state until the remaining activation-aware peering and
+application integration exists. INI snapshot refresh refuses any existing intent.
+The primitive performs synchronous I/O only during startup or in a future serialized
+initialization worker; it must not be called directly from the live event loop.
+The all-member readiness barrier, initialization coordinator and background
+initialization worker remain to be implemented. Preparing local files does not
+permit configuration voting or switch resource authority.
+
+After preparation, nonzero committed/accepted values must use the dynamic schema;
+revision one must preserve the frozen definitions when assigning incarnations.
+The generic agreement library alone also supports legacy-schema successors, so
+activation recovery adds this stricter validation.
+
 The current record checkpoints the latest committed value and pending next
 slot. Catch-up across multiple revisions, request-status retention, backups,
 disaster recovery, and safe deletion of historical status records still require

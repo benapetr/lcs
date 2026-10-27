@@ -10,6 +10,7 @@ void lcs_config_runtime_close(lcs_config_runtime_t *runtime)
 {
     lcs_config_application_close(&runtime->application);
     lcs_config_agreement_close(&runtime->agreement);
+    lcs_config_activation_close(&runtime->activation);
     free(runtime->base);
     memset(runtime, 0, sizeof(*runtime));
 }
@@ -23,6 +24,32 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
      * malformed or unsafe file is not evidence of a never-initialized node. */
     char *record = NULL;
     size_t length;
+    int intent = lcs_config_store_read(store, "activation.json", &record, &length,
+                                       LCS_CONFIG_ACTIVATION_MAX, err, err_len);
+    free(record);
+    record = NULL;
+    if (intent < 0)
+        return -1;
+    if (!intent)
+    {
+        runtime->base = malloc(sizeof(*runtime->base));
+        if (!runtime->base)
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: out of memory retaining frozen base");
+            return -1;
+        }
+        if (lcs_config_activation_open(&runtime->activation, store, cfg, runtime->base,
+                                       false, err, err_len) ||
+            lcs_config_activation_resume(&runtime->activation, &runtime->agreement,
+                                         &runtime->application, err, err_len))
+        {
+            lcs_config_runtime_close(runtime);
+            return -1;
+        }
+        runtime->requires_recovery = true;
+        return 0;
+    }
     int journal = lcs_config_store_read(store, "agreement.json", &record, &length,
                                         LCS_CONFIG_JOURNAL_MAX, err, err_len);
     free(record);
