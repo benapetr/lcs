@@ -2,6 +2,8 @@
 
 ## Next
 
+- Fixed quorum-loss cleanup of asynchronous resource dependency chains: parent resources continue shutting down after dependent stops finish, instead of retaining active VIPs without quorum. Added a regression covering cleanup and recovery.
+
 - Fixed final peer replies being discarded when readable data and connection closure arrive in the same epoll event, including committed configuration proofs needed by stale nodes.
 
 - Added the local durable application catalog for future dynamic configuration, retaining old and pending backend definitions through cleanup/restart and planning incarnation/dependency drains. It is not yet connected to the daemon resource coordinator.

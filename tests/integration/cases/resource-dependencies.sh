@@ -118,4 +118,23 @@ wait_until 15 "vip1 moved to node2" resource_owner vip1 127.0.0.200/32 node2
 wait_until 15 "vip2 followed dependency to node2" resource_owner vip2 127.0.0.201/32 node2
 wait_until 15 "vip3 followed dependency chain to node2" resource_owner vip3 127.0.0.202/32 node2
 
+log "losing quorum while an asynchronous dependency chain is active"
+stop_node node1
+stop_node node3
+wait_until 10 "node2 quorum loss" node_status_has node2 "quorum: no"
+for spec in "vip3 127.0.0.202/32" "vip2 127.0.0.201/32" "vip1 127.0.0.200/32"; do
+    wait_until 10 "$spec stopped without quorum" \
+        node_status_has node2 "$spec dev=lo state=stopped owner=-"
+done
+
+start_node node1
+start_node node3
+wait_for_socket node1
+wait_for_socket node3
+wait_for_quorum node2
+for spec in "vip1 127.0.0.200/32" "vip2 127.0.0.201/32" "vip3 127.0.0.202/32"; do
+    wait_until 15 "$spec recovered with quorum" \
+        node_status_has node2 "$spec dev=lo state=active owner="
+done
+
 log "resource dependency regression passed"
