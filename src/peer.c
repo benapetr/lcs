@@ -1606,6 +1606,15 @@ void peer_pump_epoll_event(int epoll_fd, const struct epoll_event *ev)
         }
         if (ev->events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR))
         {
+            /* A final HELLO_ACK/configuration proof can arrive together with
+             * FIN. Consume complete readable frames before closing the stream. */
+            if ((ev->events & EPOLLIN) && peer->conn_state != LCS_PEER_CONNECTING)
+            {
+                int old_fd = peer->fd;
+                peer_handle_event(epoll_fd, peer_idx);
+                if (peer->fd != old_fd || peer->fd < 0)
+                    return;
+            }
             lcs_log_debug("peer %s epoll close event mask=0x%x", g_state.cfg.nodes[peer_idx].name, ev->events);
             if (peer->conn_state == LCS_PEER_CONNECTING)
                 peer_advance_connect_address(peer_idx);
