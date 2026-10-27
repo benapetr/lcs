@@ -135,7 +135,7 @@ durable distributed configuration protocol.
   startup/reload authoritative until coordinated automatic activation.
 - [x] Recover and validate existing agreement/application records before INI
   bootstrap can write snapshots or the daemon can open listeners. The current
-  wire-5 daemon refuses persisted distributed state until activation-aware
+  legacy-mode daemon refuses persisted distributed state until activation-aware
   recovery is implemented; it never silently falls back to INI.
 - [ ] Use one resource/group authority at a time: INI before activation, JSON
   after activation. Do not introduce a permanent mixed static/dynamic namespace.
@@ -145,12 +145,20 @@ durable distributed configuration protocol.
   resource transition and dependency-ordering machinery for affected resources.
 - [ ] Define how read-only status/export reports configuration origin, committed
   revision, and pending operations, without treating file edits as commits.
+  Legacy INI origin and prepared-member diagnostics are available through
+  `lcs config status`; committed/applied revision and transaction outcomes still
+  require the durable manager.
 
 ## 4. Add protocol support and synchronization
 
-- [ ] Allocate a new wire protocol version and feature gates following
+- [x] Allocate a new wire protocol version and feature gates following
   [version.md](version.md); preserve the released HELLO prefix and wire-5 peering
   during the supported rolling-upgrade phase.
+- [x] Exchange advisory bootstrap preparation and full membership/value digests
+  over negotiated wire-6 sessions. Expose local and per-member preparation through
+  read-only `lcs config status`, clearing observations at session teardown and
+  marking preparation unavailable during reload/persistence. This is not the
+  durable activation-readiness barrier; dynamic mutations remain disabled.
 - [ ] Define bounded snapshot transfer, transaction messages, revision/digest
   exchange, reconnect synchronization, and retry/idempotency behavior.
 - [x] Implement transport-independent bounded BEGIN/CHUNK snapshot codecs,

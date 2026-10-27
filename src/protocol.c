@@ -43,6 +43,8 @@ const char *lcs_peer_protocol_release(uint16_t version)
     {
         case 5:
             return "1.1.0";
+        case 6:
+            return "unreleased";
         default:
             return NULL;
     }

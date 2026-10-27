@@ -5,6 +5,7 @@
 
 #include "cluster.h"
 #include "config_reload.h"
+#include "config_peer.h"
 #include "epoll_util.h"
 #include "lease.h"
 #include "log.h"
@@ -350,6 +351,7 @@ static bool peer_is_request_type(uint16_t type)
         case LCS_MSG_LEASE_COMMIT:
         case LCS_MSG_OWNER_RELEASE_REQ:
         case LCS_MSG_MOVE_REQ:
+        case LCS_MSG_CONFIG_BOOTSTRAP_STATUS:
         case LCS_MSG_CONFIG_RELOAD:
         case LCS_MSG_CONFIG_RELOAD_COMMIT:
             return true;
@@ -669,6 +671,18 @@ static int peer_queue_frame(int epoll_fd, int node_idx, uint16_t type, uint32_t 
                    g_state.cfg.nodes[node_idx].name, type, seq, length,
                    peer->out_len - peer->out_off);
     return peer_update_epoll(epoll_fd, node_idx);
+}
+
+int peer_queue_config_status(int epoll_fd, int node_idx, const void *payload, uint32_t length)
+{
+    if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count || node_idx == g_state.self_index)
+        return 1;
+    const peer_runtime_t *peer = &g_state.peers[node_idx];
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED ||
+        peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_STATUS)
+        return 1;
+    return peer_queue_frame(epoll_fd, node_idx, LCS_MSG_CONFIG_BOOTSTRAP_STATUS,
+                            lcs_next_seq(), payload, length);
 }
 
 int peer_queue_simple_resp(int epoll_fd, int node_idx, uint32_t seq, uint16_t type, int32_t status, const char *msg)
@@ -1109,6 +1123,9 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
         peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "message requires a newer negotiated protocol");
         return -1;
     }
+    if (hdr->type == LCS_MSG_CONFIG_BOOTSTRAP_STATUS &&
+        g_state.peers[source_node_idx].protocol_version < LCS_PROTO_FEATURE_CONFIG_STATUS)
+        return -1;
     if (hdr->seq == 0)
     {
         peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "invalid sequence");
@@ -1121,6 +1138,8 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
     }
     switch (hdr->type)
     {
+        case LCS_MSG_CONFIG_BOOTSTRAP_STATUS:
+            return config_peer_receive(source_node_idx, payload, hdr->length);
         case LCS_MSG_HEARTBEAT:
         {
             lcs_buf_reader_t reader;
@@ -1254,6 +1273,9 @@ void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const 
     peer->next_heartbeat_ms = 0;
     peer->state_sync_pending = false;
     peer->initial_sync_complete = false;
+    peer->config_status_known = false;
+    peer->config_status_sent = 0;
+    memset(&peer->config_status, 0, sizeof(peer->config_status));
     peer->voting_ready = false;
     if (mark_offline && peer->online)
     {

@@ -5,6 +5,7 @@
 
 #include "group.h"
 #include "config_reload.h"
+#include "config_peer.h"
 #include "lease.h"
 #include "cli_server.h"
 #include "log.h"
@@ -95,6 +96,7 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
         else if (result > 0)
             lcs_log_debug("resource JSON bootstrap refreshed after INI reload");
     }
+    config_peer_process(sched->epoll_fd);
     if (run_placement && !config_reload_in_progress())
     {
         g_state.next_placement_ms = now + LCS_PLACEMENT_INTERVAL_MS;

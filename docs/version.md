@@ -38,3 +38,29 @@ version, because an offline nonparticipant conservatively contributes the
 minimum version and must not block an otherwise compatible online quorum. It
 intentionally does not decode the earlier version-3 HELLO because no release
 was made between those formats.
+
+## Unreleased wire version 6
+
+Wire 6 adds the separate `CONFIG_BOOTSTRAP_STATUS` message (type 30), sent only
+on established sessions negotiated at version 6 or above. Minimum peering stays
+at 5; the complete released HELLO payload layout and all existing lease/reload
+messages are unchanged. A wire-5 member never receives the new message.
+
+The metadata reports a session-local serial, durable shadow preparation flag,
+canonical membership digest, and complete revision-zero resource value digest.
+It is advisory: it does not promise a ballot, acknowledge durable activation
+readiness, establish authority, or enable dynamic commands. Initial activation
+still requires the future explicit durable barrier from every configured member.
+
+Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.
+When releasing it for the first time, replace that label in `src/protocol.c` and
+update the corresponding protocol-label assertions in
+`tests/unit/protocol_negotiation.c` and `tests/integration/cases/json-output.sh`.
+The existing wire-5 label remains `1.1.0`.
+
+The additive local `config status` request/response use message types 14/15 and
+their own format-1 payload. Existing local status responses and their protocol
+version are unchanged; old daemons reject the new request as unsupported.
+Format 1 describes legacy INI preparation only. Future active-authority status
+must explicitly encode that authority in a new format, rather than reusing this
+bootstrap-only response and letting an older client report INI authority.

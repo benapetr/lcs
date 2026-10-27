@@ -80,8 +80,36 @@ static void test_broadcasts_wait_for_handshake(void)
     }
 }
 
+static void test_config_status_feature_gate(void)
+{
+    memset(&g_state, 0, sizeof(g_state));
+    g_state.cfg.node_count = 2;
+    peer_runtime_t *peer = &g_state.peers[1];
+    peer->fd = 1;
+    peer->outbuf = output[1];
+    unsigned char payload[] = {1};
+    const peer_conn_state_t states[] = {LCS_PEER_DISCONNECTED, LCS_PEER_CONNECTING, LCS_PEER_HELLO_SENT};
+    peer->protocol_version = 6;
+    for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++)
+    {
+        peer->conn_state = states[i];
+        assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 1);
+        assert(!peer->out_len);
+    }
+    peer->conn_state = LCS_PEER_ESTABLISHED;
+    peer->protocol_version = 5;
+    assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 1);
+    assert(!peer->out_len);
+    peer->protocol_version = 6;
+    assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 0);
+    lcs_frame_header_t header;
+    memcpy(&header, peer->outbuf, sizeof(header));
+    assert(ntohs(header.type) == LCS_MSG_CONFIG_BOOTSTRAP_STATUS);
+}
+
 int main(void)
 {
     test_broadcasts_wait_for_handshake();
+    test_config_status_feature_gate();
     return 0;
 }

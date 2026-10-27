@@ -3,6 +3,7 @@
 
 #include "cluster.h"
 #include "config_reload.h"
+#include "config_peer.h"
 #include "config.h"
 #include "daemon_state.h"
 #include "epoll_util.h"
@@ -643,7 +644,7 @@ int main(int argc, char **argv)
         lcs_log_close();
         return 1;
     }
-    /* Never serve wire-5 leases using INI in the presence of durable dynamic
+    /* Never serve legacy leases using INI in the presence of durable dynamic
      * history. Active recovery/application is gated until its protocol exists. */
     if (g_state.config_runtime.requires_recovery)
     {
@@ -666,6 +667,14 @@ int main(int argc, char **argv)
     g_state.config_bootstrap_initialized = true;
     lcs_log_info("resource JSON bootstrap prepared; INI remains authoritative, dynamic mutations are not enabled");
 
+    if (config_peer_refresh())
+    {
+        lcs_log_error("cannot prepare configuration peer metadata");
+        lcs_config_runtime_close(&g_state.config_runtime);
+        lcs_config_bootstrap_close(&g_state.config_bootstrap);
+        lcs_log_close();
+        return 1;
+    }
     int epoll_fd = -1;
     if (setup_runtime(&epoll_fd) != 0)
     {

@@ -19,7 +19,7 @@ typedef struct
 
 /* Call after locking storage, before bootstrap refresh or opening listeners.
  * Missing both records means legacy mode. Partial/corrupt/foreign records fail.
- * Valid records are retained for activation-aware recovery; the current wire-5
+ * Valid records are retained for activation-aware recovery; the current legacy-mode
  * daemon refuses to run them until that protocol/application path is integrated. */
 int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                              lcs_config_store_t *store, const lcs_config_t *cfg,

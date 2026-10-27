@@ -53,6 +53,11 @@ int lcs_config_value_init(lcs_config_value_t *value, const lcs_config_t *base,
 int lcs_config_value_copy(lcs_config_value_t *dst, const lcs_config_value_t *src);
 bool lcs_config_value_equal(const lcs_config_value_t *a, const lcs_config_value_t *b);
 
+/* Canonical static membership identity, also used by advisory peer metadata.
+ * The caller supplies a finalized configuration with sorted node names. */
+int lcs_config_agreement_membership(const lcs_config_t *base,
+                                    char digest[LCS_CONFIG_DIGEST_SIZE]);
+
 /* Opening a never-initialized journal must be explicitly authorized by bootstrap
  * coordination. Missing journal is an error when allow_initialize is false.
  * Existing records are bound to both membership/timing and the local member.

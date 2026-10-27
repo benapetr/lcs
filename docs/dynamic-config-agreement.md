@@ -2,9 +2,10 @@
 
 Implementation status: the agreement core, storage worker, and snapshot-transfer
 codecs, incarnation validation and local application catalog are implemented
-and unit-tested. They are not connected to daemon peer
-sessions, automatic activation, resource application, or CLI mutation endpoints.
-The running daemon still uses wire version 5 and INI authority. This document
+and unit-tested. Durable transactions are not connected to daemon peer sessions,
+automatic activation, resource application, or CLI mutation endpoints. Separate
+wire-6 bootstrap metadata now reports prepared definitions diagnostically; wire-5
+compatibility and INI authority remain. This document
 records the rules the remaining integration must preserve.
 
 ## Scope and identities

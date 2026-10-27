@@ -5,6 +5,7 @@
 
 #include "cluster.h"
 #include "config_reload.h"
+#include "config_peer.h"
 #include "log.h"
 #include "move.h"
 #include "peer.h"
@@ -311,11 +312,28 @@ static void cli_server_queue_reload(int epoll_fd, int slot_idx, uint32_t seq, ui
     cli_server_queue_simple_response(epoll_fd, slot_idx, LCS_MSG_RELOAD_RESP, seq, status, message);
 }
 
+static void cli_server_queue_config_status(int epoll_fd, int slot_idx, uint32_t seq, uint32_t length)
+{
+    lcs_config_status_view_t view;
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t encoded;
+    if (length || config_peer_view(&view) ||
+        lcs_config_status_view_encode(&view, payload, sizeof(payload), &encoded))
+    {
+        cli_server_queue_error(epoll_fd, slot_idx, seq, "cannot prepare configuration status");
+        return;
+    }
+    cli_server_queue_frame(epoll_fd, slot_idx, LCS_MSG_CONFIG_STATUS_RESP, seq, payload, (uint32_t)encoded);
+}
+
 static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
 {
     cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
     switch (hdr->type)
     {
+        case LCS_MSG_CONFIG_STATUS_REQ:
+            cli_server_queue_config_status(epoll_fd, slot_idx, hdr->seq, hdr->length);
+            break;
         case LCS_MSG_STATUS_REQ:
             cli_server_queue_status(epoll_fd, slot_idx, hdr->seq);
             break;

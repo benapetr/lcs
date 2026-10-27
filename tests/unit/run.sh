@@ -14,8 +14,9 @@ RESOURCE_CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-resource-json.XXXXXX")"
 STORE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-store.XXXXXX")"
 BOOTSTRAP_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-bootstrap.XXXXXX")"
 AGREEMENT_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-agreement.XXXXXX")"
+CONFIG_PEER_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-peer.XXXXXX")"
 CANDIDATE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-candidate.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN"' EXIT
+trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN"' EXIT
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic \
@@ -28,6 +29,15 @@ read -ra JSON_CFLAGS <<< "$(pkg-config --cflags jansson)"
 read -ra JSON_LIBS <<< "$(pkg-config --libs jansson)"
 read -ra CRYPTO_CFLAGS <<< "$(pkg-config --cflags libcrypto)"
 read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_peer.c" "$ROOT_DIR/src/config_peer.c" \
+    "$ROOT_DIR/src/config_status_protocol.c" "$ROOT_DIR/src/config_agreement.c" \
+    "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
+    "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$CONFIG_PEER_BIN"
+"$CONFIG_PEER_BIN"
+
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_agreement.c" "$ROOT_DIR/src/config_agreement.c" \

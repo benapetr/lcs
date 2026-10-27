@@ -11,7 +11,9 @@ The daemon automatically prepares a local JSON resource snapshot and initializat
 metadata on startup and refreshes the snapshot after successful resource reloads.
 INI remains authoritative in this implementation stage. See
 [resource JSON and storage](resource-json.md) for paths, permissions, recovery
-behavior, and the schema. Distributed dynamic management is not enabled yet.
+behavior, and the schema. `lcs config status` (also with `--json`) reports
+prepared snapshots and matching members; these observations do not activate
+dynamic management, which is not enabled yet.
 
 ## Live resource reload
 

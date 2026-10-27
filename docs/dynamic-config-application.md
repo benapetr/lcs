@@ -1,7 +1,8 @@
 # Configuration application and recovery contract
 
 Status: design contract for the remaining implementation. The running daemon
-still uses INI authority and wire 5. This document does not enable dynamic edits.
+still uses INI authority and supports wire 5–6. Wire-6 bootstrap metadata does
+not enable dynamic edits.
 See [the agreement core](dynamic-config-agreement.md) and
 [implementation checklist](dynamic-config-plan.md).
 

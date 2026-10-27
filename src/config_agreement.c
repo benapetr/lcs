@@ -150,7 +150,7 @@ static int parse_value(json_t *object, const lcs_config_t *base,
     return rc;
 }
 
-static int membership_digest(const lcs_config_t *base, char digest[LCS_CONFIG_DIGEST_SIZE])
+int lcs_config_agreement_membership(const lcs_config_t *base, char digest[LCS_CONFIG_DIGEST_SIZE])
 {
     json_t *nodes = json_array();
     json_t *root = json_pack("{s:s,s:I,s:I,s:I}", "cluster", base->cluster_name,
@@ -405,7 +405,7 @@ int lcs_config_agreement_open(lcs_config_agreement_t *agreement,
             (base->nodes[i].role != LCS_NODE_FULL && base->nodes[i].role != LCS_NODE_QUORUM_ONLY) ||
             (i && strcmp(base->nodes[i - 1].name, base->nodes[i].name) >= 0))
             return fail(err, err_len, "agreement membership must use unique canonical sorted node names and valid roles");
-    if (membership_digest(base, next.membership))
+    if (lcs_config_agreement_membership(base, next.membership))
         return fail(err, err_len, "cannot compute agreement membership identity");
     snprintf(next.member, sizeof(next.member), "%s", base->nodes[self].name);
     char *document = NULL;

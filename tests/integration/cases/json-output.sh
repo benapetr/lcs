@@ -37,9 +37,9 @@ wait_for_owner node1 node1
 status_json="$("$LCS" --json -s "$(node_socket node1)" status)"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["quorum"]')" == "true" ]] ||
     die "status JSON did not report quorum"
-[[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["effective_protocol"]')" == "5" ]] ||
+[[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["effective_protocol"]')" == "6" ]] ||
     die "status JSON did not report effective protocol"
-[[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["effective_protocol_release"]')" == "1.1.0" ]] ||
+[[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["effective_protocol_release"]')" == "unreleased" ]] ||
     die "status JSON did not map effective protocol to release"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["nodes"][0]["state"]')" == "online" ]] ||
     die "status JSON did not report node state"
@@ -49,7 +49,7 @@ status_json="$("$LCS" --json -s "$(node_socket node1)" status)"
     die "status JSON owner mismatch"
 
 status_text_output="$(status_text node1)"
-printf '%s\n' "$status_text_output" | grep -Fq "protocol: 1.1.0 (wire 5)" ||
+printf '%s\n' "$status_text_output" | grep -Fq "protocol: unreleased (wire 6)" ||
     die "text status did not report mapped effective protocol"
 
 resource_json="$("$LCS" -s "$(node_socket node1)" --json resource list)"

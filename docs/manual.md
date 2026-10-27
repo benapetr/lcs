@@ -7,7 +7,9 @@ LCS is a lightweight high-availability daemon that manages resources such as vir
 The daemon prepares a local JSON resource snapshot while retaining INI as the
 configuration authority. See [resource JSON and storage](resource-json.md) for
 the current implementation stage, build dependencies, state paths, and recovery
-behavior. Runtime resource definition commands are not enabled yet.
+behavior. Use `lcs config status` or `lcs --json config status` to inspect
+prepared definitions across members. Matching snapshots do not enable dynamic
+authority; runtime resource definition commands are not enabled yet.
 
 ---
 

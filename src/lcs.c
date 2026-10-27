@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "protocol.h"
+#include "config_status_protocol.h"
 #include "util.h"
 
 #include <errno.h>
@@ -48,6 +49,7 @@ static void usage(FILE *out)
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] status\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] nrpe\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] reload\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config status\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource list\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource move RESOURCE NODE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource start RESOURCE\n");
@@ -691,6 +693,88 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip, bool jso
     return 0;
 }
 
+static int cmd_config_status(const char *socket_path, bool json_output)
+{
+    int fd = connect_socket(socket_path);
+    if (fd < 0)
+        return 1;
+    unsigned char payload[LCS_MAX_FRAME];
+    lcs_frame_header_t header;
+    uint32_t seq = lcs_next_seq();
+    if (lcs_write_frame(fd, LCS_MSG_CONFIG_STATUS_REQ, seq, NULL, 0) ||
+        lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0)
+    {
+        fprintf(stderr, "lcs: configuration status request failed: %s\n", lcs_protocol_error());
+        close(fd);
+        return 1;
+    }
+    close(fd);
+    if (header.type == LCS_MSG_ERROR)
+    {
+        int32_t status;
+        char message[256];
+        if (!lcs_decode_simple_resp(payload, header.length, &status, message, sizeof(message)))
+            fprintf(stderr, "lcs: %s\n", message);
+        else
+            fprintf(stderr, "lcs: invalid configuration status error\n");
+        return 1;
+    }
+    lcs_config_status_view_t view;
+    if (header.type != LCS_MSG_CONFIG_STATUS_RESP || header.seq != seq ||
+        lcs_config_status_view_decode(payload, header.length, &view))
+    {
+        fprintf(stderr, "lcs: invalid configuration status response\n");
+        return 1;
+    }
+    unsigned prepared = 0, matching = 0;
+    for (size_t i = 0; i < view.count; i++)
+    {
+        prepared += view.nodes[i].known && view.nodes[i].status.prepared;
+        matching += lcs_config_status_node_matches(&view, i);
+    }
+    const lcs_config_status_t *local = &view.nodes[view.self].status;
+    if (json_output)
+    {
+        printf("{\"authority\":\"ini\",\"dynamic_commands\":false,\"activation_ready\":false,\"prepared\":%s,",
+               local->prepared ? "true" : "false");
+        printf("\"membership\":"); json_string(stdout, local->membership);
+        printf(",\"baseline_digest\":"); json_string(stdout, local->baseline);
+        printf(",\"prepared_members\":%u,\"matching_members\":%u,\"configured_members\":%u,\"nodes\":[",
+               prepared, matching, view.count);
+        for (size_t i = 0; i < view.count; i++)
+        {
+            const lcs_config_status_node_t *node = &view.nodes[i];
+            if (i) putchar(',');
+            printf("{\"name\":"); json_string(stdout, node->name);
+            printf(",\"role\":"); json_string(stdout, role_name(node->role));
+            printf(",\"self\":%s,\"connected\":%s,\"protocol\":%u,\"metadata_known\":%s,\"prepared\":",
+                   i == view.self ? "true" : "false", node->connected ? "true" : "false",
+                   node->protocol, node->known ? "true" : "false");
+            printf("%s,\"matches\":%s,\"baseline_digest\":",
+                   node->known ? (node->status.prepared ? "true" : "false") : "null",
+                   lcs_config_status_node_matches(&view, i) ? "true" : "false");
+            if (node->known) json_string(stdout, node->status.baseline); else printf("null");
+            putchar('}');
+        }
+        printf("]}\n");
+    }
+    else
+    {
+        printf("Resource configuration: INI\nPrepared snapshots: %u/%u; matching local snapshot: %u/%u\n",
+               prepared, view.count, matching, view.count);
+        printf("Dynamic commands: unavailable (distributed activation is not implemented)\n");
+        for (size_t i = 0; i < view.count; i++)
+        {
+            const lcs_config_status_node_t *node = &view.nodes[i];
+            printf("%s role=%s connected=%s protocol=%u prepared=%s matching=%s\n",
+                   node->name, role_name(node->role), node->connected ? "yes" : "no", node->protocol,
+                   node->known ? (node->status.prepared ? "yes" : "no") : "unknown",
+                   lcs_config_status_node_matches(&view, i) ? "yes" : "no");
+        }
+    }
+    return 0;
+}
+
 static int cmd_reload(const char *socket_path, bool json_output)
 {
     int fd = connect_socket(socket_path);
@@ -1026,6 +1110,13 @@ int main(int argc, char **argv)
             return 2;
         }
         return cmd_reload(socket_path, json_output);
+    }
+    if (strcmp(cmd, "config") == 0)
+    {
+        if (optind + 1 == argc && !strcmp(argv[optind], "status"))
+            return cmd_config_status(socket_path, json_output);
+        usage(stderr);
+        return 2;
     }
     if (strcmp(cmd, "resource") == 0)
         return cmd_resource(socket_path, argc, argv, optind, json_output);

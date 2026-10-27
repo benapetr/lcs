@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added negotiated wire-6 bootstrap metadata and read-only `lcs config status` with JSON output, reporting prepared and matching full definitions across configured members. Wire-5 HELLO, lease and reload compatibility is retained; matching metadata does not activate dynamic configuration or enable mutation commands. Wire 6 is labelled `unreleased` until its first release.
+
 - Daemon startup now validates existing distributed agreement/application records before INI snapshot refresh or listener creation. Incomplete or unsupported distributed recovery blocks startup and preserves stored state instead of falling back to INI.
 
 - Added background application-catalog begin/finish writes through the shared configuration storage worker, with monotonic result import and recovery after uncertain writes. Live dynamic configuration coordination remains unfinished.
@@ -14,11 +16,11 @@
 
 - Added schema-2 resource incarnation snapshots and successor validation for the future dynamic authority, including deletion/recreation and backend replacement identities persisted through agreement restart. Live activation and runtime message gating remain pending; legacy bootstrap still uses schema 1.
 
-- Added the durable configuration-agreement core, majority proposal tracking, background storage workers, and bounded snapshot-transfer codecs. These are not yet connected to live peer transactions or activation; INI remains authoritative and wire protocol remains version 5. Agreement hashing adds an OpenSSL libcrypto build dependency.
-- Added the JSON resource snapshot and durable local bootstrap foundation for distributed configuration, including automatic preparation, background refresh after INI reload, and state-directory packaging. INI remains authoritative and runtime definition commands are not enabled yet; wire protocol remains version 5. Building the daemon now requires Jansson development files.
+- Added the durable configuration-agreement core, majority proposal tracking, background storage workers, and bounded snapshot-transfer codecs. These are not yet connected to live peer transactions or activation; INI remains authoritative. Agreement hashing adds an OpenSSL libcrypto build dependency.
+- Added the JSON resource snapshot and durable local bootstrap foundation for distributed configuration, including automatic preparation, background refresh after INI reload, and state-directory packaging. INI remains authoritative and runtime definition commands are not enabled yet. Building the daemon now requires Jansson development files.
 - Added a validated internal candidate editor for future pcs-style resource and group commands, including affinity policies and revision checks. This is not yet exposed through the runtime CLI.
 - Added optional `peers_only` source checking, disabled by default. When enabled, every node requires an explicit numeric IP address, incoming sources must match configured peers, and HELLO identities must match their source IPs. It works alongside `allow_from` and requires daemon restart to change.
-- Added an incoming peer source-IP allowlist. Defaults accept RFC 1918 private IPv4 ranges only; configure `allow_from` for localhost, IPv6, or public peer networks, or set `0.0.0.0/0` to disable filtering for both address families. Disallowed sources are rejected before HELLO processing. Policy changes require daemon restart; wire protocol remains version 5.
+- Added an incoming peer source-IP allowlist. Defaults accept RFC 1918 private IPv4 ranges only; configure `allow_from` for localhost, IPv6, or public peer networks, or set `0.0.0.0/0` to disable filtering for both address families. Disallowed sources are rejected before HELLO processing. Policy changes require daemon restart.
 
 ## v1.1.1
 

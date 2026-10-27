@@ -62,6 +62,13 @@ lcs \- command line client for the Lightweight Cluster Service daemon
 .br
 .B lcs
 .B \-\-version
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.RB [ \-\-json ]
+.B config status
 .SH DESCRIPTION
 .B lcs
 talks to the local
@@ -101,6 +108,14 @@ cluster section includes the current membership shape duration.
 Print a single monitoring-plugin style status line and exit with Nagios
 compatible status codes. Exit status is 0 for OK, 1 for WARNING, 2 for
 CRITICAL, and 3 for UNKNOWN.
+.TP
+.B config status
+Report INI resource authority, local prepared-snapshot status, canonical digests,
+and prepared/matching member counts, including quorum-only members. Wire-5 and
+offline peers have unknown metadata. These observations are diagnostic only;
+dynamic mutation commands remain unavailable until distributed activation is
+implemented. Supports
+.BR \-\-json .
 .TP
 .B reload
 Asynchronously refresh cached peer DNS addresses and ask the local daemon to

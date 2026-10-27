@@ -8,6 +8,7 @@
 #include "config_bootstrap.h"
 #include "config_runtime.h"
 #include "protocol.h"
+#include "config_status_protocol.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -244,6 +245,9 @@ typedef struct
     size_t out_off;
     size_t out_len;
     uint16_t protocol_version;
+    lcs_config_status_t config_status;
+    bool config_status_known;
+    uint64_t config_status_sent;
 } peer_runtime_t;
 
 typedef struct
@@ -449,6 +453,9 @@ typedef struct
     config_reload_runtime_t config_reload;
     lcs_config_bootstrap_t config_bootstrap;
     lcs_config_runtime_t config_runtime;
+    lcs_config_status_t config_status;
+    uint64_t config_status_generation;
+    uint64_t config_status_retry_ms;
     bool config_bootstrap_initialized;
 } daemon_state_t;
 
