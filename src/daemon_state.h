@@ -5,6 +5,7 @@
 #define LCS_DAEMON_STATE_H
 
 #include "config.h"
+#include "config_bootstrap.h"
 #include "protocol.h"
 
 #include <sys/socket.h>
@@ -445,6 +446,8 @@ typedef struct
     resource_runtime_t resources[LCS_MAX_RESOURCES];
     lease_grant_t lease_grants[LCS_MAX_RESOURCES];
     config_reload_runtime_t config_reload;
+    lcs_config_bootstrap_t config_bootstrap;
+    bool config_bootstrap_initialized;
 } daemon_state_t;
 
 extern daemon_state_t g_state;

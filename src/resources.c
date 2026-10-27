@@ -1758,6 +1758,21 @@ void resources_maintain_owned_leases(int epoll_fd)
     {
         if (g_state.had_quorum && !g_state.no_quorum_state_cleared)
             resources_clear_volatile_state_after_quorum_loss(epoll_fd);
+        else if (g_state.had_quorum)
+        {
+            /* The first pass can only start asynchronous dependent stops.
+             * Keep progressing their parents after the volatile-state reset;
+             * otherwise those VIPs can remain active indefinitely without quorum.
+             * Failed stops retain ownership and use the backend retry path. */
+            for (size_t i = 0; i < g_state.cfg.resource_count; i++)
+            {
+                const resource_runtime_t *res = &g_state.resources[i];
+                if (res->owner_node == g_state.self_index &&
+                    res->owner_instance_id == g_state.instance_id &&
+                    res->state != LCS_RES_STOP_FAILED)
+                    resources_release_local_internal((int)i, epoll_fd, false);
+            }
+        }
         return;
     }
 

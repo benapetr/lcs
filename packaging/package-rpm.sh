@@ -64,6 +64,9 @@ if command -v rpm >/dev/null 2>&1; then
     require_pkg gcc
     require_pkg make
     require_pkg systemd-devel
+    require_pkg jansson-devel
+    require_pkg openssl-devel
+    require_pkg pkgconf-pkg-config
     require_pkg tar
     require_pkg gzip
 
@@ -135,6 +138,9 @@ Source0:        %{name}-%{version}.tar.gz
 BuildRequires:  gcc
 BuildRequires:  make
 BuildRequires:  systemd-devel
+BuildRequires:  jansson-devel
+BuildRequires:  openssl-devel
+BuildRequires:  pkgconf-pkg-config
 Requires:       iproute
 
 %description
@@ -156,10 +162,18 @@ make install DESTDIR=%{buildroot} bindir=%{_bindir} sbindir=%{_sbindir}
 install -Dm644 packaging/lcsd.service %{buildroot}%{_unitdir}/lcsd.service
 install -Dm644 README.md %{buildroot}%{_docdir}/%{name}/README.md
 install -Dm644 LICENSE %{buildroot}%{_docdir}/%{name}/LICENSE
+install -Dm644 docs/manual.md %{buildroot}%{_docdir}/%{name}/docs/manual.md
+install -Dm644 docs/config.md %{buildroot}%{_docdir}/%{name}/docs/config.md
+install -Dm644 docs/resource-json.md %{buildroot}%{_docdir}/%{name}/docs/resource-json.md
+install -Dm644 docs/dynamic-config-plan.md %{buildroot}%{_docdir}/%{name}/docs/dynamic-config-plan.md
+install -Dm644 docs/dynamic-config-agreement.md %{buildroot}%{_docdir}/%{name}/docs/dynamic-config-agreement.md
+install -Dm644 docs/dynamic-config-application.md %{buildroot}%{_docdir}/%{name}/docs/dynamic-config-application.md
+install -Dm644 docs/version.md %{buildroot}%{_docdir}/%{name}/docs/version.md
 mkdir -p %{buildroot}%{_docdir}/%{name}/examples
 cp -a examples/. %{buildroot}%{_docdir}/%{name}/examples/
 
 %post
+install -d -m 0700 /var/lib/lcs
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
     if [ \$1 -gt 1 ] && systemctl --quiet is-active lcsd.service; then
@@ -182,8 +196,10 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 %files
+%dir %attr(0700,root,root) /var/lib/lcs
 %license %{_docdir}/%{name}/LICENSE
 %doc %{_docdir}/%{name}/README.md
+%doc %{_docdir}/%{name}/docs
 %{_docdir}/%{name}/examples
 %{_bindir}/lcs
 %{_sbindir}/lcsd

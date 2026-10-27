@@ -3,6 +3,7 @@
 #include "config_reload.h"
 
 #include "cluster.h"
+#include "config_candidate.h"
 #include "lease.h"
 #include "log.h"
 #include "move.h"
@@ -87,129 +88,11 @@ static bool participants_support_reload(uint32_t participant_mask)
     return true;
 }
 
-static bool same_string(const char *a, const char *b)
-{
-    return strcmp(a, b) == 0;
-}
-
-static bool resource_backend_identity_equal(const lcs_resource_config_t *a, const lcs_resource_config_t *b)
-{
-    if (a->type != b->type)
-        return false;
-    if (a->type == LCS_RESOURCE_VIP)
-        return same_string(a->address, b->address) &&
-               same_string(a->interface, b->interface);
-    if (a->type == LCS_RESOURCE_SERVICE)
-        return same_string(a->systemd_unit, b->systemd_unit);
-    return false;
-}
-
-static bool resource_config_equal(const lcs_resource_config_t *a, const lcs_resource_config_t *b)
-{
-    if (a->type != b->type || !same_string(a->name, b->name) ||
-        !same_string(a->group_name, b->group_name) ||
-        !same_string(a->home_node_name, b->home_node_name) ||
-        !same_string(a->systemd_unit, b->systemd_unit) ||
-        !same_string(a->address, b->address) ||
-        !same_string(a->interface, b->interface) ||
-        !same_string(a->pre_start, b->pre_start) ||
-        !same_string(a->post_start, b->post_start) ||
-        !same_string(a->pre_stop, b->pre_stop) ||
-        !same_string(a->post_stop, b->post_stop) ||
-        a->priority != b->priority ||
-        a->depends_on_count != b->depends_on_count)
-        return false;
-    for (size_t i = 0; i < a->depends_on_count; i++)
-    {
-        if (!same_string(a->depends_on_names[i], b->depends_on_names[i]))
-            return false;
-    }
-    return true;
-}
-
-static bool resource_configuration_equal(const lcs_config_t *a, const lcs_config_t *b)
-{
-    if (a->group_count != b->group_count || a->resource_count != b->resource_count)
-        return false;
-    for (size_t i = 0; i < a->group_count; i++)
-    {
-        if (!same_string(a->groups[i].name, b->groups[i].name) || a->groups[i].type != b->groups[i].type || a->groups[i].mode != b->groups[i].mode)
-            return false;
-    }
-    for (size_t i = 0; i < a->resource_count; i++)
-    {
-        if (!resource_config_equal(&a->resources[i], &b->resources[i]))
-            return false;
-    }
-    return true;
-}
-
-static int validate_resource_only_change(const lcs_config_t *candidate, char *error, size_t error_len)
-{
-    const lcs_config_t *active = &g_state.cfg;
-    if (!same_string(candidate->cluster_name, active->cluster_name) || !same_string(candidate->self_name, active->self_name))
-    {
-        snprintf(error, error_len, "cluster name and local node identity cannot be reloaded");
-        return -1;
-    }
-    if (candidate->node_count != active->node_count)
-    {
-        snprintf(error, error_len, "node membership changes require the future joint-consensus protocol");
-        return -1;
-    }
-    for (size_t i = 0; i < active->node_count; i++)
-    {
-        const lcs_node_config_t *old_node = &active->nodes[i];
-        const lcs_node_config_t *new_node = &candidate->nodes[i];
-        if (!same_string(old_node->name, new_node->name) ||
-            old_node->role != new_node->role ||
-            !same_string(old_node->address, new_node->address) ||
-            old_node->port != new_node->port)
-        {
-            snprintf(error, error_len, "node membership, roles, addresses, and ports cannot be reloaded");
-            return -1;
-        }
-    }
-
-#define REQUIRE_UNCHANGED(field) \
-    do { if (candidate->field != active->field) { \
-        snprintf(error, error_len, #field " cannot be changed by resource reload"); \
-        return -1; \
-    } } while (0)
-#define REQUIRE_STRING_UNCHANGED(field) \
-    do { if (!same_string(candidate->field, active->field)) { \
-        snprintf(error, error_len, #field " cannot be changed by resource reload"); \
-        return -1; \
-    } } while (0)
-
-    REQUIRE_STRING_UNCHANGED(bind_address);
-    REQUIRE_STRING_UNCHANGED(metrics_bind_address);
-    REQUIRE_STRING_UNCHANGED(socket_path);
-    REQUIRE_STRING_UNCHANGED(pidfile_path);
-    REQUIRE_STRING_UNCHANGED(secret);
-    REQUIRE_STRING_UNCHANGED(allow_from);
-    REQUIRE_UNCHANGED(peers_only);
-    REQUIRE_UNCHANGED(port);
-    REQUIRE_UNCHANGED(metrics_port);
-    REQUIRE_UNCHANGED(lease_ms);
-    REQUIRE_UNCHANGED(renew_ms);
-    REQUIRE_UNCHANGED(peer_timeout_ms);
-    REQUIRE_UNCHANGED(probe_count);
-    REQUIRE_UNCHANGED(probe_timeout_ms);
-    REQUIRE_UNCHANGED(hook_timeout_ms);
-    REQUIRE_UNCHANGED(syslog_enabled);
-    REQUIRE_UNCHANGED(metrics_enabled);
-    REQUIRE_UNCHANGED(vip_backend);
-#undef REQUIRE_STRING_UNCHANGED
-#undef REQUIRE_UNCHANGED
-    return 0;
-}
-
 static bool resource_requires_drain(size_t old_idx)
 {
     const lcs_resource_config_t *old_resource = &g_state.cfg.resources[old_idx];
     int new_idx = lcs_config_resource_index(&g_state.config_reload.candidate, old_resource->name);
-    return new_idx < 0 || !resource_backend_identity_equal(old_resource, &g_state.config_reload.candidate.resources[new_idx]);
+    return new_idx < 0 || !lcs_config_backend_equal(old_resource, &g_state.config_reload.candidate.resources[new_idx]);
 }
 
 static bool local_drain_complete(int epoll_fd)
@@ -299,7 +182,7 @@ static void load_candidate(int epoll_fd)
         peer_broadcast_config_reload(epoll_fd);
         return;
     }
-    if (validate_resource_only_change(&candidate, error, sizeof(error)) != 0)
+    if (lcs_config_candidate_prepare(&g_state.cfg, &candidate, &candidate, error, sizeof(error)) != 0)
     {
         reset_candidate_state(reload);
         reload->auto_load_blocked = true;
@@ -310,7 +193,7 @@ static void load_candidate(int epoll_fd)
 
     uint64_t voting_fingerprint = lcs_config_voting_fingerprint(&candidate);
     uint64_t full_fingerprint = lcs_config_full_fingerprint(&candidate);
-    if (resource_configuration_equal(&candidate, &g_state.cfg))
+    if (lcs_config_resources_equal(&candidate, &g_state.cfg))
     {
         reset_candidate_state(reload);
         lcs_log_info("configuration reload ignored: resource configuration is unchanged");
@@ -652,7 +535,7 @@ static void apply_candidate(int epoll_fd)
         int old_idx = lcs_config_resource_index(&old_config, new_resource->name);
         resource_runtime_t *new_runtime = &g_state.resources[new_idx];
         lease_grant_t *new_grant = &g_state.lease_grants[new_idx];
-        if (old_idx >= 0 && resource_backend_identity_equal(&old_config.resources[old_idx], new_resource))
+        if (old_idx >= 0 && lcs_config_backend_equal(&old_config.resources[old_idx], new_resource))
         {
             *new_runtime = old_resources[old_idx];
             *new_grant = old_grants[old_idx];
@@ -672,6 +555,8 @@ static void apply_candidate(int epoll_fd)
     }
 
     g_state.cfg = reload->candidate;
+    if (g_state.config_bootstrap_initialized)
+        lcs_config_bootstrap_request(&g_state.config_bootstrap);
     g_state.self_index = lcs_config_self_index(&g_state.cfg);
     g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
     g_state.next_placement_ms = lcs_now_ms() + 500u;

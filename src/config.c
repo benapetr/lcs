@@ -608,6 +608,17 @@ int lcs_config_load(const char *path, lcs_config_t *cfg, char *err, size_t err_l
         }
     }
     fclose(f);
+    return lcs_config_finalize(cfg, err, err_len);
+}
+
+int lcs_config_finalize(lcs_config_t *cfg, char *err, size_t err_len)
+{
+    if (cfg->node_count > LCS_MAX_NODES || cfg->group_count > LCS_MAX_GROUPS ||
+        cfg->resource_count > LCS_MAX_RESOURCES)
+    {
+        set_err(err, err_len, 0, "configuration exceeds compiled collection limits");
+        return -1;
+    }
     sort_config(cfg);
     return lcs_config_validate(cfg, err, err_len);
 }
@@ -883,6 +894,14 @@ int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
     for (size_t i = 0; i < cfg->resource_count; i++)
     {
         const lcs_resource_config_t *resource = &cfg->resources[i];
+        if (!valid_pidfile_path(resource->pre_start) ||
+            !valid_pidfile_path(resource->post_start) ||
+            !valid_pidfile_path(resource->pre_stop) ||
+            !valid_pidfile_path(resource->post_stop))
+        {
+            set_err(err, err_len, 0, "resource hook paths must be empty or absolute");
+            return -1;
+        }
         switch (resource->type)
         {
             case LCS_RESOURCE_SERVICE:
@@ -906,14 +925,6 @@ int lcs_config_validate(lcs_config_t *cfg, char *err, size_t err_len)
                 if (!valid_interface_name(resource->interface))
                 {
                     set_err(err, err_len, 0, "vip interface is invalid or too long");
-                    return -1;
-                }
-                if (!valid_pidfile_path(resource->pre_start) ||
-                    !valid_pidfile_path(resource->post_start) ||
-                    !valid_pidfile_path(resource->pre_stop) ||
-                    !valid_pidfile_path(resource->post_stop))
-                {
-                    set_err(err, err_len, 0, "vip hook paths must be empty or absolute");
                     return -1;
                 }
                 break;

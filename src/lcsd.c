@@ -627,9 +627,21 @@ int main(int argc, char **argv)
     log_startup_config(&opts, syslog_enabled);
     group_log_strict_warnings();
 
+    char bootstrap_error[256];
+    if (lcs_config_bootstrap_open(&g_state.config_bootstrap, opts.config_path,
+                                  &g_state.cfg, bootstrap_error, sizeof(bootstrap_error)))
+    {
+        lcs_log_error("cannot prepare resource configuration: %s", bootstrap_error);
+        lcs_log_close();
+        return 1;
+    }
+    g_state.config_bootstrap_initialized = true;
+    lcs_log_info("resource JSON bootstrap prepared; INI remains authoritative, dynamic mutations are not enabled");
+
     int epoll_fd = -1;
     if (setup_runtime(&epoll_fd) != 0)
     {
+        lcs_config_bootstrap_close(&g_state.config_bootstrap);
         lcs_log_close();
         return 1;
     }
@@ -637,5 +649,6 @@ int main(int argc, char **argv)
     log_daemon_started();
     run_daemon_loop(epoll_fd);
     shutdown_daemon(epoll_fd);
+    lcs_config_bootstrap_close(&g_state.config_bootstrap);
     return 0;
 }

@@ -5,6 +5,14 @@ should be used on every node, with only the local `[cluster]` `node` value
 changed per host. Lines starting with `#` or `;` are comments; inline comments
 after values are also supported.
 
+## Prepared resource JSON
+
+The daemon automatically prepares a local JSON resource snapshot and initialization
+metadata on startup and refreshes the snapshot after successful resource reloads.
+INI remains authoritative in this implementation stage. See
+[resource JSON and storage](resource-json.md) for paths, permissions, recovery
+behavior, and the schema. Distributed dynamic management is not enabled yet.
+
 ## Live resource reload
 
 Deploy the edited configuration file to every currently online node, then run

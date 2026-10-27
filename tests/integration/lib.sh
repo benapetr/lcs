@@ -188,10 +188,18 @@ node_status_has()
     status_text "$node" 2>/dev/null | grep -Fq "$pattern"
 }
 
+node_socket_ready()
+{
+    local node="$1"
+    # SIGKILL leaves the previous socket inode behind. Wait for the new daemon
+    # to serve requests, not merely for an old pathname to exist.
+    test -S "$(node_socket "$node")" && status_text "$node" >/dev/null 2>&1
+}
+
 wait_for_socket()
 {
     local node="$1"
-    wait_until 8 "$node socket" test -S "$(node_socket "$node")"
+    wait_until 8 "$node responsive socket" node_socket_ready "$node"
 }
 
 wait_for_quorum()
