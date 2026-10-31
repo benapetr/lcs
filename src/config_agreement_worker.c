@@ -43,6 +43,11 @@ static void reset(lcs_config_agreement_worker_t *worker)
     if (worker->pipe_fd >= 0)
         close(worker->pipe_fd);
     free(worker->buffer);
+    if (worker->initialization_candidate)
+    {
+        lcs_config_runtime_close(worker->initialization_candidate);
+        free(worker->initialization_candidate);
+    }
     lcs_config_agreement_worker_init(worker);
 }
 
@@ -71,6 +76,7 @@ static int compare_fd(const void *a, const void *b)
 static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
                             lcs_config_application_t *application,
                             const lcs_config_agreement_job_t *job,
+                            const lcs_config_runtime_t *initialization, bool allow_initialize,
                             int pipe_fd, pid_t parent)
 {
     int keep[] = {agreement->store->directory_fd, agreement->store->lock_fd, pipe_fd};
@@ -92,6 +98,34 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
     if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent)
         _exit(1);
     worker_result_t result = {0};
+    if (initialization)
+    {
+        /* This acknowledgement is same-host evidence only. The parent already
+         * owns an immutable copy of exactly this pristine baseline. Never use
+         * the compact acknowledgement to import promises or active history. */
+        lcs_config_runtime_t recovered = {0};
+        recovered.base = malloc(sizeof(*recovered.base));
+        if (!recovered.base ||
+            lcs_config_activation_open(&recovered.activation, agreement->store,
+                initialization->base, recovered.base, allow_initialize,
+                result.error, sizeof(result.error)) ||
+            !lcs_config_value_equal(&recovered.activation.baseline, &initialization->activation.baseline) ||
+            lcs_config_activation_resume(&recovered.activation, &recovered.agreement,
+                &recovered.application, result.error, sizeof(result.error)) ||
+            recovered.activation.phase != LCS_CONFIG_ACTIVATION_PREPARED ||
+            recovered.agreement.promised || recovered.agreement.accepted.document ||
+            !lcs_config_value_equal(&recovered.agreement.committed, &initialization->activation.baseline) ||
+            recovered.application.pending.document ||
+            !lcs_config_value_equal(&recovered.application.applied, &initialization->activation.baseline))
+        {
+            result.result = -1;
+            result.poisoned = true;
+            if (!*result.error)
+                snprintf(result.error, sizeof(result.error), "initialization differs from authorized pristine baseline; recover from disk");
+        }
+        lcs_config_runtime_close(&recovered);
+        _exit(write_all(pipe_fd, &result, sizeof(result)) ? 1 : 0);
+    }
     if (job->action == LCS_CONFIG_PREPARE)
         result.result = lcs_config_agreement_prepare(agreement, job->revision,
             job->parent_digest, job->ballot, result.error, sizeof(result.error));
@@ -133,13 +167,15 @@ static int start(lcs_config_agreement_worker_t *worker,
                     lcs_config_agreement_t *agreement,
                     lcs_config_application_t *application,
                     const lcs_config_agreement_job_t *job,
+                    lcs_config_runtime_t *target, lcs_config_runtime_t *candidate,
+                    bool allow_initialize,
                     char *err, size_t err_len)
 {
     if (worker->pid > 0)
         return 1;
     bool application_job = job && (job->action == LCS_CONFIG_APPLICATION_BEGIN ||
                                    job->action == LCS_CONFIG_APPLICATION_FINISH);
-    if (agreement->poisoned || !job || application_job != (application != NULL) ||
+    if (!candidate && (agreement->poisoned || !job || application_job != (application != NULL) ||
         (application && (application->poisoned || application->store != agreement->store ||
          strcmp(application->member, agreement->member) ||
          strcmp(application->membership, agreement->membership))) ||
@@ -147,7 +183,7 @@ static int start(lcs_config_agreement_worker_t *worker,
          (job->action != LCS_CONFIG_PREPARE && !job->value))) ||
         (job->action == LCS_CONFIG_APPLICATION_FINISH &&
          (!memchr(job->application_digest, 0, sizeof(job->application_digest)) ||
-          !application->pending.document || strcmp(job->application_digest, application->pending.digest))))
+          !application->pending.document || strcmp(job->application_digest, application->pending.digest)))))
         return fail(err, err_len, "invalid job or agreement state requires recovery");
     unsigned char *buffer = malloc(RESULT_MAX);
     if (!buffer)
@@ -171,9 +207,11 @@ static int start(lcs_config_agreement_worker_t *worker,
         return fail(err, err_len, "cannot fork storage worker");
     }
     if (!child)
-        execute_child(agreement, application, job, fds[1], parent);
+        execute_child(agreement, application, job, candidate, allow_initialize, fds[1], parent);
     close(fds[1]);
     worker->application = application;
+    worker->initialization_target = target;
+    worker->initialization_candidate = candidate;
     worker->buffer = buffer;
     worker->pipe_fd = fds[0];
     worker->pid = child;
@@ -188,7 +226,7 @@ int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
                                       const lcs_config_agreement_job_t *job,
                     char *err, size_t err_len)
 {
-    return start(worker, agreement, NULL, job, err, err_len);
+    return start(worker, agreement, NULL, job, NULL, NULL, false, err, err_len);
 }
 
 int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t *worker,
@@ -199,11 +237,93 @@ int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t 
 {
     if (!application)
         return fail(err, err_len, "application catalog is required");
-    return start(worker, agreement, application, job, err, err_len);
+    return start(worker, agreement, application, job, NULL, NULL, false, err, err_len);
+}
+
+static bool empty_runtime(const lcs_config_runtime_t *runtime)
+{
+    return !runtime->base && !runtime->agreement.store && !runtime->application.store &&
+        !runtime->activation.store && !runtime->agreement.committed.document &&
+        !runtime->agreement.accepted.document && !runtime->application.applied.document &&
+        !runtime->application.pending.document && !runtime->activation.baseline.document &&
+        !runtime->agreement.promised && !runtime->agreement.accepted_ballot &&
+        !runtime->agreement.committed_ballot && !runtime->agreement.committed_voters &&
+        !*runtime->agreement.parent_digest && !runtime->activation.phase &&
+        !runtime->agreement.poisoned && !runtime->application.poisoned && !runtime->activation.poisoned;
+}
+
+int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker_t *worker,
+                                                      lcs_config_runtime_t *runtime,
+                                                      lcs_config_bootstrap_t *bootstrap,
+                                                      const lcs_config_t *cfg,
+                                                      bool allow_initialize,
+                                                      char *err, size_t err_len)
+{
+    if (worker->pid > 0 || bootstrap->worker_pid > 0 || bootstrap->refresh_pending)
+        return 1;
+    if (!empty_runtime(runtime) || runtime->requires_recovery ||
+        bootstrap->initialization_locked || !bootstrap->prepared ||
+        bootstrap->state.directory_fd < 0 || bootstrap->state.lock_fd < 0)
+        return fail(err, err_len, "initialization requires fresh runtime and prepared, idle bootstrap storage");
+    lcs_config_runtime_t *candidate = calloc(1, sizeof(*candidate));
+    if (!candidate)
+        return fail(err, err_len, "out of memory preparing initialization");
+    candidate->base = malloc(sizeof(*candidate->base));
+    char *document = NULL;
+    size_t length;
+    uint64_t revision;
+    int result = -1;
+    if (!candidate->base ||
+        lcs_resource_config_encode(cfg, 0, &document, &length, err, err_len) ||
+        lcs_resource_config_decode(document, length, cfg, candidate->base, &revision, err, err_len) ||
+        lcs_config_agreement_membership(candidate->base, candidate->activation.membership))
+        goto out;
+    int self = lcs_config_self_index(candidate->base);
+    if (self < 0 || lcs_config_value_init(&candidate->activation.baseline, candidate->base,
+                                          "bootstrap", document, length, err, err_len))
+        goto out;
+    candidate->activation.store = &bootstrap->state;
+    candidate->activation.base = candidate->base;
+    candidate->activation.phase = LCS_CONFIG_ACTIVATION_PREPARED;
+    snprintf(candidate->activation.member, sizeof(candidate->activation.member), "%s", candidate->base->nodes[self].name);
+    candidate->agreement.store = candidate->application.store = &bootstrap->state;
+    candidate->agreement.base = candidate->application.base = candidate->base;
+    snprintf(candidate->agreement.member, sizeof(candidate->agreement.member), "%s", candidate->activation.member);
+    snprintf(candidate->application.member, sizeof(candidate->application.member), "%s", candidate->activation.member);
+    snprintf(candidate->agreement.membership, sizeof(candidate->agreement.membership), "%s", candidate->activation.membership);
+    snprintf(candidate->application.membership, sizeof(candidate->application.membership), "%s", candidate->activation.membership);
+    if (lcs_config_value_copy(&candidate->agreement.committed, &candidate->activation.baseline) ||
+        lcs_config_value_copy(&candidate->application.applied, &candidate->activation.baseline))
+        goto out;
+    candidate->requires_recovery = true;
+    result = start(worker, &candidate->agreement, NULL, NULL, runtime, candidate,
+                     allow_initialize, err, err_len);
+    if (!result)
+    {
+        candidate = NULL; /* Owned by the worker until successful publication. */
+        runtime->requires_recovery = true;
+        bootstrap->initialization_locked = true;
+        bootstrap->prepared = false;
+    }
+out:
+    free(document);
+    if (candidate)
+    {
+        lcs_config_runtime_close(candidate);
+        free(candidate);
+    }
+    return result;
 }
 
 static void poison(lcs_config_agreement_worker_t *worker, lcs_config_agreement_t *agreement)
 {
+    if (worker->initialization_target)
+    {
+        lcs_config_runtime_t *runtime = worker->initialization_target;
+        runtime->agreement.poisoned = runtime->application.poisoned = runtime->activation.poisoned = true;
+        runtime->requires_recovery = true;
+        return;
+    }
     agreement->poisoned = true;
     if (worker->application)
         worker->application->poisoned = true;
@@ -242,6 +362,8 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
 {
     if (worker->pid <= 0)
         return 0;
+    if (worker->initialization_target && agreement != &worker->initialization_target->agreement)
+        return fail(err, err_len, "initialization completion requires the original runtime handle");
     if (worker->cancelled)
     {
         pid_t reaped = waitpid(worker->pid, NULL, WNOHANG);
@@ -298,6 +420,17 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
         fail(err, err_len, *result.error ? result.error : "uncertain persistence; recovery required");
         reset(worker);
         return -1;
+    }
+    if (worker->initialization_target)
+    {
+        lcs_config_runtime_t *target = worker->initialization_target;
+        if (result.result || result.length || !target->requires_recovery || !empty_runtime(target))
+            goto broken;
+        *target = *worker->initialization_candidate;
+        memset(worker->initialization_candidate, 0, sizeof(*worker->initialization_candidate));
+        *operation_result = 0;
+        reset(worker);
+        return 1;
     }
     const char *record = (const char *)worker->buffer + sizeof(result);
     int imported = !result.length ? -1 : worker->application ?

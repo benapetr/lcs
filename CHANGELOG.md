@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added background frozen-baseline initialization through the shared configuration storage worker. Initialization excludes INI refresh, publishes prepared handles only after successful child exit, and requires disk recovery after uncertain writes or cancellation. Automatic distributed activation remains unfinished.
+
 - Added crash-safe local initialization for future dynamic activation: persist the complete frozen baseline before journal/catalog creation, resume partial initialization across restarts, and prevent INI refresh or missing-record regeneration after preparation. Coordinated automatic activation and dynamic mutation commands remain unfinished.
 
 - Added negotiated wire-6 bootstrap metadata and read-only `lcs config status` with JSON output, reporting prepared and matching full definitions across configured members. Wire-5 HELLO, lease and reload compatibility is retained; matching metadata does not activate dynamic configuration or enable mutation commands. Wire 6 is labelled `unreleased` until its first release.

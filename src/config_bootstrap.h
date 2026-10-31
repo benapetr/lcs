@@ -16,6 +16,7 @@ typedef struct
     int worker_pipe;
     bool refresh_pending;
     bool prepared;
+    bool initialization_locked; /* Permanent until close/recovery; no more INI refresh. */
 } lcs_config_bootstrap_t;
 
 /* Opens/locks storage WITHOUT changing bootstrap markers or snapshots. Daemon

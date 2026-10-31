@@ -45,6 +45,8 @@ int lcs_config_bootstrap_refresh(lcs_config_bootstrap_t *bootstrap,
                                  const lcs_config_t *cfg,
                                  char *err, size_t err_len)
 {
+    if (bootstrap->initialization_locked)
+        return fail(err, err_len, "distributed initialization requires recovery instead of INI refresh");
     /* Once initialization intent exists, INI is no longer allowed to replace
      * its frozen predecessor. This also protects direct/background refreshes. */
     struct stat activation_stat;
@@ -196,7 +198,8 @@ int lcs_config_bootstrap_open(lcs_config_bootstrap_t *bootstrap,
 
 void lcs_config_bootstrap_request(lcs_config_bootstrap_t *bootstrap)
 {
-    bootstrap->refresh_pending = true;
+    if (!bootstrap->initialization_locked)
+        bootstrap->refresh_pending = true;
     bootstrap->prepared = false;
 }
 
@@ -210,6 +213,8 @@ int lcs_config_bootstrap_process(lcs_config_bootstrap_t *bootstrap,
                                  const lcs_config_t *cfg,
                                  char *err, size_t err_len)
 {
+    if (bootstrap->initialization_locked)
+        return 0;
     int result = 0;
     if (bootstrap->worker_pid > 0)
     {

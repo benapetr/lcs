@@ -33,10 +33,11 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_activation.c" "$ROOT_DIR/src/config_activation.c" \
+    "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_bootstrap.c" \
     "$ROOT_DIR/src/config_runtime.c" "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" \
     "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
     "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
-    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$ACTIVATION_BIN"
+    -Wl,--wrap=fsync -Wl,--wrap=lcs_config_store_read "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$ACTIVATION_BIN"
 "$ACTIVATION_BIN"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \

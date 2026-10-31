@@ -4,6 +4,8 @@
 #define LCS_CONFIG_AGREEMENT_WORKER_H
 
 #include "config_application.h"
+#include "config_bootstrap.h"
+#include "config_runtime.h"
 #include <sys/types.h>
 
 typedef enum
@@ -35,9 +37,25 @@ typedef struct
     bool eof;
     bool cancelled;
     lcs_config_application_t *application; /* Borrowed until completion/cancellation is reaped. */
+    lcs_config_runtime_t *initialization_target; /* Borrowed until reaped. */
+    lcs_config_runtime_t *initialization_candidate; /* Private unpublished pristine state. */
 } lcs_config_agreement_worker_t;
 
 void lcs_config_agreement_worker_init(lcs_config_agreement_worker_t *worker);
+/* Same serialized writer as agreement/catalog jobs. Returns 1 while this worker
+ * or an INI refresh is busy, -1 for preflight failure, 0 for started. Call ONLY
+ * after coordinated authorization and while INI reload is excluded. Capability
+ * advertisements do not authorize initialization. runtime must be fresh/empty.
+ * Once started, bootstrap refresh stays locked, even on failure/cancellation;
+ * retain all handles/storage until the child is reaped, then recover from disk.
+ * poll/cancel use &runtime->agreement. Success publishes only pristine revision
+ * zero, NOT activation authority or permission to vote. No parent-side I/O. */
+int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker_t *worker,
+                                                      lcs_config_runtime_t *runtime,
+                                                      lcs_config_bootstrap_t *bootstrap,
+                                                      const lcs_config_t *cfg,
+                                                      bool allow_initialize,
+                                                      char *err, size_t err_len);
 /* Returns 0 for started, 1 for busy, -1 for failure before start. All journal
  * work occurs in the child; the parent publishes nothing until poll completes. */
 int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,

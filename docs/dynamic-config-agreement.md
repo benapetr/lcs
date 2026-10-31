@@ -151,18 +151,38 @@ Any uncertain write requires reopening disk state before proceeding.
 Startup resumes an existing initialization before opening listeners, but still
 refuses to run distributed state until the remaining activation-aware peering and
 application integration exists. INI snapshot refresh refuses any existing intent.
-The primitive performs synchronous I/O only during startup or in a future serialized
-initialization worker; it must not be called directly from the live event loop.
-The all-member readiness barrier, initialization coordinator and background
-initialization worker remain to be implemented. Preparing local files does not
-permit configuration voting or switch resource authority.
+The synchronous primitive runs only during startup or in the serialized storage
+worker; it must not be called directly from the live event loop.
+
+`lcs_config_agreement_worker_start_initialization()` uses the same worker as
+agreement and application jobs. Before forking it copies and validates an immutable
+revision-zero candidate entirely in memory. The child creates or resumes storage
+and verifies that the intent, journal and applied catalog all describe that exact
+pristine value, with no promise, accepted successor or pending application. Only
+an exact, complete local acknowledgement and successful child exit publish the
+preallocated handles. The parent never reopens files or syncs storage to import
+that result. This compact same-host acknowledgement cannot import active history
+and is never transmitted as agreement or readiness evidence.
+
+Initialization waits for active/queued INI refreshes, then permanently locks further
+refreshes on that bootstrap handle and withdraws legacy preparation. Cancellation,
+child failure, uncertainty, or a changed target runtime poisons the local handles;
+the child must be reaped before disk recovery. Even a visible prepared marker does
+not make an unsuccessful worker return successful. A missing intent without
+explicit authorization, a different frozen baseline, or existing promises/chosen
+successors requires disk recovery rather than a pristine-result import.
+
+The all-member readiness barrier and initialization coordinator remain to be
+implemented. The worker is not yet invoked by ordinary daemon startup/peering.
+Preparing local files does not permit configuration voting or switch resource
+authority.
 
 After preparation, nonzero committed/accepted values must use the dynamic schema;
 revision one must preserve the frozen definitions when assigning incarnations.
 The generic agreement library alone also supports legacy-schema successors, so
 activation recovery adds this stricter validation.
 
-The current record checkpoints the latest committed value and pending next
+`agreement.json` checkpoints the latest committed value and pending next
 slot. Catch-up across multiple revisions, request-status retention, backups,
 disaster recovery, and safe deletion of historical status records still require
 integration design. Restoring stale disks or losing all agreement state is not

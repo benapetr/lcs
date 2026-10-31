@@ -141,7 +141,11 @@ durable distributed configuration protocol.
   application records. Resume interrupted local initialization from that frozen
   value, reject missing records after preparation, and block INI snapshot refresh
   once the intent exists. This local prerequisite does not authorize activation;
-  coordinated initialization and its background worker remain unfinished.
+  coordinated initialization remains unfinished.
+- [x] Run local initialization through the shared nonblocking storage worker,
+  excluding INI refresh and withholding prepared handles until successful child
+  exit. Preserve recovery requirements on cancellation, uncertain writes and
+  conflicting history. The distributed manager does not invoke it yet.
 - [ ] Use one resource/group authority at a time: INI before activation, JSON
   after activation. Do not introduce a permanent mixed static/dynamic namespace.
 - [ ] Route existing coordinated reload and dynamic updates through compatible

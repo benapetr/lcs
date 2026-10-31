@@ -7,7 +7,8 @@
 
 /* Daemon-owned recovery boundary. The base copy remains immutable while durable
  * handles are open, even when the live INI resource arrays are reloaded. Opening
- * never initializes or rewrites journals. Existing distributed state must not
+ * may finish an existing initialization intent but never discards history or
+ * authorizes first initialization. Existing distributed state must not
  * be replaced by revision-zero INI bootstrap, even if resources.json is stale. */
 typedef struct
 {
