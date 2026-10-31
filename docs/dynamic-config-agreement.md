@@ -1,8 +1,9 @@
 # Durable configuration agreement
 
 Implementation status: the agreement core, storage worker, and snapshot-transfer
-codecs, incarnation validation, local readiness barrier and application catalog are implemented
-and unit-tested. Durable transactions are not connected to daemon peer sessions,
+codecs, incarnation validation, local readiness barrier and application catalog
+are implemented and unit-tested. Explicit peer readiness queries/replies are wired
+into admitted wire-6 sessions. Durable transactions are not connected to daemon peer sessions,
 automatic activation, resource application, or CLI mutation endpoints. Separate
 wire-6 bootstrap metadata now reports prepared definitions diagnostically; wire-5
 compatibility and INI authority remain. This document
@@ -172,8 +173,7 @@ not make an unsuccessful worker return successful. A missing intent without
 explicit authorization, a different frozen baseline, or existing promises/chosen
 successors requires disk recovery rather than a pristine-result import.
 
-The initialization coordinator and peer readiness exchange remain to be
-implemented. The initialization worker is not yet invoked by ordinary daemon
+The automatic initialization coordinator remains to be implemented. The initialization worker is not yet invoked by ordinary daemon
 startup/peering. Preparing local files alone does not permit configuration voting
 or switch resource authority.
 
@@ -190,16 +190,41 @@ equivalent to an ordinary daemon restart and must not silently reset promises.
 
 ## Durable all-member activation barrier
 
-The transport-independent barrier core and serialized persistence worker are
-implemented. They are not yet connected to live peer messages or automatic
-activation. A readiness round begins only after local frozen initialization is
+The barrier core, serialized persistence worker, and explicit peer readiness
+exchange are implemented. Automatic initialization and activation are not enabled. A readiness round begins only after local frozen initialization is
 durable and pristine. It counts that local member and explicit durable-readiness
 receipts for the same membership and full baseline digest from every configured
 member, including quorum-only members. A majority is insufficient. Duplicate
 matching receipts are idempotent; mismatched or out-of-membership receipts reject
 an unfinished round. Advisory `CONFIG_BOOTSTRAP_STATUS` messages are not receipts.
-The future transport must distinguish those message types and bind readiness to
-the admitted configured peer identity and negotiated capability.
+The peer handler distinguishes those message types and binds readiness to the
+admitted configured peer identity and negotiated wire-6 session.
+
+`CONFIG_READINESS_QUERY` and `CONFIG_READINESS_REPLY` are separate wire-6 message
+types with strict format-1 envelopes. Query handling performs no storage I/O or
+initialization: a legacy INI-only daemon answers `NOT_READY`. A matching reply may
+say `READY` only when the local durable initialized state remains pristine, INI
+refresh is locked, no reload is in progress, and current definitions match the
+frozen baseline. Source instances must match HELLO. A different definition is
+reported as `MISMATCH`. Unknown or unsupported sessions cannot count.
+
+The internal `config_peer_readiness_start()` entry point begins an explicitly
+authorized collection after local initialization; ordinary startup never calls it.
+Each attempt uses the coordinator daemon instance and a strictly increasing ID.
+The collector records the currently queried peer instance, ignores stale or
+unsolicited replies, counts only explicit `READY`, and waits for `NOT_READY` peers.
+Retries and reconnects do not extend its ten-second deadline; disconnected peers
+also reach timeout. A reconnecting instance must be queried before its reply can
+count. Confirmed durable readiness survives later disconnection, and a complete
+sealed round does not expire. The scheduler sends only on admitted wire-6 sessions.
+
+Collection alone never writes `barrier.json`, grants configuration votes, or
+switches authority. The future automatic coordinator must submit the sealed round
+to the shared barrier storage worker, then apply the vote prerequisite. Neither
+peer metadata nor a readiness query triggers freezing, so mixed-version and
+INI-only clusters retain their current startup/reload behavior. Once initialization
+locks definitions, CLI/SIGHUP resource reload and peer reload transitions are
+rejected or ignored; the frozen baseline cannot be replaced by a legacy reload.
 
 Each member confirms an irreversible frozen baseline, so a valid receipt need
 not expire merely because that peer disconnects. This relies on correct members

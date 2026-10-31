@@ -11,6 +11,109 @@
 
 _Static_assert(LCS_CONFIG_STATUS_DIGEST_SIZE == LCS_CONFIG_DIGEST_SIZE, "digest format mismatch");
 
+static bool durable_readiness_available(void)
+{
+    const lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    return g_state.config_bootstrap_initialized && g_state.config_bootstrap.initialization_locked &&
+        !config_reload_in_progress() && runtime->base && runtime->base == runtime->activation.base &&
+        lcs_config_barrier_local_ready(&runtime->activation, &runtime->agreement, &runtime->application) &&
+        !strcmp(g_state.config_status.membership, runtime->activation.membership) &&
+        !strcmp(g_state.config_status.baseline, runtime->activation.baseline.digest);
+}
+
+int config_peer_readiness_start(void)
+{
+    if (g_state.config_readiness.active && !g_state.config_readiness.round.failed &&
+        !g_state.config_readiness.round.sealed)
+        return 1;
+    if (config_peer_refresh() || !durable_readiness_available() || g_state.config_runtime.barrier.store ||
+        g_state.config_runtime.barrier.poisoned || g_state.config_readiness_attempt == UINT64_MAX)
+        return -1;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if ((int)i != g_state.self_index && (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED ||
+            peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_READINESS || !peer->instance_id))
+            return 1;
+    }
+    char error[256];
+    lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    int result = lcs_config_readiness_begin(&g_state.config_readiness, &runtime->activation,
+        &runtime->agreement, &runtime->application, g_state.instance_id,
+        ++g_state.config_readiness_attempt, lcs_now_ms(), error, sizeof(error));
+    if (!result)
+        g_state.config_readiness_next_send_ms = 0;
+    return result;
+}
+
+static void process_readiness(int epoll_fd)
+{
+    lcs_config_readiness_t *state = &g_state.config_readiness;
+    uint64_t now = lcs_now_ms();
+    if (!state->active || lcs_config_readiness_complete(state))
+        return;
+    if (!durable_readiness_available())
+        state->round.failed = true;
+    if (lcs_config_readiness_poll(state, now) || now < g_state.config_readiness_next_send_ms)
+        return;
+    g_state.config_readiness_next_send_ms = now + 250u;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if ((int)i == g_state.self_index || peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED ||
+            peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_READINESS || !peer->instance_id)
+            continue;
+        lcs_config_readiness_message_t query;
+        unsigned char payload[LCS_CONFIG_READINESS_MAX];
+        size_t length;
+        if (!lcs_config_readiness_query(state, i, peer->instance_id, now, &query) &&
+            !lcs_config_readiness_encode(&query, payload, sizeof(payload), &length))
+            (void)peer_queue_config_readiness(epoll_fd, (int)i, LCS_MSG_CONFIG_READINESS_QUERY,
+                                               payload, (uint32_t)length);
+    }
+}
+
+int config_peer_receive_readiness(int epoll_fd, int node, uint16_t type,
+                                   const void *payload, size_t length)
+{
+    if (node < 0 || (size_t)node >= g_state.cfg.node_count || node == g_state.self_index)
+        return -1;
+    const peer_runtime_t *peer = &g_state.peers[node];
+    lcs_config_readiness_message_t message;
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED ||
+        peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_READINESS || !peer->instance_id ||
+        lcs_config_readiness_decode(payload, length, &message))
+        return -1;
+    if (type == LCS_MSG_CONFIG_READINESS_REPLY && message.kind == LCS_READINESS_REPLY)
+    {
+        if (message.responder_instance != peer->instance_id)
+            return -1;
+        if (g_state.config_readiness.active && !durable_readiness_available() &&
+            !lcs_config_readiness_complete(&g_state.config_readiness))
+            g_state.config_readiness.round.failed = true;
+        char error[256];
+        int result = lcs_config_readiness_reply(&g_state.config_readiness, (size_t)node,
+            peer->instance_id, lcs_now_ms(), &message, error, sizeof(error));
+        return result < 0 ? -1 : 0;
+    }
+    if (type != LCS_MSG_CONFIG_READINESS_QUERY || message.kind != LCS_READINESS_QUERY ||
+        message.requester_instance != peer->instance_id)
+        return -1;
+    const lcs_config_activation_t *activation = &g_state.config_runtime.activation;
+    const char *membership = activation->store ? activation->membership : g_state.config_status.membership;
+    const char *baseline = activation->store ? activation->baseline.digest : g_state.config_status.baseline;
+    message.kind = LCS_READINESS_REPLY;
+    message.responder_instance = g_state.instance_id;
+    message.status = strcmp(message.membership, membership) || strcmp(message.baseline, baseline) ?
+        LCS_READINESS_MISMATCH : durable_readiness_available() ? LCS_READINESS_READY : LCS_READINESS_NOT_READY;
+    unsigned char response[LCS_CONFIG_READINESS_MAX];
+    size_t response_length;
+    if (lcs_config_readiness_encode(&message, response, sizeof(response), &response_length))
+        return -1;
+    return peer_queue_config_readiness(epoll_fd, node, LCS_MSG_CONFIG_READINESS_REPLY,
+                                        response, (uint32_t)response_length) ? -1 : 0;
+}
+
 static int withdraw_preparation(void)
 {
     if (g_state.config_status.prepared && g_state.config_status.serial != UINT64_MAX)
@@ -59,6 +162,7 @@ int config_peer_refresh(void)
 
 void config_peer_process(int epoll_fd)
 {
+    process_readiness(epoll_fd);
     if (lcs_now_ms() < g_state.config_status_retry_ms)
         return;
     if (config_peer_refresh())

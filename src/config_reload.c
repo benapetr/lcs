@@ -277,8 +277,19 @@ void config_reload_init(const char *config_path)
     reload->active_generation = 1;
 }
 
+bool config_reload_definitions_frozen(void)
+{
+    return g_state.config_bootstrap.initialization_locked || g_state.config_runtime.activation.store ||
+        g_state.config_runtime.barrier.store || g_state.config_runtime.requires_recovery;
+}
+
 void config_reload_request(void)
 {
+    if (config_reload_definitions_frozen())
+    {
+        lcs_log_warn("configuration reload request ignored: resource definitions are frozen for distributed configuration");
+        return;
+    }
     if (g_state.config_reload.agreed)
     {
         lcs_log_warn("configuration reload request ignored: the candidate is already agreement-locked");
@@ -353,6 +364,8 @@ int config_reload_handle_announcement(const void *payload, size_t len, int sourc
                     participant_count(participant_mask) < g_state.quorum_needed)))
         return -1;
 
+    if (config_reload_definitions_frozen())
+        return 0;
     config_reload_runtime_t *reload = &g_state.config_reload;
     reload->peer_loaded[source_node_idx] = loaded != 0;
     reload->peer_agreed[source_node_idx] = agreed != 0;
@@ -403,6 +416,8 @@ int config_reload_handle_announcement(const void *payload, size_t len, int sourc
 
 int config_reload_handle_commit(const void *payload, size_t len, int source_node_idx)
 {
+    if (config_reload_definitions_frozen())
+        return -1;
     lcs_buf_reader_t reader;
     uint64_t voting_fingerprint, full_fingerprint;
     uint32_t participant_mask;
@@ -590,6 +605,8 @@ static void apply_candidate(int epoll_fd)
 void config_reload_process(int epoll_fd)
 {
     config_reload_runtime_t *reload = &g_state.config_reload;
+    if (config_reload_definitions_frozen())
+        return;
     if (reload->request_pending)
         load_candidate(epoll_fd);
     if (!reload->loaded)

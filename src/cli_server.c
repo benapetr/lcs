@@ -298,6 +298,8 @@ static void cli_server_queue_reload(int epoll_fd, int slot_idx, uint32_t seq, ui
         peer_dns_refresh_request();
     if (len != 0)
         message = "invalid configuration reload request";
+    else if (config_reload_definitions_frozen())
+        message = "resource definitions are frozen for distributed configuration";
     else if (!config_reload_supported_by_online_quorum() &&
              !config_reload_catchup_available())
         message = "the current online quorum does not support resource reload";

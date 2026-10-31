@@ -50,7 +50,25 @@ The metadata reports a session-local serial, durable shadow preparation flag,
 canonical membership digest, and complete revision-zero resource value digest.
 It is advisory: it does not promise a ballot, acknowledge durable activation
 readiness, establish authority, or enable dynamic commands. Initial activation
-still requires the future explicit durable barrier from every configured member.
+still requires explicit durable readiness from every configured member, persisted
+barrier proof, a chosen activation value and safe local application.
+
+Wire 6 also defines `CONFIG_READINESS_QUERY` (31) and
+`CONFIG_READINESS_REPLY` (32), with a separate format-1 body. These are ordinary
+established-session messages, not HELLO additions or RPC replies; each frame uses
+a fresh sequence and the body correlates requester instance, monotonic attempt,
+and responder instance. Both bodies contain a kind, membership and baseline
+digests; a query has zero responder/status, while a reply carries `READY`,
+`NOT_READY` or `MISMATCH`. Strict lengths, canonical digest strings, source
+identity and wire-6 admission are required. The complete payload is 158 bytes.
+
+A query never initializes storage. INI-only nodes answer `NOT_READY`, and wire-5
+sessions reject these types. Collection starts only through the internal
+coordinator entry point after durable local initialization and exclusion of INI
+reload; ordinary daemon startup does not trigger it yet. Retries share a fixed
+ten-second deadline and cannot convert bootstrap status into readiness. Completed
+collection must still go through the barrier storage worker. No application or
+local CLI protocol version changes accompany this exchange.
 
 Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.
 When releasing it for the first time, replace that label in `src/protocol.c` and

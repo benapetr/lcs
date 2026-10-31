@@ -71,6 +71,7 @@ void config_reload_init(const char *config_path);
 
 /* Request candidate loading; safe work is deferred to config_reload_process(). */
 void config_reload_request(void);
+bool config_reload_definitions_frozen(void);
 
 /* Advance agreement, drain, and commit from the daemon scheduler. */
 void config_reload_process(int epoll_fd);

@@ -31,6 +31,8 @@ int peer_queue_simple_resp(int epoll_fd, int node_idx,
                            const char *message);
 /* Returns 1 when the session does not support metadata, 0 queued, -1 busy/error. */
 int peer_queue_config_status(int epoll_fd, int node_idx, const void *payload, uint32_t length);
+int peer_queue_config_readiness(int epoll_fd, int node_idx, uint16_t type,
+                                 const void *payload, uint32_t length);
 void peer_broadcast_state_sync(int epoll_fd);
 void peer_broadcast_lease_commit(int epoll_fd, const void *payload, uint32_t len);
 void peer_broadcast_config_reload(int epoll_fd);

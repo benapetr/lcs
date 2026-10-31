@@ -9,6 +9,7 @@
 #include "config_runtime.h"
 #include "protocol.h"
 #include "config_status_protocol.h"
+#include "config_readiness.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -456,6 +457,9 @@ typedef struct
     lcs_config_status_t config_status;
     uint64_t config_status_generation;
     uint64_t config_status_retry_ms;
+    lcs_config_readiness_t config_readiness;
+    uint64_t config_readiness_attempt;
+    uint64_t config_readiness_next_send_ms;
     bool config_bootstrap_initialized;
 } daemon_state_t;
 

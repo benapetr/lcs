@@ -177,7 +177,15 @@ durable distributed configuration protocol.
   quorum-only members, exact baseline/membership binding, a checksummed record,
   serialized nonblocking persistence, and application-aware configuration-vote
   eligibility. Recover proof before INI refresh and reject orphan or premature
-  readiness. Peer receipt exchange and live message admission remain unfinished.
+  readiness. Automatic initialization and live configuration-vote admission remain
+  unfinished.
+- [x] Add distinct wire-6 readiness query/reply messages with strict codecs,
+  established-peer and instance binding, monotonic attempt correlation, a fixed
+  deadline, and collection from every configured member. INI-only nodes answer
+  not-ready without creating files. Starting collection is still an internal
+  coordinator operation; startup does not trigger initialization or activation.
+- [x] Reject INI reload requests and peer reload transitions after local definitions
+  are frozen, so explicit durable readiness cannot race a legacy resource reload.
 - [ ] Gate automatic activation on explicit capability and readiness confirmation
   from every configured member, including quorum-only nodes, with matching
   effective configuration. Unknown/offline members must not count as upgraded.

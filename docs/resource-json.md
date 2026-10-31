@@ -4,7 +4,8 @@ This is the first implementation stage of
 [dynamic distributed configuration](dynamic-config-plan.md). Resource JSON is
 currently a prepared local snapshot. **INI remains authoritative and runtime
 resource definition commands are not enabled yet.** Peering supports wire 5–6;
-wire 6 adds diagnostic bootstrap metadata, not dynamic authority.
+wire 6 adds diagnostic bootstrap metadata and explicit readiness queries, without
+establishing dynamic authority.
 Distributed agreement, durable activation, peer synchronization, and runtime
 mutations must be implemented before JSON can become authoritative.
 
@@ -59,6 +60,13 @@ for future coordinated activation, not an operator migration procedure. See [dur
 replacement is not evidence of cluster agreement. Files are synced before
 replacement, followed by a directory sync; a failed sync after replacement is
 reported as an uncertain outcome.
+
+Explicit wire-6 readiness queries are separate from diagnostic status. A normal
+INI-only daemon answers not-ready without creating initialization or barrier
+records. Collection is available internally after durable local initialization;
+it is not started automatically, and does not itself persist readiness or change
+authority. Frozen definitions reject legacy INI resource reloads. See
+[the readiness contract](dynamic-config-agreement.md#durable-all-member-activation-barrier).
 
 ## Inspecting preparation across members
 

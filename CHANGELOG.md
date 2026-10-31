@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added explicit wire-6 readiness queries/replies with strict peer/instance admission, attempt correlation, and a fixed deadline for all-member collection. INI-only nodes reply not-ready without creating state; frozen definitions reject legacy resource reloads. Automatic initialization, activation, and live configuration mutation remain unfinished.
+
 - Added the local durable all-member activation barrier and its shared storage worker, binding explicit readiness to the frozen baseline and every configured voter, including quorum-only members. Recovery validates barrier records before INI refresh; configuration voting remains blocked without proof or while local application is behind. Peer readiness exchange, automatic activation and live dynamic commands remain unfinished.
 
 - Added background frozen-baseline initialization through the shared configuration storage worker. Initialization excludes INI refresh, publishes prepared handles only after successful child exit, and requires disk recovery after uncertain writes or cancellation. Automatic distributed activation remains unfinished.
