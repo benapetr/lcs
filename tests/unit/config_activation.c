@@ -87,7 +87,7 @@ static void cleanup(void)
 {
     close_handles();
     const char *names[] = {"activation.json", "agreement.json", "application.json",
-        ".activation.json.tmp", ".agreement.json.tmp", ".application.json.tmp", "lock"};
+        "barrier.json", ".barrier.json.tmp", ".activation.json.tmp", ".agreement.json.tmp", ".application.json.tmp", "lock"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         assert(!unlinkat(store.directory_fd, names[i], 0) || errno == ENOENT);
     lcs_config_store_close(&store);
@@ -499,6 +499,243 @@ static void test_initialization_worker_refuses_existing_history(void)
     }
 }
 
+static lcs_config_barrier_round_t complete_barrier(const lcs_config_activation_t *intent,
+                                                   const lcs_config_agreement_t *journal,
+                                                   const lcs_config_application_t *catalog)
+{
+    lcs_config_barrier_round_t round;
+    assert(!lcs_config_barrier_begin(&round, intent, journal, catalog, error, sizeof(error)));
+    for (size_t i = 0; i < intent->base->node_count; i++)
+        assert(!lcs_config_barrier_ready(&round, i, intent->membership, intent->baseline.digest, error, sizeof(error)));
+    assert(!lcs_config_barrier_seal(&round, error, sizeof(error)));
+    return round;
+}
+
+static void test_all_member_barrier(void)
+{
+    initialize();
+    lcs_config_barrier_round_t round = {0};
+    assert(lcs_config_barrier_begin(&round, &activation, &agreement, &application, error, sizeof(error)) == -1);
+    assert(!resume(&config, true));
+    assert(lcs_config_barrier_local_ready(&activation, &agreement, &application));
+    assert(!lcs_config_barrier_begin(&round, &activation, &agreement, &application, error, sizeof(error)));
+    assert(round.required == 7 && round.ready == 1);
+    lcs_config_barrier_t barrier = {0};
+    assert(lcs_config_barrier_open(&barrier, &activation, &agreement, &application, NULL, error, sizeof(error)) == 1);
+    assert(!lcs_config_barrier_can_vote(&barrier, &activation, &agreement, &application));
+    assert(!lcs_config_barrier_ready(&round, 1, activation.membership, activation.baseline.digest, error, sizeof(error)));
+    assert(round.ready == 3); /* A majority, including both full nodes, is insufficient. */
+    assert(lcs_config_barrier_seal(&round, error, sizeof(error)) == -1);
+    assert(lcs_config_barrier_open(&barrier, &activation, &agreement, &application, &round, error, sizeof(error)) == -1);
+    assert(faccessat(store.directory_fd, "barrier.json", F_OK, 0) == -1);
+    assert(!lcs_config_barrier_ready(&round, 2, activation.membership, activation.baseline.digest, error, sizeof(error)));
+    assert(!lcs_config_barrier_seal(&round, error, sizeof(error)));
+    assert(!lcs_config_barrier_ready(&round, 2, activation.membership, activation.baseline.digest, error, sizeof(error)));
+    assert(lcs_config_barrier_ready(&round, 3, activation.membership, activation.baseline.digest, error, sizeof(error)) == -1);
+    assert(round.sealed && !round.failed); /* Invalid later traffic cannot erase a sealed proof. */
+    assert(!lcs_config_barrier_open(&barrier, &activation, &agreement, &application, &round, error, sizeof(error)));
+    assert(lcs_config_barrier_can_vote(&barrier, &activation, &agreement, &application));
+    struct stat before, after;
+    assert(!fstatat(store.directory_fd, "barrier.json", &before, 0) && (before.st_mode & 0777) == 0600);
+    lcs_config_barrier_close(&barrier);
+    fail_sync = 1;
+    assert(!lcs_config_barrier_open(&barrier, &activation, &agreement, &application, NULL, error, sizeof(error)));
+    assert(fail_sync == 1);
+    fail_sync = 0;
+    assert(!fstatat(store.directory_fd, "barrier.json", &after, 0) && before.st_ino == after.st_ino);
+    lcs_config_barrier_round_t bad;
+    assert(!lcs_config_barrier_begin(&bad, &activation, &agreement, &application, error, sizeof(error)));
+    assert(lcs_config_barrier_ready(&bad, 1, activation.membership, "foreign", error, sizeof(error)) == -1);
+    assert(bad.failed && lcs_config_barrier_seal(&bad, error, sizeof(error)) == -1);
+    assert(!lcs_config_barrier_begin(&bad, &activation, &agreement, &application, error, sizeof(error)));
+    assert(lcs_config_barrier_ready(&bad, 1, "foreign", activation.baseline.digest, error, sizeof(error)) == -1);
+    assert(!lcs_config_barrier_begin(&bad, &activation, &agreement, &application, error, sizeof(error)));
+    assert(lcs_config_barrier_ready(&bad, 32, activation.membership, activation.baseline.digest, error, sizeof(error)) == -1);
+    choose(true);
+    assert(!lcs_config_barrier_can_vote(&barrier, &activation, &agreement, &application));
+    assert(!lcs_config_application_begin(&application, &agreement, error, sizeof(error)));
+    assert(!lcs_config_barrier_can_vote(&barrier, &activation, &agreement, &application));
+    assert(!lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)));
+    assert(lcs_config_barrier_can_vote(&barrier, &activation, &agreement, &application));
+    application.poisoned = true;
+    assert(!lcs_config_barrier_can_vote(&barrier, &activation, &agreement, &application));
+    application.poisoned = false;
+    close_handles();
+    lcs_config_runtime_t runtime;
+    assert(!lcs_config_runtime_open(&runtime, &store, &changed, error, sizeof(error)));
+    assert(runtime.requires_recovery && runtime.barrier.ready == 7 && runtime.application.applied.revision == 1);
+    assert(lcs_config_barrier_can_vote(&runtime.barrier, &runtime.activation, &runtime.agreement, &runtime.application));
+    lcs_config_runtime_close(&runtime);
+    cleanup();
+}
+
+static void test_barrier_limits_and_missing_history(void)
+{
+    const int counts[] = {1, 3, 32};
+    for (size_t n = 0; n < sizeof(counts) / sizeof(counts[0]); n++)
+    {
+        int count = counts[n];
+        initialize();
+        config.node_count = (size_t)count;
+        strcpy(config.self_name, count == 3 ? "node02" : "node00");
+        for (int i = 0; i < count; i++)
+        {
+            snprintf(config.nodes[i].name, sizeof(config.nodes[i].name), "node%02d", i);
+            strcpy(config.nodes[i].address, "127.0.0.1");
+            config.nodes[i].port = 3322;
+            config.nodes[i].role = count > 1 && i == count - 1 ? LCS_NODE_QUORUM_ONLY : LCS_NODE_FULL;
+        }
+        assert(!lcs_config_finalize(&config, error, sizeof(error)));
+        assert(!resume(&config, true));
+        lcs_config_barrier_round_t round = complete_barrier(&activation, &agreement, &application);
+        assert(round.ready == (count == 32 ? UINT32_MAX : count == 3 ? 7 : 1));
+        lcs_config_barrier_t barrier = {0};
+        assert(!lcs_config_barrier_open(&barrier, &activation, &agreement, &application, &round, error, sizeof(error)));
+        assert(lcs_config_barrier_can_vote(&barrier, &activation, &agreement, &application));
+        assert(!unlinkat(store.directory_fd, "barrier.json", 0));
+        uint64_t ballot = lcs_config_agreement_next_ballot(&agreement, 0);
+        assert(!lcs_config_agreement_prepare(&agreement, 1, agreement.committed.digest, ballot, error, sizeof(error)));
+        lcs_config_barrier_close(&barrier);
+        assert(lcs_config_barrier_open(&barrier, &activation, &agreement, &application, &round, error, sizeof(error)) == -1);
+        assert(faccessat(store.directory_fd, "barrier.json", F_OK, 0) == -1);
+        assert(agreement.promised == ballot);
+        cleanup();
+    }
+    initialize();
+    assert(!lcs_config_store_write(&store, "barrier.json", "{}", 2, error, sizeof(error)));
+    assert(resume(&config, true) == -1);
+    assert(faccessat(store.directory_fd, "activation.json", F_OK, 0) == -1);
+    lcs_config_runtime_t runtime;
+    assert(lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)) == -1);
+    assert(strstr(error, "without its frozen initialization"));
+    cleanup();
+}
+
+static void test_barrier_worker(void)
+{
+    for (int mode = 0; mode < 6; mode++)
+    {
+        initialize();
+        assert(!resume(&config, true));
+        close_handles();
+        lcs_config_runtime_t runtime;
+        assert(!lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)));
+        lcs_config_barrier_round_t round = complete_barrier(&runtime.activation, &runtime.agreement, &runtime.application);
+        lcs_config_agreement_worker_t worker;
+        lcs_config_agreement_worker_init(&worker);
+        stop_sync = mode < 2 ? 0 : 2;
+        fail_sync = mode < 2 ? mode + 1 : 0;
+        forbid_parent_io = true;
+        assert(!lcs_config_agreement_worker_start_barrier(&worker, &runtime, &round, error, sizeof(error)));
+        assert(!lcs_config_barrier_can_vote(&runtime.barrier, &runtime.activation, &runtime.agreement, &runtime.application));
+        if (mode >= 2)
+        {
+            await_stopped(&worker);
+            int operation = -1;
+            assert(!lcs_config_agreement_worker_poll(&worker, &runtime.agreement, &operation, error, sizeof(error)));
+            lcs_config_agreement_job_t job = { .action = LCS_CONFIG_PREPARE };
+            assert(lcs_config_agreement_worker_start(&worker, &runtime.agreement, &job, error, sizeof(error)) == 1);
+            assert(lcs_config_agreement_worker_start_barrier(&worker, &runtime, &round, error, sizeof(error)) == 1);
+            if (mode == 2)
+            {
+                lcs_config_agreement_worker_cancel(&worker, &runtime.agreement);
+                if (worker.pid)
+                    assert(await_initialization(&worker, &runtime) == -1);
+            }
+            else
+            {
+                if (mode == 3)
+                    assert(!kill(worker.pid, SIGKILL));
+                else
+                {
+                    if (mode == 4)
+                        runtime.agreement.promised = 32;
+                    round.failed = true; /* Child owns the sealed pre-fork receipt copy. */
+                    assert(!kill(worker.pid, SIGCONT));
+                }
+            }
+        }
+        if (mode != 2)
+            assert(await_initialization(&worker, &runtime) == (mode == 5 ? 1 : -1));
+        fail_sync = stop_sync = 0;
+        assert(!worker.pid);
+        if (mode != 5)
+        {
+            assert(runtime.barrier.poisoned && runtime.agreement.poisoned &&
+                   runtime.application.poisoned && runtime.activation.poisoned);
+            if (mode == 4)
+                assert(runtime.agreement.promised == 32);
+        }
+        assert(lcs_config_barrier_can_vote(&runtime.barrier, &runtime.activation,
+                                           &runtime.agreement, &runtime.application) == (mode == 5));
+        forbid_parent_io = false;
+        lcs_config_runtime_close(&runtime);
+        assert(!lcs_config_runtime_open(&runtime, &store, &changed, error, sizeof(error)));
+        assert(runtime.requires_recovery && !runtime.agreement.promised);
+        assert(lcs_config_barrier_can_vote(&runtime.barrier, &runtime.activation,
+                                           &runtime.agreement, &runtime.application) == (mode != 0));
+        if (mode == 0)
+        {
+            round = complete_barrier(&runtime.activation, &runtime.agreement, &runtime.application);
+            assert(!lcs_config_agreement_worker_start_barrier(&worker, &runtime, &round, error, sizeof(error)));
+            assert(await_initialization(&worker, &runtime) == 1);
+        }
+        lcs_config_runtime_close(&runtime);
+        cleanup();
+    }
+}
+
+static void test_barrier_worker_preserves_newer_disk_state(void)
+{
+    initialize();
+    assert(!resume(&config, true));
+    close_handles();
+    lcs_config_runtime_t runtime;
+    assert(!lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)));
+    lcs_config_barrier_round_t round = complete_barrier(&runtime.activation, &runtime.agreement, &runtime.application);
+    /* The parent's pristine in-memory snapshot cannot authorize resetting a
+     * promise found when the storage child reopens the actual journal. */
+    lcs_config_agreement_t disk = {0};
+    assert(!lcs_config_agreement_open(&disk, &store, runtime.base, false, error, sizeof(error)));
+    uint64_t ballot = lcs_config_agreement_next_ballot(&disk, 0);
+    assert(!lcs_config_agreement_prepare(&disk, 1, disk.committed.digest, ballot, error, sizeof(error)));
+    lcs_config_agreement_close(&disk);
+    assert(!runtime.agreement.promised);
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    forbid_parent_io = true;
+    assert(!lcs_config_agreement_worker_start_barrier(&worker, &runtime, &round, error, sizeof(error)));
+    assert(await_initialization(&worker, &runtime) == -1);
+    forbid_parent_io = false;
+    assert(faccessat(store.directory_fd, "barrier.json", F_OK, 0) == -1);
+    lcs_config_runtime_close(&runtime);
+    assert(!lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)));
+    assert(runtime.agreement.promised == ballot);
+    assert(lcs_config_agreement_worker_start_barrier(&worker, &runtime, &round, error, sizeof(error)) == -1);
+    assert(!lcs_config_barrier_can_vote(&runtime.barrier, &runtime.activation, &runtime.agreement, &runtime.application));
+    lcs_config_runtime_close(&runtime);
+    cleanup();
+
+    initialize();
+    assert(!resume(&config, true));
+    round = complete_barrier(&activation, &agreement, &application);
+    lcs_config_barrier_t barrier = {0};
+    assert(!lcs_config_barrier_open(&barrier, &activation, &agreement, &application, &round, error, sizeof(error)));
+    close_handles();
+    memset(&runtime, 0, sizeof(runtime));
+    lcs_config_bootstrap_t bootstrap = bootstrap_for_test();
+    forbid_parent_io = true;
+    assert(!lcs_config_agreement_worker_start_initialization(&worker, &runtime, &bootstrap,
+                                                            &config, false, error, sizeof(error)));
+    assert(await_initialization(&worker, &runtime) == -1);
+    forbid_parent_io = false;
+    lcs_config_runtime_close(&runtime);
+    assert(!lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)));
+    assert(lcs_config_barrier_can_vote(&runtime.barrier, &runtime.activation, &runtime.agreement, &runtime.application));
+    lcs_config_runtime_close(&runtime);
+    cleanup();
+}
+
 int main(void)
 {
     test_parent = getpid();
@@ -510,6 +747,10 @@ int main(void)
     test_initialization_worker_sync_failures();
     test_initialization_worker_cancel_and_stale();
     test_initialization_worker_refuses_existing_history();
-    puts("resumable configuration initialization and background worker unit tests passed");
+    test_all_member_barrier();
+    test_barrier_limits_and_missing_history();
+    test_barrier_worker();
+    test_barrier_worker_preserves_newer_disk_state();
+    puts("configuration initialization, durable activation barrier and worker unit tests passed");
     return 0;
 }

@@ -77,6 +77,7 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
                             lcs_config_application_t *application,
                             const lcs_config_agreement_job_t *job,
                             const lcs_config_runtime_t *initialization, bool allow_initialize,
+                            const lcs_config_runtime_t *barrier_runtime,
                             int pipe_fd, pid_t parent)
 {
     int keep[] = {agreement->store->directory_fd, agreement->store->lock_fd, pipe_fd};
@@ -98,6 +99,25 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
     if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent)
         _exit(1);
     worker_result_t result = {0};
+    if (barrier_runtime)
+    {
+        lcs_config_runtime_t recovered = {0};
+        lcs_config_barrier_t barrier = {0};
+        if (lcs_config_runtime_open(&recovered, agreement->store, barrier_runtime->base,
+                                      result.error, sizeof(result.error)) ||
+            !lcs_config_barrier_local_ready(&recovered.activation, &recovered.agreement, &recovered.application) ||
+            !lcs_config_value_equal(&recovered.activation.baseline, &barrier_runtime->activation.baseline) ||
+            lcs_config_barrier_open(&barrier, &recovered.activation, &recovered.agreement,
+                &recovered.application, job->barrier_round, result.error, sizeof(result.error)))
+        {
+            result.result = -1;
+            result.poisoned = true;
+            if (!*result.error)
+                snprintf(result.error, sizeof(result.error), "barrier requires matching pristine disk state; recover before voting");
+        }
+        lcs_config_runtime_close(&recovered);
+        _exit(write_all(pipe_fd, &result, sizeof(result)) ? 1 : 0);
+    }
     if (initialization)
     {
         /* This acknowledgement is same-host evidence only. The parent already
@@ -105,7 +125,12 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
          * the compact acknowledgement to import promises or active history. */
         lcs_config_runtime_t recovered = {0};
         recovered.base = malloc(sizeof(*recovered.base));
-        if (!recovered.base ||
+        char *barrier_record = NULL;
+        size_t barrier_length;
+        int missing_barrier = lcs_config_store_read(agreement->store, "barrier.json",
+            &barrier_record, &barrier_length, LCS_CONFIG_BARRIER_MAX, result.error, sizeof(result.error));
+        free(barrier_record);
+        if (!recovered.base || missing_barrier != 1 ||
             lcs_config_activation_open(&recovered.activation, agreement->store,
                 initialization->base, recovered.base, allow_initialize,
                 result.error, sizeof(result.error)) ||
@@ -169,13 +194,14 @@ static int start(lcs_config_agreement_worker_t *worker,
                     const lcs_config_agreement_job_t *job,
                     lcs_config_runtime_t *target, lcs_config_runtime_t *candidate,
                     bool allow_initialize,
+                    lcs_config_runtime_t *barrier_runtime,
                     char *err, size_t err_len)
 {
     if (worker->pid > 0)
         return 1;
     bool application_job = job && (job->action == LCS_CONFIG_APPLICATION_BEGIN ||
                                    job->action == LCS_CONFIG_APPLICATION_FINISH);
-    if (!candidate && (agreement->poisoned || !job || application_job != (application != NULL) ||
+    if (!candidate && !barrier_runtime && (agreement->poisoned || !job || application_job != (application != NULL) ||
         (application && (application->poisoned || application->store != agreement->store ||
          strcmp(application->member, agreement->member) ||
          strcmp(application->membership, agreement->membership))) ||
@@ -207,11 +233,12 @@ static int start(lcs_config_agreement_worker_t *worker,
         return fail(err, err_len, "cannot fork storage worker");
     }
     if (!child)
-        execute_child(agreement, application, job, candidate, allow_initialize, fds[1], parent);
+        execute_child(agreement, application, job, candidate, allow_initialize, barrier_runtime, fds[1], parent);
     close(fds[1]);
     worker->application = application;
     worker->initialization_target = target;
     worker->initialization_candidate = candidate;
+    worker->barrier_target = barrier_runtime;
     worker->buffer = buffer;
     worker->pipe_fd = fds[0];
     worker->pid = child;
@@ -226,7 +253,7 @@ int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
                                       const lcs_config_agreement_job_t *job,
                     char *err, size_t err_len)
 {
-    return start(worker, agreement, NULL, job, NULL, NULL, false, err, err_len);
+    return start(worker, agreement, NULL, job, NULL, NULL, false, NULL, err, err_len);
 }
 
 int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t *worker,
@@ -237,12 +264,13 @@ int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t 
 {
     if (!application)
         return fail(err, err_len, "application catalog is required");
-    return start(worker, agreement, application, job, NULL, NULL, false, err, err_len);
+    return start(worker, agreement, application, job, NULL, NULL, false, NULL, err, err_len);
 }
 
 static bool empty_runtime(const lcs_config_runtime_t *runtime)
 {
-    return !runtime->base && !runtime->agreement.store && !runtime->application.store &&
+    return !runtime->base && !runtime->barrier.store && !runtime->barrier.poisoned &&
+        !runtime->agreement.store && !runtime->application.store &&
         !runtime->activation.store && !runtime->agreement.committed.document &&
         !runtime->agreement.accepted.document && !runtime->application.applied.document &&
         !runtime->application.pending.document && !runtime->activation.baseline.document &&
@@ -297,7 +325,7 @@ int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker
         goto out;
     candidate->requires_recovery = true;
     result = start(worker, &candidate->agreement, NULL, NULL, runtime, candidate,
-                     allow_initialize, err, err_len);
+                     allow_initialize, NULL, err, err_len);
     if (!result)
     {
         candidate = NULL; /* Owned by the worker until successful publication. */
@@ -315,8 +343,46 @@ out:
     return result;
 }
 
+int lcs_config_agreement_worker_start_barrier(lcs_config_agreement_worker_t *worker,
+                                              lcs_config_runtime_t *runtime,
+                                              const lcs_config_barrier_round_t *round,
+                                              char *err, size_t err_len)
+{
+    if (worker->pid > 0)
+        return 1;
+    lcs_config_barrier_round_t local;
+    if (!runtime->base || runtime->base != runtime->activation.base ||
+        runtime->barrier.store || runtime->barrier.poisoned || !round || !round->sealed || round->failed ||
+        lcs_config_barrier_begin(&local, &runtime->activation, &runtime->agreement,
+                                   &runtime->application, err, err_len) ||
+        round->required != local.required || round->ready != local.required ||
+        strcmp(round->membership, local.membership) || strcmp(round->baseline, local.baseline))
+        return fail(err, err_len, "barrier requires complete matching readiness and pristine initialization");
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_BARRIER, .barrier_round = round };
+    int result = start(worker, &runtime->agreement, NULL, &job, NULL, NULL, false, runtime, err, err_len);
+    if (!result)
+    {
+        lcs_config_barrier_t *candidate = &worker->barrier_candidate;
+        candidate->store = runtime->activation.store;
+        candidate->base = runtime->base;
+        memcpy(candidate->member, runtime->activation.member, sizeof(candidate->member));
+        memcpy(candidate->membership, local.membership, sizeof(candidate->membership));
+        memcpy(candidate->baseline, local.baseline, sizeof(candidate->baseline));
+        candidate->ready = local.required;
+    }
+    return result;
+}
+
 static void poison(lcs_config_agreement_worker_t *worker, lcs_config_agreement_t *agreement)
 {
+    if (worker->barrier_target)
+    {
+        lcs_config_runtime_t *runtime = worker->barrier_target;
+        runtime->barrier.poisoned = runtime->agreement.poisoned = true;
+        runtime->application.poisoned = runtime->activation.poisoned = true;
+        runtime->requires_recovery = true;
+        return;
+    }
     if (worker->initialization_target)
     {
         lcs_config_runtime_t *runtime = worker->initialization_target;
@@ -364,6 +430,8 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
         return 0;
     if (worker->initialization_target && agreement != &worker->initialization_target->agreement)
         return fail(err, err_len, "initialization completion requires the original runtime handle");
+    if (worker->barrier_target && agreement != &worker->barrier_target->agreement)
+        return fail(err, err_len, "barrier completion requires the original runtime handle");
     if (worker->cancelled)
     {
         pid_t reaped = waitpid(worker->pid, NULL, WNOHANG);
@@ -428,6 +496,19 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
             goto broken;
         *target = *worker->initialization_candidate;
         memset(worker->initialization_candidate, 0, sizeof(*worker->initialization_candidate));
+        *operation_result = 0;
+        reset(worker);
+        return 1;
+    }
+    if (worker->barrier_target)
+    {
+        lcs_config_runtime_t *target = worker->barrier_target;
+        if (result.result || result.length || target->barrier.store || target->barrier.poisoned ||
+            !lcs_config_barrier_local_ready(&target->activation, &target->agreement, &target->application) ||
+            !lcs_config_barrier_can_vote(&worker->barrier_candidate, &target->activation,
+                                           &target->agreement, &target->application))
+            goto broken;
+        target->barrier = worker->barrier_candidate;
         *operation_result = 0;
         reset(worker);
         return 1;

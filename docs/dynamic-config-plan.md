@@ -173,11 +173,17 @@ durable distributed configuration protocol.
 - [x] Implement transport-independent bounded BEGIN/CHUNK snapshot codecs,
   exact metadata validation, fixed deadlines, duplicate handling, membership
   checks, and complete-value validation. Peer feature registration is still pending.
+- [x] Implement the local durable all-member readiness barrier, including
+  quorum-only members, exact baseline/membership binding, a checksummed record,
+  serialized nonblocking persistence, and application-aware configuration-vote
+  eligibility. Recover proof before INI refresh and reject orphan or premature
+  readiness. Peer receipt exchange and live message admission remain unfinished.
 - [ ] Gate automatic activation on explicit capability and readiness confirmation
   from every configured member, including quorum-only nodes, with matching
   effective configuration. Unknown/offline members must not count as upgraded.
-- [ ] Design a durable activation barrier serialized with INI reload and dynamic
-  transactions; version advertisements alone must not switch local authority.
+- [ ] Connect the durable activation barrier to live INI reload and dynamic
+  transaction serialization; version advertisements alone must not switch local
+  authority.
 - [ ] Persist activation across restarts and catch up lagging nodes. After
   activation, use normal quorum requirements for edits rather than requiring
   all members to stay online; never automatically revert to legacy mode.

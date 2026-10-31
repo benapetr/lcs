@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_activation.h"
+#include "config_barrier.h"
 
 #include <jansson.h>
 #include <openssl/sha.h>
@@ -155,9 +156,10 @@ int lcs_config_activation_open(lcs_config_activation_t *activation,
         {
             int journal = exists(store, "agreement.json", LCS_CONFIG_JOURNAL_MAX, err, err_len);
             int catalog = journal < 0 ? -1 : exists(store, "application.json", LCS_CONFIG_APPLICATION_MAX, err, err_len);
-            if (journal < 0 || catalog < 0)
+            int barrier = catalog < 0 ? -1 : exists(store, "barrier.json", LCS_CONFIG_BARRIER_MAX, err, err_len);
+            if (journal < 0 || catalog < 0 || barrier < 0)
                 result = -1;
-            else if (journal || catalog)
+            else if (journal || catalog || barrier)
                 result = fail(err, err_len, "cannot initialize over existing agreement/application history");
             else
             {
@@ -230,6 +232,17 @@ int lcs_config_activation_resume(lcs_config_activation_t *activation,
     lcs_config_agreement_t next_agreement = {0};
     lcs_config_application_t next_application = {0};
     int result = -1;
+    if (initializing)
+    {
+        int barrier = exists(activation->store, "barrier.json", LCS_CONFIG_BARRIER_MAX, err, err_len);
+        if (barrier < 0)
+            goto out;
+        if (barrier)
+        {
+            fail(err, err_len, "readiness barrier exists before initialization is prepared; recovery required");
+            goto out;
+        }
+    }
     int journal = exists(activation->store, "agreement.json", LCS_CONFIG_JOURNAL_MAX, err, err_len);
     int catalog = journal < 0 ? -1 : exists(activation->store, "application.json", LCS_CONFIG_APPLICATION_MAX, err, err_len);
     if (journal < 0 || catalog < 0)

@@ -49,11 +49,15 @@ int lcs_config_bootstrap_refresh(lcs_config_bootstrap_t *bootstrap,
         return fail(err, err_len, "distributed initialization requires recovery instead of INI refresh");
     /* Once initialization intent exists, INI is no longer allowed to replace
      * its frozen predecessor. This also protects direct/background refreshes. */
-    struct stat activation_stat;
-    if (!fstatat(bootstrap->state.directory_fd, "activation.json", &activation_stat, AT_SYMLINK_NOFOLLOW))
-        return fail(err, err_len, "activation initialization froze the baseline; recover distributed state instead of refreshing INI");
-    if (errno != ENOENT)
-        return fail(err, err_len, "cannot inspect frozen initialization state");
+    const char *markers[] = {"activation.json", "barrier.json"};
+    for (size_t i = 0; i < sizeof(markers) / sizeof(markers[0]); i++)
+    {
+        struct stat activation_stat;
+        if (!fstatat(bootstrap->state.directory_fd, markers[i], &activation_stat, AT_SYMLINK_NOFOLLOW))
+            return fail(err, err_len, "activation initialization froze the baseline; recover distributed state instead of refreshing INI");
+        if (errno != ENOENT)
+            return fail(err, err_len, "cannot inspect frozen initialization state");
+    }
     char *record = NULL, *current = NULL, *next = NULL;
     size_t record_len = 0, current_len = 0, next_len = 0;
     int rc = -1;

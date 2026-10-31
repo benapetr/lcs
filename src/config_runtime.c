@@ -8,6 +8,7 @@
 
 void lcs_config_runtime_close(lcs_config_runtime_t *runtime)
 {
+    lcs_config_barrier_close(&runtime->barrier);
     lcs_config_application_close(&runtime->application);
     lcs_config_agreement_close(&runtime->agreement);
     lcs_config_activation_close(&runtime->activation);
@@ -24,6 +25,12 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
      * malformed or unsafe file is not evidence of a never-initialized node. */
     char *record = NULL;
     size_t length;
+    int barrier = lcs_config_store_read(store, "barrier.json", &record, &length,
+                                        LCS_CONFIG_BARRIER_MAX, err, err_len);
+    free(record);
+    record = NULL;
+    if (barrier < 0)
+        return -1;
     int intent = lcs_config_store_read(store, "activation.json", &record, &length,
                                        LCS_CONFIG_ACTIVATION_MAX, err, err_len);
     free(record);
@@ -39,16 +46,33 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                 snprintf(err, err_len, "configuration recovery: out of memory retaining frozen base");
             return -1;
         }
-        if (lcs_config_activation_open(&runtime->activation, store, cfg, runtime->base,
-                                       false, err, err_len) ||
-            lcs_config_activation_resume(&runtime->activation, &runtime->agreement,
-                                         &runtime->application, err, err_len))
+        int result = lcs_config_activation_open(&runtime->activation, store, cfg, runtime->base,
+                                                 false, err, err_len);
+        if (!result && !barrier && runtime->activation.phase != LCS_CONFIG_ACTIVATION_PREPARED)
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: barrier without prepared initialization");
+            result = -1;
+        }
+        if (!result)
+            result = lcs_config_activation_resume(&runtime->activation, &runtime->agreement,
+                                                    &runtime->application, err, err_len);
+        if (!result && !barrier)
+            result = lcs_config_barrier_open(&runtime->barrier, &runtime->activation,
+                &runtime->agreement, &runtime->application, NULL, err, err_len);
+        if (result)
         {
             lcs_config_runtime_close(runtime);
             return -1;
         }
         runtime->requires_recovery = true;
         return 0;
+    }
+    if (!barrier)
+    {
+        if (err && err_len)
+            snprintf(err, err_len, "configuration recovery: activation barrier exists without its frozen initialization; recovery required");
+        return -1;
     }
     int journal = lcs_config_store_read(store, "agreement.json", &record, &length,
                                         LCS_CONFIG_JOURNAL_MAX, err, err_len);

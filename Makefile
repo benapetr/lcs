@@ -26,7 +26,7 @@ COMMON_OBJS = src/config.o src/log.o src/protocol.o src/util.o src/source_allowl
 LCSD_OBJS = src/lcsd.o src/vip.o src/cluster.o src/peer.o src/lease.o \
             src/resources.o src/group.o src/cli_server.o src/move.o src/metrics.o src/epoll_util.o src/config_reload.o \
             src/scheduler.o src/systemd_service.o src/config_candidate.o src/resource_config.o src/config_store.o src/config_bootstrap.o \
-            src/config_agreement.o src/config_agreement_worker.o src/config_application.o src/config_transfer.o src/config_runtime.o src/config_peer.o src/config_activation.o \
+            src/config_agreement.o src/config_agreement_worker.o src/config_application.o src/config_transfer.o src/config_runtime.o src/config_peer.o src/config_activation.o src/config_barrier.o \
             $(COMMON_OBJS)
 LCS_OBJS = src/lcs.o $(COMMON_OBJS)
 
@@ -49,6 +49,8 @@ src/config_application.o: CPPFLAGS += $(JANSSON_CFLAGS) $(CRYPTO_CFLAGS)
 src/config_application.o: | check-json-deps
 src/config_activation.o: CPPFLAGS += $(JANSSON_CFLAGS) $(CRYPTO_CFLAGS)
 src/config_activation.o: | check-json-deps
+src/config_barrier.o: CPPFLAGS += $(JANSSON_CFLAGS) $(CRYPTO_CFLAGS)
+src/config_barrier.o: | check-json-deps
 src/config_agreement.o: CPPFLAGS += $(JANSSON_CFLAGS) $(CRYPTO_CFLAGS)
 src/config_agreement.o: | check-json-deps
 

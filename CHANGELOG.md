@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added the local durable all-member activation barrier and its shared storage worker, binding explicit readiness to the frozen baseline and every configured voter, including quorum-only members. Recovery validates barrier records before INI refresh; configuration voting remains blocked without proof or while local application is behind. Peer readiness exchange, automatic activation and live dynamic commands remain unfinished.
+
 - Added background frozen-baseline initialization through the shared configuration storage worker. Initialization excludes INI refresh, publishes prepared handles only after successful child exit, and requires disk recovery after uncertain writes or cancellation. Automatic distributed activation remains unfinished.
 
 - Added crash-safe local initialization for future dynamic activation: persist the complete frozen baseline before journal/catalog creation, resume partial initialization across restarts, and prevent INI refresh or missing-record regeneration after preparation. Coordinated automatic activation and dynamic mutation commands remain unfinished.

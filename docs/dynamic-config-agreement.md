@@ -1,7 +1,7 @@
 # Durable configuration agreement
 
 Implementation status: the agreement core, storage worker, and snapshot-transfer
-codecs, incarnation validation and local application catalog are implemented
+codecs, incarnation validation, local readiness barrier and application catalog are implemented
 and unit-tested. Durable transactions are not connected to daemon peer sessions,
 automatic activation, resource application, or CLI mutation endpoints. Separate
 wire-6 bootstrap metadata now reports prepared definitions diagnostically; wire-5
@@ -172,10 +172,10 @@ not make an unsuccessful worker return successful. A missing intent without
 explicit authorization, a different frozen baseline, or existing promises/chosen
 successors requires disk recovery rather than a pristine-result import.
 
-The all-member readiness barrier and initialization coordinator remain to be
-implemented. The worker is not yet invoked by ordinary daemon startup/peering.
-Preparing local files does not permit configuration voting or switch resource
-authority.
+The initialization coordinator and peer readiness exchange remain to be
+implemented. The initialization worker is not yet invoked by ordinary daemon
+startup/peering. Preparing local files alone does not permit configuration voting
+or switch resource authority.
 
 After preparation, nonzero committed/accepted values must use the dynamic schema;
 revision one must preserve the frozen definitions when assigning incarnations.
@@ -187,6 +187,57 @@ slot. Catch-up across multiple revisions, request-status retention, backups,
 disaster recovery, and safe deletion of historical status records still require
 integration design. Restoring stale disks or losing all agreement state is not
 equivalent to an ordinary daemon restart and must not silently reset promises.
+
+## Durable all-member activation barrier
+
+The transport-independent barrier core and serialized persistence worker are
+implemented. They are not yet connected to live peer messages or automatic
+activation. A readiness round begins only after local frozen initialization is
+durable and pristine. It counts that local member and explicit durable-readiness
+receipts for the same membership and full baseline digest from every configured
+member, including quorum-only members. A majority is insufficient. Duplicate
+matching receipts are idempotent; mismatched or out-of-membership receipts reject
+an unfinished round. Advisory `CONFIG_BOOTSTRAP_STATUS` messages are not receipts.
+The future transport must distinguish those message types and bind readiness to
+the admitted configured peer identity and negotiated capability.
+
+Each member confirms an irreversible frozen baseline, so a valid receipt need
+not expire merely because that peer disconnects. This relies on correct members
+retaining durable state; disk replacement is still explicit disaster recovery.
+Once all readiness has been collected, a sealed round authorizes a local
+`barrier.json` record. Record format 1 contains exactly the local member,
+membership digest, baseline digest, complete configured-voter mask, record version
+and checksum. It uses the same canonical checksum representation, atomic replace,
+file/directory sync and node binding as the other records. The mask is evidence
+collected by correct non-Byzantine participants, not a signed certificate or
+cryptographic authentication. It cannot authorize membership changes.
+
+First creation requires pristine initialization with no promise, accepted value,
+committed successor or pending application. Missing readiness after voting is
+not silently regenerated from INI or fresh advertisements. Existing valid proof
+is read without rewriting it, including after later configuration revisions.
+The shared storage worker persists proof outside the lease event loop, reopens
+and checks the child's disk state before writing, and publishes the parent handle
+only after a complete acknowledgement and successful child exit. Cancellation,
+uncertain sync or changed parent state poisons local handles until reaping and disk
+recovery. A visible record alone cannot make an unsuccessful worker return success.
+
+`lcs_config_barrier_can_vote()` is the configuration-vote prerequisite: a complete
+local durable barrier must match the frozen baseline and membership, every local
+handle must be healthy, and applied configuration must equal learned configuration
+with no pending application. Learning revision one therefore blocks voting on
+revision two until application catches up. This predicate does not switch JSON
+authority, start backends, replace ordinary lease/restart recovery gates, or yet
+gate live daemon messages. Initial authority still needs a majority-chosen schema-2
+activation value and safe local application. Recovered durable readiness does not
+require all members to remain online for subsequent majority-based edits.
+
+Startup checks for orphan, premature, malformed, foreign and incomplete barrier
+records before INI refresh or listeners. An existing valid barrier is retained
+alongside recovered agreement/application state; the current daemon still refuses
+to run distributed state until peering and application integration are complete.
+A missing barrier leaves the configuration-vote predicate false. Existing
+initialization or readiness markers also prevent direct/background INI refresh.
 
 ## Snapshot transfer
 

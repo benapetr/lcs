@@ -22,6 +22,12 @@ prepare_cluster
 state="$(node_config node1).state"
 snapshot="$(node_config node1).resources.json"
 mkdir -m 0700 "$state"
+log "checking orphan readiness blocks first INI import"
+printf '{orphan' >"$state/barrier.json"
+expect_recovery_failure node1
+[[ ! -e "$snapshot" && ! -e "$state/bootstrap.state" && ! -e "$state/activation.json" ]] ||
+    die "orphan barrier imported or initialized configuration"
+rm "$state/barrier.json"
 log "checking corrupt durable history blocks first INI import"
 printf '{broken' >"$state/agreement.json"
 expect_recovery_failure node1
@@ -78,6 +84,11 @@ canonical = json.dumps(record, sort_keys=True, ensure_ascii=True, separators=(",
 record["checksum"] = hashlib.sha256(canonical.encode()).hexdigest()
 Path(sys.argv[1]).write_text(json.dumps(record, sort_keys=True))
 PYFIXTURE
+printf '{premature' >"$state/barrier.json"
+expect_recovery_failure node2
+[[ ! -e "$state/agreement.json" && ! -e "$state/application.json" ]] ||
+    die "premature barrier authorized initialization"
+rm "$state/barrier.json"
 expect_recovery_failure node2 "persisted distributed resource configuration requires activation-aware recovery"
 python3 - "$state" <<'PYRECOVERY'
 import json, sys
@@ -96,10 +107,43 @@ assert all((root / name).stat().st_mode & 0o777 == 0o600
 PYRECOVERY
 cmp "$snapshot" "$TEST_TMP/snapshot-before.json" || die "resuming initialization overwrote the frozen shadow"
 cmp "$state/bootstrap.state" "$TEST_TMP/bootstrap-before.state" || die "initialization reset legacy metadata"
+log "checking exact durable all-member readiness and invalid proof recovery"
+for variant in partial foreign-member foreign-membership foreign-baseline version unknown checksum valid; do
+    python3 - "$state" "$variant" <<'PYBARRIER'
+import hashlib, json, sys
+from pathlib import Path
+root, variant = Path(sys.argv[1]), sys.argv[2]
+intent = json.loads((root / "activation.json").read_text())
+record = {"record_version": 1, "member": intent["member"],
+          "membership": intent["membership"], "baseline_digest": intent["baseline_digest"],
+          "ready_voters": 7}
+if variant == "partial": record["ready_voters"] = 3
+if variant == "foreign-member": record["member"] = "node1"
+if variant == "foreign-membership": record["membership"] = "0" * 64
+if variant == "foreign-baseline": record["baseline_digest"] = "0" * 64
+if variant == "version": record["record_version"] = 2
+if variant == "unknown": record["unexpected"] = True
+canonical = json.dumps(record, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+record["checksum"] = hashlib.sha256(canonical.encode()).hexdigest()
+if variant == "checksum": record["checksum"] = "0" * 64
+(root / "barrier.json").write_text(json.dumps(record, sort_keys=True))
+PYBARRIER
+    if [[ "$variant" == valid ]]; then
+        cp "$state/barrier.json" "$TEST_TMP/barrier-before.json"
+        expect_recovery_failure node2 "persisted distributed resource configuration requires activation-aware recovery"
+        cmp "$state/barrier.json" "$TEST_TMP/barrier-before.json" || die "recovery rewrote durable readiness"
+    else
+        expect_recovery_failure node2
+        grep -Fq "invalid, corrupt, or foreign durable barrier" "$TEST_TMP/recovery-failure.log" ||
+            die "invalid readiness was not diagnosed: $variant"
+    fi
+    cmp "$snapshot" "$TEST_TMP/snapshot-before.json" || die "readiness recovery refreshed INI"
+done
 # Prepared recovery must not recreate a lost catalog or replace the baseline.
 rm "$state/application.json"
 expect_recovery_failure node2
 grep -Fq "catalog missing" "$TEST_TMP/recovery-failure.log" || die "prepared catalog loss was not diagnosed"
 [[ ! -e "$state/application.json" ]] || die "prepared recovery recreated a missing catalog"
+cmp "$state/barrier.json" "$TEST_TMP/barrier-before.json" || die "catalog loss changed durable readiness"
 wait_for_owner node1 node1
 log "daemon configuration recovery regression passed"
