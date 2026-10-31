@@ -223,9 +223,20 @@ static void prepare_durable_runtime(void)
 
 static void cleanup_durable_runtime(void)
 {
+    bool persisted = g_state.config_runtime.barrier.store != NULL;
+    config_peer_stop();
+    for (unsigned i = 0; i < 5000 && !config_peer_stopped(); i++)
+    {
+        config_peer_shutdown_process();
+        usleep(1000);
+    }
+    assert(config_peer_stopped() && !config_peer_configuration_vote_ready());
     lcs_config_runtime_close(&g_state.config_runtime);
     const char *names[] = {"activation.json", "agreement.json", "application.json", "lock"};
-    assert(faccessat(readiness_store.directory_fd, "barrier.json", F_OK, 0) == -1);
+    if (persisted)
+        assert(!unlinkat(readiness_store.directory_fd, "barrier.json", 0));
+    else
+        assert(faccessat(readiness_store.directory_fd, "barrier.json", F_OK, 0) == -1);
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         assert(!unlinkat(readiness_store.directory_fd, names[i], 0));
     lcs_config_store_close(&readiness_store);
@@ -393,6 +404,19 @@ static void test_explicit_peer_readiness(void)
     assert(!g_state.config_runtime.barrier.store); /* Collection never writes proof or switches authority. */
     assert(!lcs_config_barrier_can_vote(&g_state.config_runtime.barrier, &g_state.config_runtime.activation,
                                       &g_state.config_runtime.agreement, &g_state.config_runtime.application));
+    assert(!config_peer_configuration_vote_ready());
+    config_peer_process(-1);
+    assert(g_state.config_coordinator.phase == LCS_CONFIG_COORD_PERSISTING);
+    assert(g_state.config_coordinator.storage.pid > 0 && !config_peer_stopped());
+    assert(config_peer_readiness_start() == 1);
+    for (unsigned i = 0; i < 5000 && !config_peer_configuration_vote_ready(); i++)
+    {
+        config_peer_process(-1);
+        usleep(1000);
+    }
+    assert(config_peer_configuration_vote_ready() && g_state.config_runtime.barrier.ready == 7);
+    assert(!g_state.config_coordinator.storage.pid && g_state.config_runtime.requires_recovery);
+    assert(g_state.resources[0].epoch == 123 && g_state.lease_grants[0].promised_epoch == 456);
     cleanup_durable_runtime();
 }
 

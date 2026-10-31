@@ -67,7 +67,8 @@ sessions reject these types. Collection starts only through the internal
 coordinator entry point after durable local initialization and exclusion of INI
 reload; ordinary daemon startup does not trigger it yet. Retries share a fixed
 ten-second deadline and cannot convert bootstrap status into readiness. Completed
-collection must still go through the barrier storage worker. No application or
+collection now goes through the scheduler's barrier storage worker before local
+configuration-vote eligibility is available. No application or
 local CLI protocol version changes accompany this exchange.
 
 Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.

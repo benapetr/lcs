@@ -569,22 +569,26 @@ static void run_daemon_loop(int epoll_fd)
     }
 }
 
-static void shutdown_daemon(int epoll_fd)
+static bool shutdown_daemon(int epoll_fd)
 {
     scheduler_t sched = {
         .epoll_fd = epoll_fd,
         .cli_server_fd = g_cli_server_fd,
         .metrics_fd = g_metrics_fd,
     };
+    config_peer_stop();
     resources_begin_graceful_shutdown(epoll_fd);
     uint64_t shutdown_deadline_ms = lcs_now_ms() + ((uint64_t)g_state.cfg.hook_timeout_ms * 2u) + resources_service_operation_timeout_ms() + g_state.cfg.peer_timeout_ms + 100u;
-    while (!resources_graceful_shutdown_complete() && lcs_now_ms() < shutdown_deadline_ms)
+    while ((!resources_graceful_shutdown_complete() || !config_peer_stopped()) && lcs_now_ms() < shutdown_deadline_ms)
     {
         if (scheduler_run_shutdown_once(&sched) != 0)
             break;
     }
     if (!resources_graceful_shutdown_complete())
         lcs_log_warn("graceful shutdown drain timed out; local resources are stopped where possible but release quorum was not confirmed");
+    bool storage_stopped = config_peer_stopped();
+    if (!storage_stopped)
+        lcs_log_error("configuration writer has not exited; retaining state handles until process exit instead of reopening storage");
     resources_finish_graceful_shutdown();
     peer_dns_refresh_cancel();
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
@@ -605,6 +609,7 @@ static void shutdown_daemon(int epoll_fd)
         unlink(g_state.cfg.pidfile_path);
     lcs_log_info("lcsd stopped");
     lcs_log_close();
+    return storage_stopped;
 }
 
 int main(int argc, char **argv)
@@ -686,8 +691,13 @@ int main(int argc, char **argv)
 
     log_daemon_started();
     run_daemon_loop(epoll_fd);
-    shutdown_daemon(epoll_fd);
-    lcs_config_runtime_close(&g_state.config_runtime);
-    lcs_config_bootstrap_close(&g_state.config_bootstrap);
-    return 0;
+    bool storage_stopped = shutdown_daemon(epoll_fd);
+    /* A not-yet-reaped child still owns inherited storage/lock descriptors.
+     * Leave the matching parent handles intact until process exit as well. */
+    if (storage_stopped)
+    {
+        lcs_config_runtime_close(&g_state.config_runtime);
+        lcs_config_bootstrap_close(&g_state.config_bootstrap);
+    }
+    return storage_stopped ? 0 : 1;
 }

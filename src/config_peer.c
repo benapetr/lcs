@@ -15,6 +15,7 @@ static bool durable_readiness_available(void)
 {
     const lcs_config_runtime_t *runtime = &g_state.config_runtime;
     return g_state.config_bootstrap_initialized && g_state.config_bootstrap.initialization_locked &&
+        !g_state.config_coordinator.closing &&
         !config_reload_in_progress() && runtime->base && runtime->base == runtime->activation.base &&
         lcs_config_barrier_local_ready(&runtime->activation, &runtime->agreement, &runtime->application) &&
         !strcmp(g_state.config_status.membership, runtime->activation.membership) &&
@@ -23,6 +24,11 @@ static bool durable_readiness_available(void)
 
 int config_peer_readiness_start(void)
 {
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    if (coordinator->closing || coordinator->failed)
+        return -1;
+    if (coordinator->initialized && (coordinator->storage.pid > 0 || coordinator->phase != LCS_CONFIG_COORD_IDLE))
+        return 1;
     if (g_state.config_readiness.active && !g_state.config_readiness.round.failed &&
         !g_state.config_readiness.round.sealed)
         return 1;
@@ -42,14 +48,57 @@ int config_peer_readiness_start(void)
         &runtime->agreement, &runtime->application, g_state.instance_id,
         ++g_state.config_readiness_attempt, lcs_now_ms(), error, sizeof(error));
     if (!result)
+    {
+        if (!coordinator->initialized)
+            lcs_config_coordinator_init(coordinator, runtime, &g_state.config_readiness);
+        result = lcs_config_coordinator_start(coordinator);
+        if (result)
+            lcs_config_coordinator_abort(coordinator, "cannot attach readiness attempt to the configuration writer");
+    }
+    if (!result)
         g_state.config_readiness_next_send_ms = 0;
     return result;
+}
+
+void config_peer_stop(void)
+{
+    g_state.config_coordinator.closing = true;
+    lcs_config_coordinator_stop(&g_state.config_coordinator);
+}
+
+bool config_peer_stopped(void)
+{
+    return lcs_config_coordinator_can_close(&g_state.config_coordinator);
+}
+
+void config_peer_shutdown_process(void)
+{
+    (void)lcs_config_coordinator_process(&g_state.config_coordinator, lcs_now_ms());
+}
+
+bool config_peer_configuration_vote_ready(void)
+{
+    return g_state.config_bootstrap.initialization_locked && !config_reload_in_progress() &&
+        lcs_config_coordinator_can_vote(&g_state.config_coordinator);
 }
 
 static void process_readiness(int epoll_fd)
 {
     lcs_config_readiness_t *state = &g_state.config_readiness;
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
     uint64_t now = lcs_now_ms();
+    lcs_config_coordinator_phase_t before = coordinator->phase;
+    if (coordinator->initialized && !coordinator->closing &&
+        (before == LCS_CONFIG_COORD_COLLECTING || before == LCS_CONFIG_COORD_PERSISTING) &&
+        !durable_readiness_available())
+        lcs_config_coordinator_abort(coordinator, "local definitions or reload state changed during readiness");
+    (void)lcs_config_coordinator_process(coordinator, now);
+    if (before == LCS_CONFIG_COORD_PERSISTING && coordinator->phase == LCS_CONFIG_COORD_READY)
+        lcs_log_debug("all-member configuration readiness persisted; configuration vote prerequisites satisfied");
+    else if (coordinator->phase != before && coordinator->phase == LCS_CONFIG_COORD_FAILED)
+        lcs_log_error("configuration storage coordinator failed: %s", coordinator->error);
+    if (coordinator->initialized && coordinator->phase != LCS_CONFIG_COORD_COLLECTING)
+        return;
     if (!state->active || lcs_config_readiness_complete(state))
         return;
     if (!durable_readiness_available())

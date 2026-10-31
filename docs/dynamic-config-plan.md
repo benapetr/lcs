@@ -177,8 +177,8 @@ durable distributed configuration protocol.
   quorum-only members, exact baseline/membership binding, a checksummed record,
   serialized nonblocking persistence, and application-aware configuration-vote
   eligibility. Recover proof before INI refresh and reject orphan or premature
-  readiness. Automatic initialization and live configuration-vote admission remain
-  unfinished.
+  readiness. Automatic initialization and peer configuration-transaction admission
+  remain unfinished.
 - [x] Add distinct wire-6 readiness query/reply messages with strict codecs,
   established-peer and instance binding, monotonic attempt correlation, a fixed
   deadline, and collection from every configured member. INI-only nodes answer
@@ -186,6 +186,14 @@ durable distributed configuration protocol.
   coordinator operation; startup does not trigger initialization or activation.
 - [x] Reject INI reload requests and peer reload transitions after local definitions
   are frozen, so explicit durable readiness cannot race a legacy resource reload.
+- [x] Hand a completed explicit peer readiness round to the shared barrier writer
+  from the scheduler. Keep collection, persistence, durable eligibility, failure
+  and cancellation distinct; discard results for replaced attempts and wait for
+  reaping before releasing runtime/storage handles during shutdown.
+- [x] Gate explicit local coordinator PREPARE/ACCEPT writes on durable readiness
+  and caught-up application, using that same writer. Require schema-2 successors
+  and unchanged definitions for activation; distinguish durable vote rejection
+  from uncertain persistence. Peer transaction codecs/admission are still pending.
 - [ ] Gate automatic activation on explicit capability and readiness confirmation
   from every configured member, including quorum-only nodes, with matching
   effective configuration. Unknown/offline members must not count as upgraded.

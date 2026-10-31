@@ -64,8 +64,10 @@ reported as an uncertain outcome.
 Explicit wire-6 readiness queries are separate from diagnostic status. A normal
 INI-only daemon answers not-ready without creating initialization or barrier
 records. Collection is available internally after durable local initialization;
-it is not started automatically, and does not itself persist readiness or change
-authority. Frozen definitions reject legacy INI resource reloads. See
+it is not started automatically. Once an explicitly started round completes, the
+scheduler persists its proof through the shared storage worker before local
+configuration-vote eligibility is available. Neither collection nor proof changes
+authority or applies resources. Frozen definitions reject legacy INI resource reloads. See
 [the readiness contract](dynamic-config-agreement.md#durable-all-member-activation-barrier).
 
 ## Inspecting preparation across members

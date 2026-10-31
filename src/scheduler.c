@@ -154,5 +154,6 @@ int scheduler_run_shutdown_once(const scheduler_t *sched)
     resources_process_hooks(sched->epoll_fd);
     resources_progress_graceful_shutdown(sched->epoll_fd);
     resources_maintain_owned_leases(sched->epoll_fd);
+    config_peer_shutdown_process();
     return 0;
 }

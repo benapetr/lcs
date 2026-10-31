@@ -219,8 +219,10 @@ count. Confirmed durable readiness survives later disconnection, and a complete
 sealed round does not expire. The scheduler sends only on admitted wire-6 sessions.
 
 Collection alone never writes `barrier.json`, grants configuration votes, or
-switches authority. The future automatic coordinator must submit the sealed round
-to the shared barrier storage worker, then apply the vote prerequisite. Neither
+switches authority. After an explicitly started peer round completes, the
+scheduler now submits that sealed round to the shared barrier storage worker.
+The local coordinator becomes eligible only after successful durable publication;
+a complete in-memory mask or visible-but-unacknowledged file is insufficient. Neither
 peer metadata nor a readiness query triggers freezing, so mixed-version and
 INI-only clusters retain their current startup/reload behavior. Once initialization
 locks definitions, CLI/SIGHUP resource reload and peer reload transitions are
@@ -247,13 +249,48 @@ only after a complete acknowledgement and successful child exit. Cancellation,
 uncertain sync or changed parent state poisons local handles until reaping and disk
 recovery. A visible record alone cannot make an unsuccessful worker return success.
 
+`config_coordinator.c` owns the handoff and one serialized configuration worker.
+Its phases distinguish collection, persistence, durable readiness, local vote
+writes, cancellation, stopped state and terminal failure. It binds a persistence
+result to the originating requester instance, attempt and exact sealed baseline.
+Changing that context while a child is pending cancels the child and requires
+recovery; its late result cannot authorize a replacement attempt. The parent does
+no store reads or filesystem syncs during this handoff.
+
+`lcs_config_coordinator_start_vote()` admits explicit local PREPARE/ACCEPT jobs only
+after the durable readiness prerequisite succeeds and local application matches
+learned configuration. These jobs share the barrier writer, so an outstanding
+write cannot race another vote. ACCEPT additionally requires a schema-2 successor;
+revision-one activation must preserve the frozen definitions. Successful worker
+completion reports the actual agreed/rejected/stale result separately from
+uncertain persistence. Acceptance does not learn a majority decision, switch
+authority or apply resources. Peer PREPARE/ACCEPT transaction framing and proposer
+identity admission are not implemented yet; these entry points are not live
+mutation commands.
+
+After `runtime_open` and application recovery, the coordinator can adopt an
+existing valid barrier entirely in memory. It does not need new peer observations
+or rewrite proof. A pending application or poisoned handle still prevents voting.
+The current daemon continues refusing distributed startup until activation-aware
+resource application/recovery is implemented, so this local recovery entry point
+does not enable automatic migration yet.
+
+Shutdown stops collection and cancels any configuration writer while continuing
+to poll child completion alongside resource shutdown. Runtime/store handles are
+released only after reaping. If a child has not exited by the shutdown deadline,
+the process retains those handles until exit; an inherited writer lock remains
+held until the child itself exits. No recovery or replacement writer may start
+under uncertain old I/O. Cancellation before a writer starts does not poison
+otherwise healthy local journals; uncertain persistence requires disk recovery.
+
 `lcs_config_barrier_can_vote()` is the configuration-vote prerequisite: a complete
 local durable barrier must match the frozen baseline and membership, every local
 handle must be healthy, and applied configuration must equal learned configuration
 with no pending application. Learning revision one therefore blocks voting on
 revision two until application catches up. This predicate does not switch JSON
 authority, start backends, replace ordinary lease/restart recovery gates, or yet
-gate live daemon messages. Initial authority still needs a majority-chosen schema-2
+admit peer configuration-transaction messages. The local coordinator vote path
+uses it before starting its storage job. Initial authority still needs a majority-chosen schema-2
 activation value and safe local application. Recovered durable readiness does not
 require all members to remain online for subsequent majority-based edits.
 
