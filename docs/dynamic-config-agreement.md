@@ -359,8 +359,9 @@ the durable barrier and majority evidence. Multi-revision catch-up remains pendi
 Snapshot BEGIN is admitted before allocation, with at most one 512-KiB incoming
 and one outgoing document per configured peer, chunks up to 16 KiB, and fixed
 ten-second input/output deadlines. Identical retries never extend those deadlines.
-The scheduler queues at most four output frames per call, retaining immutable
-accepted values while backpressured. Expiration discards transport buffers, never
+The scheduler queues at most eight output frames per call (four acceptor replies
+and four proposer requests), retaining immutable accepted values while
+backpressured. Expiration discards transport buffers, never
 a journal promise, accepted value or decision. A transfer alone never votes.
 
 Disconnect clears session buffers and suppresses the pending response, but does
@@ -372,13 +373,34 @@ promise/decision before another attempt. Shutdown keeps the previous coordinator
 reaping/lock rules. No request-status history or client exactly-once semantics are
 introduced by transport request IDs.
 
-The automatic network proposer is not implemented. Incoming unsolicited control
-replies are validated but do not count toward a quorum; incoming PROMISE/SYNC
-snapshot transfers are rejected by the current acceptor endpoint. The three-node
-transport harness uses the tested proposer core to demonstrate promise quorum,
-highest accepted-value recovery, acceptance quorum and majority learning, including
-a quorum-only voter. Automatic initialization/activation and dynamic commands stay
-disabled until proposal coordination and safe resource application are complete.
+The internal network proposer now drives an explicitly submitted snapshot through
+local durable PREPARE, distinct remote promises, local durable ACCEPT, remote
+acceptance quorum, and local durable LEARN. It sends no PREPARE before its own
+promise is durable. Each reply must match the exact request ID, revision, ballot,
+membership, parent and admitted daemon instance. A promise reporting an accepted
+value counts only after its complete snapshot validates; the highest accepted
+value in the promise quorum takes precedence over the newly requested value.
+Duplicate replies cannot add votes. ACCEPT is sent only to members of that
+complete promise quorum; decision notification is sent only to acknowledged
+acceptors. Other members require the still-pending synchronization path.
+
+One proposal and the acceptor share the existing storage writer. The proposal has
+a fixed ten-second deadline; backpressure and duplicate frames do not extend it.
+Disconnect invalidates that peer's pending response stream without cancelling a
+durable write. Failure or expiry before local durable learning reports unknown,
+even if a majority may already have accepted the value. A new attempt requires a
+strictly newer process-local request ID and a higher ballot; there is no automatic
+retry or persistent client request-status history. Once local learning succeeds,
+notification timeout cannot erase the known decision. Completion identifies the
+chosen value, which may belong to an earlier recovered request, and never means
+that resources have been applied or all members have received the decision.
+
+Unsolicited control replies and PROMISE snapshots do not confer votes. SYNC
+transfers remain unimplemented. The three-node transport harness drives the actual
+network proposer with independent durable stores, including remote accepted-value
+recovery, duplicate replies, mismatched IDs, deadline expiry and a higher-ballot
+retry. Automatic initialization/activation and dynamic commands remain disabled
+until the activation manager and safe resource application are complete.
 
 ## Remaining daemon activation and application rules
 

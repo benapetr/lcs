@@ -35,6 +35,24 @@ int config_peer_receive_transaction(int epoll_fd, int node, uint16_t type, const
     return result;
 }
 
+int config_peer_propose(uint64_t id, const lcs_config_value_t *requested)
+{
+    if (config_reload_in_progress() || !config_peer_configuration_vote_ready())
+        return -1;
+    if (!g_state.config_transactions.instance)
+        lcs_config_transactions_init(&g_state.config_transactions, &g_state.config_coordinator, g_state.instance_id);
+    uint64_t instances[LCS_MAX_NODES] = {0};
+    instances[g_state.self_index] = g_state.instance_id;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if ((int)i != g_state.self_index && peer->fd >= 0 && peer->conn_state == LCS_PEER_ESTABLISHED &&
+            peer->protocol_version >= LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS)
+            instances[i] = peer->instance_id;
+    }
+    return lcs_config_transactions_propose(&g_state.config_transactions, instances, id, requested, lcs_now_ms());
+}
+
 static bool durable_readiness_available(void)
 {
     const lcs_config_runtime_t *runtime = &g_state.config_runtime;

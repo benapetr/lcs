@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added an internal wire-6 configuration proposer that coordinates durable prepare/accept/learn operations, correlates instance-bound replies, and recovers complete previously accepted values. Fixed deadlines, duplicate-vote protection and unknown-outcome retries are covered by the three-node transport harness. Automatic activation, synchronization and live resource application remain unfinished.
+
 - Added wire-6 configuration acceptor/learner messages with instance/proposer admission, bounded snapshot transfer, durable PROMISE/ACK/LEARNED replies and majority-decision validation. Session loss does not cancel an in-flight write; uncertain persistence reports outcome-unknown. Learned decisions keep further votes blocked until application catches up. Automatic network proposal, activation and dynamic commands remain unfinished.
 
 - Connected explicit peer readiness collection to durable barrier persistence through the scheduler and shared configuration writer. Local PREPARE/ACCEPT jobs now have coordinator-level readiness/application gates and activation successor checks. Cancellation and shutdown retain storage until child exit; automatic migration, peer transaction votes and dynamic commands remain unfinished.

@@ -4,6 +4,11 @@
 
 #include <string.h>
 
+static void proposer_process(lcs_config_transactions_t *, uint64_t, lcs_config_tx_send_t, void *);
+static int proposer_control(lcs_config_transactions_t *, size_t, const lcs_config_tx_control_t *);
+static int proposer_transfer(lcs_config_transactions_t *, size_t, uint16_t, const void *, size_t, uint64_t);
+static void proposer_clear(lcs_config_network_proposal_t *);
+
 static bool digest_valid(const char *text, bool empty)
 {
     if (empty && !*text)
@@ -126,6 +131,8 @@ void lcs_config_transactions_disconnect(lcs_config_transactions_t *transactions,
     if (node >= LCS_MAX_NODES)
         return;
     lcs_config_tx_peer_t *peer = &transactions->peers[node];
+    lcs_config_transfer_clear(&transactions->proposer.peers[node].incoming);
+    transactions->proposer.peers[node].instance = 0;
     lcs_config_transfer_clear(&peer->incoming);
     lcs_config_value_clear(&peer->outgoing);
     memset(peer, 0, sizeof(*peer));
@@ -137,6 +144,7 @@ void lcs_config_transactions_close(lcs_config_transactions_t *transactions)
 {
     for (size_t i = 0; i < LCS_MAX_NODES; i++)
         lcs_config_transactions_disconnect(transactions, i);
+    proposer_clear(&transactions->proposer);
     /* Durable jobs belong to the coordinator and survive session teardown. */
     memset(transactions, 0, sizeof(*transactions));
 }
@@ -236,7 +244,7 @@ int lcs_config_transactions_receive(lcs_config_transactions_t *transactions, siz
             control.target_instance != transactions->instance)
             return -1;
         if (control.kind != LCS_CONFIG_TX_PREPARE)
-            return 0; /* No network proposer yet: unsolicited replies confer nothing. */
+            return proposer_control(transactions, node, &control);
         if ((control.ballot & 31u) != node)
             return -1;
         if (transactions->coordinator && transactions->coordinator->initialized &&
@@ -251,6 +259,9 @@ int lcs_config_transactions_receive(lcs_config_transactions_t *transactions, siz
     if (lcs_config_tx_unwrap(payload, length, &sender, &target, &body, &body_length) ||
         sender != peer_instance || target != transactions->instance)
         return -1;
+    int routed = proposer_transfer(transactions, node, type, body, body_length, now_ms);
+    if (routed)
+        return routed < 0 ? -1 : 0;
     if (type == LCS_MSG_CONFIG_TX_BEGIN)
     {
         lcs_config_transfer_metadata_t metadata;
@@ -264,7 +275,7 @@ int lcs_config_transactions_receive(lcs_config_transactions_t *transactions, siz
         memcpy(control.membership, metadata.membership, sizeof(control.membership));
         memcpy(control.parent, metadata.parent_digest, sizeof(control.parent));
         memcpy(control.value, metadata.value_digest, sizeof(control.value));
-        if (transactions->active || peer->stage ||
+        if (transactions->active || peer->stage || transactions->proposer.peers[node].incoming.document ||
             (transactions->coordinator && transactions->coordinator->storage.pid > 0))
         {
             response(transactions, node, &control, metadata.kind == LCS_CONFIG_TRANSFER_ACCEPT ?
@@ -377,6 +388,7 @@ void lcs_config_transactions_process(lcs_config_transactions_t *transactions, ui
     if (!transactions->instance)
         return;
     completed(transactions, now_ms);
+    proposer_process(transactions, now_ms, send, context);
     unsigned budget = 4;
     unsigned char payload[LCS_CONFIG_TRANSFER_CHUNK_MAX + 64], body[LCS_CONFIG_TRANSFER_CHUNK_MAX + 32];
     for (size_t scanned = 0; scanned < LCS_MAX_NODES && budget; scanned++)
@@ -448,4 +460,347 @@ void lcs_config_transactions_process(lcs_config_transactions_t *transactions, ui
             peer->offset = peer->stage = 0;
         }
     }
+}
+
+static bool proposing(const lcs_config_network_proposal_t *proposer)
+{
+    return proposer->phase > LCS_CONFIG_PROPOSER_IDLE && proposer->phase < LCS_CONFIG_PROPOSER_COMPLETE;
+}
+
+static void proposer_clear(lcs_config_network_proposal_t *proposer)
+{
+    for (size_t i = 0; i < LCS_MAX_NODES; i++)
+        lcs_config_transfer_clear(&proposer->peers[i].incoming);
+    lcs_config_proposal_clear(&proposer->proposal);
+    memset(proposer, 0, sizeof(*proposer));
+}
+
+const lcs_config_value_t *lcs_config_transactions_selected(const lcs_config_transactions_t *transactions)
+{
+    const lcs_config_proposal_t *proposal = &transactions->proposer.proposal;
+    return proposal->sealed ? (proposal->highest_accepted ? &proposal->recovered : &proposal->requested) : NULL;
+}
+
+static int proposer_job(lcs_config_transactions_t *transactions, lcs_config_agreement_action_t action)
+{
+    lcs_config_network_proposal_t *proposer = &transactions->proposer;
+    lcs_config_coordinator_t *coordinator = transactions->coordinator;
+    if (transactions->active || coordinator->storage.pid > 0)
+        return 1;
+    lcs_config_agreement_job_t job = { .action = action, .revision = proposer->proposal.revision,
+        .ballot = proposer->proposal.ballot, .voters = proposer->proposal.acknowledgements,
+        .value = action == LCS_CONFIG_PREPARE ? NULL : lcs_config_transactions_selected(transactions) };
+    memcpy(job.parent_digest, proposer->proposal.parent_digest, sizeof(job.parent_digest));
+    char error[256];
+    int result = action == LCS_CONFIG_LEARN ? lcs_config_coordinator_start_learn(coordinator, &job, error, sizeof(error)) :
+        lcs_config_coordinator_start_vote(coordinator, &job, error, sizeof(error));
+    if (!result)
+        proposer->completion = coordinator->completed_votes + 1;
+    return result;
+}
+
+int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
+                                     const uint64_t instances[LCS_MAX_NODES],
+                                     uint64_t id, const lcs_config_value_t *requested, uint64_t now_ms)
+{
+    lcs_config_network_proposal_t *proposer = &transactions->proposer;
+    if (!instances || !requested || !transactions->instance || !id || id <= proposer->id ||
+        now_ms > UINT64_MAX - LCS_CONFIG_TRANSFER_TIMEOUT_MS || !eligible(transactions) ||
+        proposing(proposer) || transactions->active || transactions->coordinator->storage.pid > 0)
+        return -1;
+    const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+    int self = lcs_config_self_index(agreement->base);
+    if (self < 0 || agreement->base->nodes[self].role != LCS_NODE_FULL || instances[self] != transactions->instance)
+        return -1;
+    uint32_t available = 0;
+    for (size_t i = 0; i < agreement->base->node_count; i++)
+        if (instances[i])
+            available |= UINT32_C(1) << i;
+    if (!lcs_config_agreement_has_quorum(agreement, available))
+        return -1;
+    lcs_config_proposal_t next = {0};
+    uint64_t ballot = lcs_config_agreement_next_ballot(agreement, 0);
+    if (!ballot || lcs_config_proposal_init(&next, agreement, ballot, requested))
+        return -1;
+    proposer_clear(proposer);
+    proposer->proposal = next;
+    proposer->id = id;
+    proposer->deadline_ms = now_ms + LCS_CONFIG_TRANSFER_TIMEOUT_MS;
+    for (size_t i = 0; i < agreement->base->node_count; i++)
+        proposer->peers[i].instance = instances[i];
+    proposer->phase = LCS_CONFIG_PROPOSER_PREPARING;
+    if (proposer_job(transactions, LCS_CONFIG_PREPARE))
+    {
+        proposer->phase = LCS_CONFIG_PROPOSER_UNKNOWN;
+        return -1;
+    }
+    return 0;
+}
+
+static bool matches(const lcs_config_transactions_t *transactions, size_t node, const lcs_config_tx_control_t *control)
+{
+    const lcs_config_network_proposal_t *proposer = &transactions->proposer;
+    return proposing(proposer) && proposer->peers[node].sent && proposer->peers[node].instance &&
+        control->sender_instance == proposer->peers[node].instance && control->id == proposer->id &&
+        control->revision == proposer->proposal.revision && control->ballot == proposer->proposal.ballot &&
+        !strcmp(control->membership, transactions->coordinator->runtime->agreement.membership) &&
+        !strcmp(control->parent, proposer->proposal.parent_digest);
+}
+
+static int proposer_control(lcs_config_transactions_t *transactions, size_t node, const lcs_config_tx_control_t *control)
+{
+    lcs_config_network_proposal_t *proposer = &transactions->proposer;
+    if (!matches(transactions, node, control) || control->result != LCS_CONFIG_TX_OK)
+        return 0; /* Unsolicited, stale and negative replies never confer a vote. */
+    const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+    if (proposer->phase == LCS_CONFIG_PROPOSER_PROMISES && control->kind == LCS_CONFIG_TX_PROMISE)
+    {
+        if (control->promised != proposer->proposal.ballot)
+            return -1;
+        if (proposer->proposal.sealed || (proposer->proposal.promises & (UINT32_C(1) << node)))
+            return 0;
+        if (control->accepted_ballot)
+        {
+            lcs_config_tx_control_t *previous = &proposer->peers[node].promise;
+            if (previous->accepted_ballot && memcmp(previous, control, sizeof(*control)))
+                return -1;
+            *previous = *control; /* Count only after the complete matching snapshot. */
+        }
+        else if (lcs_config_proposal_promise(&proposer->proposal, agreement, node, control->revision,
+                     control->parent, control->promised, 0, NULL) < 0)
+            return -1;
+    }
+    else if (proposer->phase == LCS_CONFIG_PROPOSER_ACKS && control->kind == LCS_CONFIG_TX_ACK)
+    {
+        const lcs_config_value_t *value = lcs_config_transactions_selected(transactions);
+        if (!strcmp(control->value, value->digest))
+            (void)lcs_config_proposal_ack(&proposer->proposal, agreement, node, control->ballot, value);
+    }
+    return 0;
+}
+
+static int proposer_transfer(lcs_config_transactions_t *transactions, size_t node, uint16_t type,
+                               const void *body, size_t length, uint64_t now_ms)
+{
+    lcs_config_network_proposal_t *proposer = &transactions->proposer;
+    lcs_config_proposer_peer_t *peer = &proposer->peers[node];
+    if (type == LCS_MSG_CONFIG_TX_BEGIN)
+    {
+        lcs_config_transfer_metadata_t metadata;
+        if (lcs_config_transfer_decode_begin(body, length, &metadata) || metadata.kind != LCS_CONFIG_TRANSFER_PROMISE)
+            return 0;
+        if (proposer->phase != LCS_CONFIG_PROPOSER_PROMISES || !peer->instance ||
+            peer->instance != transactions->peers[node].instance || !peer->sent ||
+            metadata.id != proposer->id)
+            return 1;
+        const lcs_config_tx_control_t *control = &peer->promise;
+        if (!control->accepted_ballot || metadata.accepted_ballot != control->accepted_ballot ||
+            metadata.ballot != control->ballot || metadata.revision != control->revision || metadata.voters ||
+            strcmp(metadata.value_digest, control->value) || strcmp(metadata.parent_digest, control->parent) ||
+            strcmp(metadata.membership, control->membership) || transactions->peers[node].incoming.document)
+            return -1;
+        return lcs_config_transfer_begin(&peer->incoming, &metadata, control->membership, now_ms) < 0 ? -1 : 1;
+    }
+    lcs_buf_reader_t reader;
+    uint64_t id;
+    lcs_buf_reader_init(&reader, body, length);
+    uint8_t chunk_format;
+    if ((type == LCS_MSG_CONFIG_TX_CHUNK && lcs_buf_get_u8(&reader, &chunk_format)) ||
+        lcs_buf_get_u64(&reader, &id) || !proposer->id || id != proposer->id ||
+        transactions->peers[node].incoming.document)
+        return 0;
+    if (!peer->incoming.document || proposer->phase != LCS_CONFIG_PROPOSER_PROMISES)
+        return 1;
+    if (type == LCS_MSG_CONFIG_TX_CHUNK)
+        return lcs_config_transfer_chunk(&peer->incoming, body, length, now_ms) ? -1 : 1;
+    if (type != LCS_MSG_CONFIG_TX_END || reader.off != reader.len)
+        return -1;
+    lcs_config_value_t value = {0};
+    const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+    char error[256];
+    if (lcs_config_transfer_finish(&peer->incoming, id, agreement->base, now_ms, &value, error, sizeof(error)))
+        return -1;
+    int result = lcs_config_proposal_promise(&proposer->proposal, agreement, node, proposer->proposal.revision,
+        proposer->proposal.parent_digest, peer->promise.promised, peer->promise.accepted_ballot, &value);
+    lcs_config_value_clear(&value);
+    return result < 0 ? -1 : 1;
+}
+
+static void proposer_phase(lcs_config_network_proposal_t *proposer, lcs_config_proposer_phase_t phase)
+{
+    proposer->phase = phase;
+    proposer->completion = 0;
+    for (size_t i = 0; i < LCS_MAX_NODES; i++)
+    {
+        proposer->peers[i].stage = 0;
+        proposer->peers[i].offset = 0;
+        proposer->peers[i].sent = false;
+        lcs_config_transfer_clear(&proposer->peers[i].incoming);
+    }
+}
+
+static int proposer_send(lcs_config_transactions_t *transactions, size_t node,
+                           lcs_config_tx_send_t send, void *context)
+{
+    lcs_config_network_proposal_t *proposer = &transactions->proposer;
+    lcs_config_proposer_peer_t *peer = &proposer->peers[node];
+    const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+    unsigned char payload[LCS_CONFIG_TRANSFER_CHUNK_MAX + 64], body[LCS_CONFIG_TRANSFER_CHUNK_MAX + 32];
+    size_t length, body_length;
+    uint16_t type;
+    if (proposer->phase == LCS_CONFIG_PROPOSER_PROMISES)
+    {
+        lcs_config_tx_control_t control = { .kind = LCS_CONFIG_TX_PREPARE,
+            .sender_instance = transactions->instance, .target_instance = peer->instance,
+            .id = proposer->id, .revision = proposer->proposal.revision, .ballot = proposer->proposal.ballot };
+        memcpy(control.membership, agreement->membership, sizeof(control.membership));
+        memcpy(control.parent, proposer->proposal.parent_digest, sizeof(control.parent));
+        if (lcs_config_tx_encode(&control, payload, sizeof(payload), &length))
+            return -1;
+        type = LCS_MSG_CONFIG_TX_CONTROL;
+    }
+    else
+    {
+        const lcs_config_value_t *value = lcs_config_transactions_selected(transactions);
+        if (!peer->stage)
+        {
+            lcs_config_transfer_metadata_t metadata = {
+                .kind = proposer->phase == LCS_CONFIG_PROPOSER_ACKS ? LCS_CONFIG_TRANSFER_ACCEPT : LCS_CONFIG_TRANSFER_LEARN,
+                .id = proposer->id, .revision = value->revision, .ballot = proposer->proposal.ballot,
+                .length = (uint32_t)value->length,
+                .voters = proposer->phase == LCS_CONFIG_PROPOSER_DISTRIBUTING ? proposer->proposal.acknowledgements : 0 };
+            memcpy(metadata.membership, agreement->membership, sizeof(metadata.membership));
+            memcpy(metadata.parent_digest, proposer->proposal.parent_digest, sizeof(metadata.parent_digest));
+            memcpy(metadata.value_digest, value->digest, sizeof(metadata.value_digest));
+            memcpy(metadata.request_id, value->request_id, sizeof(metadata.request_id));
+            if (lcs_config_transfer_encode_begin(&metadata, body, sizeof(body), &body_length))
+                return -1;
+            type = LCS_MSG_CONFIG_TX_BEGIN;
+        }
+        else if (peer->offset < value->length)
+        {
+            size_t count = value->length - peer->offset;
+            if (count > LCS_CONFIG_TRANSFER_CHUNK_MAX)
+                count = LCS_CONFIG_TRANSFER_CHUNK_MAX;
+            if (lcs_config_transfer_encode_chunk(proposer->id, peer->offset, value->document + peer->offset,
+                                                   count, body, sizeof(body), &body_length))
+                return -1;
+            type = LCS_MSG_CONFIG_TX_CHUNK;
+        }
+        else
+        {
+            lcs_buf_writer_t writer;
+            lcs_buf_writer_init(&writer, body, sizeof(body));
+            if (lcs_buf_put_u64(&writer, proposer->id))
+                return -1;
+            body_length = writer.len;
+            type = LCS_MSG_CONFIG_TX_END;
+        }
+        if (lcs_config_tx_wrap(transactions->instance, peer->instance, body, body_length,
+                                payload, sizeof(payload), &length))
+            return -1;
+    }
+    if (send(context, node, type, payload, length))
+        return 0;
+    if (type == LCS_MSG_CONFIG_TX_CONTROL || type == LCS_MSG_CONFIG_TX_END)
+        peer->sent = true;
+    else if (type == LCS_MSG_CONFIG_TX_BEGIN)
+        peer->stage = 1;
+    else
+        peer->offset += (uint32_t)(body_length - 13u);
+    return 1;
+}
+
+static void proposer_process(lcs_config_transactions_t *transactions, uint64_t now_ms,
+                               lcs_config_tx_send_t send, void *context)
+{
+    lcs_config_network_proposal_t *proposer = &transactions->proposer;
+    if (!proposing(proposer))
+        return;
+    lcs_config_coordinator_t *coordinator = transactions->coordinator;
+    lcs_config_agreement_t *agreement = &coordinator->runtime->agreement;
+    int self = lcs_config_self_index(agreement->base);
+    /* Observe a durable local decision even if its completion and the transport
+     * deadline arrive in the same scheduler iteration. */
+    if (proposer->phase == LCS_CONFIG_PROPOSER_LEARNING && proposer->completion &&
+        !coordinator->failed && coordinator->completed_votes == proposer->completion &&
+        coordinator->last_vote_result == LCS_CONFIG_AGREED)
+        proposer_phase(proposer, LCS_CONFIG_PROPOSER_DISTRIBUTING);
+    if (now_ms >= proposer->deadline_ms || coordinator->failed || coordinator->closing || proposer->proposal.failed)
+    {
+        proposer_phase(proposer, proposer->phase == LCS_CONFIG_PROPOSER_DISTRIBUTING ?
+            LCS_CONFIG_PROPOSER_COMPLETE : LCS_CONFIG_PROPOSER_UNKNOWN);
+        return; /* Never cancel or roll back a durable write on transport timeout. */
+    }
+    if (proposer->completion)
+    {
+        if (coordinator->completed_votes < proposer->completion)
+            return;
+        if (coordinator->completed_votes != proposer->completion || coordinator->last_vote_result != LCS_CONFIG_AGREED)
+        {
+            proposer_phase(proposer, LCS_CONFIG_PROPOSER_UNKNOWN);
+            return;
+        }
+        if (proposer->phase == LCS_CONFIG_PROPOSER_PREPARING)
+        {
+            if (lcs_config_proposal_promise(&proposer->proposal, agreement, (size_t)self,
+                proposer->proposal.revision, proposer->proposal.parent_digest, agreement->promised,
+                agreement->accepted_ballot, agreement->accepted.document ? &agreement->accepted : NULL) < 0)
+            { proposer_phase(proposer, LCS_CONFIG_PROPOSER_UNKNOWN); return; }
+            proposer_phase(proposer, LCS_CONFIG_PROPOSER_PROMISES);
+        }
+        else if (proposer->phase == LCS_CONFIG_PROPOSER_ACCEPTING)
+        {
+            (void)lcs_config_proposal_ack(&proposer->proposal, agreement, (size_t)self,
+                proposer->proposal.ballot, lcs_config_transactions_selected(transactions));
+            proposer_phase(proposer, LCS_CONFIG_PROPOSER_ACKS);
+        }
+        else
+            proposer_phase(proposer, LCS_CONFIG_PROPOSER_DISTRIBUTING);
+    }
+    lcs_config_agreement_action_t action;
+    lcs_config_proposer_phase_t next;
+    bool job = false;
+    if (proposer->phase == LCS_CONFIG_PROPOSER_PROMISES && lcs_config_proposal_seal(&proposer->proposal, agreement))
+    { action = LCS_CONFIG_ACCEPT; next = LCS_CONFIG_PROPOSER_ACCEPTING; job = true; }
+    else if (proposer->phase == LCS_CONFIG_PROPOSER_ACKS && lcs_config_proposal_chosen(&proposer->proposal, agreement))
+    {
+        bool partial = false;
+        for (size_t i = 0; i < LCS_MAX_NODES; i++)
+            partial = partial || (proposer->peers[i].instance && proposer->peers[i].stage && !proposer->peers[i].sent);
+        if (!partial)
+        { action = LCS_CONFIG_LEARN; next = LCS_CONFIG_PROPOSER_LEARNING; job = true; }
+    }
+    if (job)
+    {
+        int result = proposer_job(transactions, action);
+        if (result < 0)
+            proposer_phase(proposer, LCS_CONFIG_PROPOSER_UNKNOWN);
+        else if (!result)
+            proposer->phase = next;
+        return;
+    }
+    if (proposer->phase != LCS_CONFIG_PROPOSER_PROMISES && proposer->phase != LCS_CONFIG_PROPOSER_ACKS &&
+        proposer->phase != LCS_CONFIG_PROPOSER_DISTRIBUTING)
+        return;
+    unsigned budget = 4;
+    bool pending = false;
+    for (size_t scanned = 0; scanned < LCS_MAX_NODES && budget; scanned++)
+    {
+        size_t node = (transactions->cursor + scanned) % LCS_MAX_NODES;
+        lcs_config_proposer_peer_t *peer = &proposer->peers[node];
+        if ((int)node == self || !peer->instance || peer->sent ||
+            (proposer->phase == LCS_CONFIG_PROPOSER_ACKS &&
+             !(proposer->proposal.promises & (UINT32_C(1) << node))) ||
+            (proposer->phase == LCS_CONFIG_PROPOSER_DISTRIBUTING &&
+             !(proposer->proposal.acknowledgements & (UINT32_C(1) << node))))
+            continue;
+        pending = true;
+        int result = proposer_send(transactions, node, send, context);
+        if (result < 0)
+        { proposer_phase(proposer, LCS_CONFIG_PROPOSER_UNKNOWN); return; }
+        budget -= (unsigned)result;
+    }
+    if (!pending && proposer->phase == LCS_CONFIG_PROPOSER_DISTRIBUTING)
+        proposer_phase(proposer, LCS_CONFIG_PROPOSER_COMPLETE);
 }

@@ -48,6 +48,37 @@ typedef struct
     uint64_t deadline_ms;
 } lcs_config_tx_peer_t;
 
+typedef enum
+{
+    LCS_CONFIG_PROPOSER_IDLE = 0,
+    LCS_CONFIG_PROPOSER_PREPARING,
+    LCS_CONFIG_PROPOSER_PROMISES,
+    LCS_CONFIG_PROPOSER_ACCEPTING,
+    LCS_CONFIG_PROPOSER_ACKS,
+    LCS_CONFIG_PROPOSER_LEARNING,
+    LCS_CONFIG_PROPOSER_DISTRIBUTING,
+    LCS_CONFIG_PROPOSER_COMPLETE,
+    LCS_CONFIG_PROPOSER_UNKNOWN,
+} lcs_config_proposer_phase_t;
+
+typedef struct
+{
+    uint64_t instance;
+    lcs_config_tx_control_t promise;
+    lcs_config_transfer_t incoming;
+    uint32_t offset;
+    uint8_t stage;
+    bool sent;
+} lcs_config_proposer_peer_t;
+
+typedef struct
+{
+    lcs_config_proposal_t proposal;
+    lcs_config_proposer_peer_t peers[LCS_MAX_NODES];
+    uint64_t id, deadline_ms, completion;
+    lcs_config_proposer_phase_t phase;
+} lcs_config_network_proposal_t;
+
 typedef struct
 {
     lcs_config_coordinator_t *coordinator;
@@ -58,18 +89,30 @@ typedef struct
     size_t pending_node, cursor;
     uint8_t pending_kind;
     bool active, reply_pending;
+    lcs_config_network_proposal_t proposer;
 } lcs_config_transactions_t;
 
 void lcs_config_transactions_init(lcs_config_transactions_t *transactions,
                                     lcs_config_coordinator_t *coordinator, uint64_t instance);
 /* PREPARE and complete ACCEPT/LEARN values submit only through the coordinator.
  * No storage reads/syncs in the receiver. Non-ready nodes reject before allocation.
- * PROMISE/ACK/LEARNED reception is validated but not counted automatically: a
- * future network proposer must correlate exact requests and complete snapshots. */
+ * Replies are counted only for an explicitly started, instance-bound proposal. */
 int lcs_config_transactions_receive(lcs_config_transactions_t *transactions, size_t node,
                                      uint64_t peer_instance, uint16_t type,
                                      const void *payload, size_t length, uint64_t now_ms);
-/* Caller advances the shared coordinator first. At most four queued frames per
+/* Explicit internal proposal entry point; does not initialize/activate a cluster.
+ * instances contains only admitted wire-6 sessions (zero for unavailable peers),
+ * including this daemon's own instance. IDs must strictly increase per daemon.
+ * The local PREPARE is persisted before any request is sent. Completion means
+ * the chosen value was learned locally; it can be a recovered earlier request.
+ * UNKNOWN requires a new ballot/recovery, never assumes the request was aborted.
+ * No application, CLI mutation, automatic retry or reconnect catch-up here. */
+int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
+                                     const uint64_t instances[LCS_MAX_NODES],
+                                     uint64_t id, const lcs_config_value_t *requested, uint64_t now_ms);
+/* Selected phase-two value; a decision is known only in DISTRIBUTING/COMPLETE. */
+const lcs_config_value_t *lcs_config_transactions_selected(const lcs_config_transactions_t *transactions);
+/* Caller advances the shared coordinator first. At most eight queued frames per
  * call; bounded snapshot output retries do not extend the original deadline. */
 void lcs_config_transactions_process(lcs_config_transactions_t *transactions, uint64_t now_ms,
                                       lcs_config_tx_send_t send, void *context);

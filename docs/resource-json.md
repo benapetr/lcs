@@ -73,8 +73,10 @@ authority or applies resources. Frozen definitions reject legacy INI resource re
 Wire-6 acceptor transactions can persist promises, accepted successors and
 majority decisions after durable readiness. INI-only nodes refuse them without
 creating state. Learning remains separate from application: it does not start
-resources, change authority or enable dynamic commands. The automatic network
-proposer and multi-revision synchronization are still unfinished. See
+resources, change authority or enable dynamic commands. An internal network
+proposer can explicitly submit a whole snapshot and recover previously accepted
+values through correlated promises; automatic activation, multi-revision
+synchronization and live resource application remain unfinished. See
 [network agreement handling](dynamic-config-agreement.md#network-acceptor-and-majority-decision-handling).
 
 ## Inspecting preparation across members

@@ -450,13 +450,216 @@ static void test_backpressure_and_partial_cleanup(void)
     cleanup();
 }
 
+typedef struct frame
+{
+    struct frame *next;
+    size_t from, to, length;
+    uint16_t type;
+    unsigned char payload[];
+} frame_t;
+static frame_t *frames, **frame_tail = &frames;
+static bool network_blocked, wrong_reply_id, duplicate_controls;
+static unsigned network_errors;
+
+static int network_send(void *context, size_t to, uint16_t type, const void *payload, size_t length)
+{
+    if (network_blocked)
+        return 1;
+    frame_t *frame = malloc(sizeof(*frame) + length);
+    assert(frame);
+    *frame = (frame_t){ .to = to, .type = type, .length = length };
+    frame->from = (size_t)((node_t *)context - nodes);
+    memcpy(frame->payload, payload, length);
+    if (wrong_reply_id && frame->from && type == LCS_MSG_CONFIG_TX_CONTROL)
+    {
+        lcs_config_tx_control_t control;
+        assert(!lcs_config_tx_decode(payload, length, &control));
+        control.id++;
+        assert(!lcs_config_tx_encode(&control, frame->payload, length, &frame->length));
+    }
+    *frame_tail = frame;
+    frame_tail = &frame->next;
+    if (duplicate_controls && type == LCS_MSG_CONFIG_TX_CONTROL)
+    {
+        frame_t *duplicate = malloc(sizeof(*duplicate) + length);
+        assert(duplicate);
+        memcpy(duplicate, frame, sizeof(*duplicate) + length);
+        *frame_tail = duplicate;
+        frame_tail = &duplicate->next;
+    }
+    return 0;
+}
+
+static void network_tick(uint64_t now)
+{
+    for (size_t i = 0; i < 3; i++)
+    {
+        (void)lcs_config_coordinator_process(&nodes[i].coordinator, now);
+        lcs_config_transactions_process(&nodes[i].transactions, now, network_send, &nodes[i]);
+    }
+    while (frames)
+    {
+        frame_t *frame = frames;
+        frames = frame->next;
+        if (lcs_config_transactions_receive(&nodes[frame->to].transactions, frame->from,
+              100 + frame->from, frame->type, frame->payload, frame->length, now))
+        {
+            fprintf(stderr, "network error from=%zu to=%zu type=%u proposer=%d output=%u incoming=%zu promise=%zu\n",
+                frame->from, frame->to, frame->type, nodes[0].transactions.proposer.phase,
+                nodes[frame->to].transactions.peers[frame->from].stage,
+                nodes[frame->to].transactions.peers[frame->from].incoming.used,
+                nodes[frame->to].transactions.proposer.peers[frame->from].incoming.used);
+            network_errors++;
+        }
+        free(frame);
+    }
+    frame_tail = &frames;
+    usleep(1000);
+}
+
+static void network_finish(uint64_t now)
+{
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        network_tick(now);
+        if (nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_COMPLETE)
+        {
+            bool learned = true;
+            const lcs_config_value_t *selected = lcs_config_transactions_selected(&nodes[0].transactions);
+            for (size_t j = 0; j < 3; j++)
+                if (nodes[0].transactions.proposer.proposal.acknowledgements & (UINT32_C(1) << j))
+                    learned = learned && lcs_config_value_equal(&nodes[j].runtime.agreement.committed, selected);
+            if (learned)
+                return;
+        }
+        assert(nodes[0].transactions.proposer.phase != LCS_CONFIG_PROPOSER_UNKNOWN);
+    }
+    assert(!"network proposal timed out");
+}
+
+static void test_network_proposer(void)
+{
+    setup();
+    network_errors = 0;
+    uint64_t instances[LCS_MAX_NODES] = {100, 101, 102};
+    lcs_config_value_t value = candidate("network-activation");
+    forbid_io = true;
+    duplicate_controls = true;
+    uint64_t unavailable[LCS_MAX_NODES] = {100};
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, unavailable, 99, &value, 1000) < 0);
+    assert(lcs_config_transactions_propose(&nodes[2].transactions, instances, 99, &value, 1000) < 0);
+    assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 100, &value, 1000));
+    assert(!frames); /* No wire request before local durable prepare. */
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 101, &value, 1000) < 0);
+    network_finish(1000);
+    assert(!network_errors);
+    assert(lcs_config_proposal_chosen(&nodes[0].transactions.proposer.proposal, &nodes[0].runtime.agreement));
+    for (size_t i = 0; i < 3; i++)
+    {
+        if (nodes[0].transactions.proposer.proposal.acknowledgements & (UINT32_C(1) << i))
+            assert(lcs_config_value_equal(&nodes[i].runtime.agreement.committed, &value));
+        assert(nodes[i].runtime.application.applied.revision == 0);
+    }
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 100, &value, 1000) < 0);
+    lcs_config_value_clear(&value);
+    cleanup();
+    duplicate_controls = false;
+
+    /* Recover an earlier accepted value through real PROMISE snapshot frames. */
+    setup();
+    value = candidate("earlier-request");
+    for (size_t i = 1; i < 3; i++)
+    {
+        assert(!lcs_config_agreement_prepare(&nodes[i].runtime.agreement, 1,
+            nodes[i].runtime.agreement.committed.digest, 32, error, sizeof(error)));
+        assert(!lcs_config_agreement_accept(&nodes[i].runtime.agreement,
+            nodes[i].runtime.agreement.committed.digest, 32, &value, error, sizeof(error)));
+    }
+    lcs_config_value_t newer = candidate("new-request");
+    /* Force recovery from node1's complete snapshot, with no local accepted value. */
+    instances[2] = 0;
+    forbid_io = true;
+    assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 200, &newer, 1000));
+    network_finish(1000);
+    assert(!network_errors);
+    assert(!strcmp(lcs_config_transactions_selected(&nodes[0].transactions)->request_id, "earlier-request"));
+    lcs_config_value_clear(&value);
+    lcs_config_value_clear(&newer);
+    cleanup();
+
+    /* Wrong request IDs cannot add promises; retries require a new ID/ballot. */
+    setup();
+    value = candidate("timeout-request");
+    forbid_io = true;
+    wrong_reply_id = true;
+    instances[2] = 102;
+    assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 300, &value, 1000));
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        network_tick(1000);
+        if (nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_PROMISES &&
+            nodes[1].runtime.agreement.promised && nodes[2].runtime.agreement.promised)
+            break;
+    }
+    assert(nodes[0].runtime.agreement.promised);
+    assert(nodes[0].transactions.proposer.proposal.promises == 1);
+    assert(!nodes[0].runtime.agreement.accepted.document);
+    uint64_t first_ballot = nodes[0].runtime.agreement.promised;
+    network_tick(11000);
+    assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_UNKNOWN);
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 300, &value, 12000) < 0);
+    wrong_reply_id = false;
+    network_blocked = false;
+    assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 301, &value, 12000));
+    assert(nodes[0].transactions.proposer.proposal.ballot > first_ballot);
+    network_finish(12000);
+    assert(!network_errors);
+    lcs_config_value_clear(&value);
+    cleanup();
+
+    /* Notification backpressure cannot turn an already learned decision unknown. */
+    setup();
+    value = candidate("known-decision");
+    forbid_io = true;
+    assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 400, &value, 1000));
+    for (unsigned i = 0; i < 5000 &&
+         nodes[0].transactions.proposer.phase != LCS_CONFIG_PROPOSER_DISTRIBUTING; i++)
+        network_tick(1000);
+    assert(nodes[0].runtime.agreement.committed.revision == 1);
+    network_blocked = true;
+    network_tick(11000);
+    assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_COMPLETE);
+    assert(lcs_config_value_equal(&nodes[0].runtime.agreement.committed, &value));
+    network_blocked = false;
+    lcs_config_value_clear(&value);
+    cleanup();
+
+    /* Uncertain local persistence never sends a positive network request. */
+    setup();
+    value = candidate("uncertain-proposer");
+    forbid_io = true;
+    fail_sync = 2;
+    assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 500, &value, 1000));
+    fail_sync = 0;
+    for (unsigned i = 0; i < 5000 &&
+         nodes[0].transactions.proposer.phase != LCS_CONFIG_PROPOSER_UNKNOWN; i++)
+        network_tick(1000);
+    assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_UNKNOWN);
+    assert(nodes[0].coordinator.failed && !nodes[1].runtime.agreement.promised && !nodes[2].runtime.agreement.promised);
+    assert(!network_errors);
+    lcs_config_value_clear(&value);
+    cleanup();
+
+}
+
 int main(void)
 {
     parent = getpid();
+    test_network_proposer();
     test_codecs_and_session_admission();
     test_majority_and_recovery();
     test_disconnect_and_uncertain_write();
     test_backpressure_and_partial_cleanup();
-    puts("network configuration acceptor and majority decision unit tests passed");
+    puts("network configuration proposer, acceptor and majority decision unit tests passed");
     return 0;
 }

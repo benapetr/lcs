@@ -87,10 +87,12 @@ index. Streams reset on session teardown, and chunk/input/output limits and fixe
 deadlines apply. No released HELLO or lease layouts change, and these frames are
 never sent on wire 5. INI-only nodes refuse requests without creating history.
 
-This is an acceptor/learner endpoint. An automatic network proposer, correlation
-of incoming PROMISE snapshots into its quorum, multi-revision synchronization and
-resource application remain unfinished. Unsolicited control replies are not counted
-as votes, and incoming PROMISE/SYNC transfers are not accepted by this endpoint.
+An internal network proposer can explicitly drive these existing frames through
+prepare, accept and learning, correlating replies and complete PROMISE snapshots
+with the request, ballot and admitted daemon instances. No additional frame type,
+wire version or local CLI protocol change accompanies that coordinator. Unsolicited
+replies do not count; SYNC and multi-revision synchronization, automatic activation
+and resource application remain unfinished.
 
 Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.
 When releasing it for the first time, replace that label in `src/protocol.c` and

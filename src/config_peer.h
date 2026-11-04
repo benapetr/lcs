@@ -3,6 +3,7 @@
 #define LCS_CONFIG_PEER_H
 
 #include "config_status_protocol.h"
+#include "config_agreement.h"
 
 /* Diagnostic metadata and explicit readiness have distinct message types.
  * Metadata never authorizes activation or resource mutations. */
@@ -15,6 +16,10 @@ int config_peer_view(lcs_config_status_view_t *view);
  * local initialization and serializing INI reload. A completed in-memory round
  * still requires the shared barrier storage worker before configuration votes. */
 int config_peer_readiness_start(void);
+/* Internal entry point for one whole-snapshot proposal using currently admitted
+ * wire-6 instances. Requires durable readiness and serialized INI reload.
+ * Completion is available from config_transactions; it does not apply resources. */
+int config_peer_propose(uint64_t id, const lcs_config_value_t *requested);
 /* Shutdown never frees/reopens storage while a cancelled writer is alive.
  * Call stop once, poll shutdown_process, then check stopped before closing the
  * runtime/storage. A false result at process exit means retain those handles. */
