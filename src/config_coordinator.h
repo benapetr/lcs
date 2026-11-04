@@ -43,8 +43,8 @@ void lcs_config_coordinator_init(lcs_config_coordinator_t *coordinator,
 /* Attach an explicitly started readiness attempt. No automatic initialization,
  * file I/O, authority switch or backend work occurs here. Returns 1 if busy. */
 int lcs_config_coordinator_start(lcs_config_coordinator_t *coordinator);
-/* After runtime_open and local application recovery, adopt an existing valid
- * durable barrier without collecting readiness again or performing I/O. */
+/* After runtime_open, adopt an existing valid durable barrier without collecting
+ * readiness again or I/O. Application may lag for sync recovery; votes stay gated. */
 int lcs_config_coordinator_recover(lcs_config_coordinator_t *coordinator);
 /* Explicit local PREPARE/ACCEPT admission through the SAME writer. A durable
  * barrier and caught-up application are mandatory; ACCEPT requires schema 2 and
@@ -62,6 +62,12 @@ int lcs_config_coordinator_start_vote(lcs_config_coordinator_t *coordinator,
 int lcs_config_coordinator_start_learn(lcs_config_coordinator_t *coordinator,
                                        const lcs_config_agreement_job_t *job,
                                        char *err, size_t err_len);
+/* Catch up committed metadata, including revision gaps, with majority evidence.
+ * Requires the existing durable barrier; application/pending cleanup are retained.
+ * It does not grant a vote while application is behind or authorize initialization. */
+int lcs_config_coordinator_start_checkpoint(lcs_config_coordinator_t *coordinator,
+                                            const lcs_config_agreement_job_t *job,
+                                            char *err, size_t err_len);
 /* Nonblocking: collect -> shared barrier writer -> durable READY. Returns 1
  * while proof is eligible, -1 for terminal failure, 0 for pending/stopped/idle.
  * Never publish a result for a replaced readiness attempt. */

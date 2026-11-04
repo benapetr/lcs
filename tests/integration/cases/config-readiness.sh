@@ -110,6 +110,12 @@ with socket.socket() as listener:
                 send(sock, 34, 61001, struct.pack("!HQQ", 1, INSTANCE, local_instance) + metadata)
                 rejected = receive_type(sock, 33)
                 assert rejected[2:4] == bytes((3, 3))
+                # A revision-zero checkpoint query is also nonmutating in legacy mode.
+                sync_query = (struct.pack("!HBBQQQQQQQ", 1, 5, 0, INSTANCE, local_instance,
+                                          45, 0, 0, 0, 0) + membership + baseline + baseline)
+                send(sock, 33, 61003, sync_query)
+                status = receive_type(sock, 33)
+                assert len(status) == 255 and status[2:4] == bytes((6, 3))
                 send(sock, 31, 60006, query(6, requester=INSTANCE + 1))
                 closed(sock)
             sock, _ = establish(listener, 5)

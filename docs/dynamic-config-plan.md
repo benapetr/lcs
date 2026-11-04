@@ -118,8 +118,11 @@ durable distributed configuration protocol.
   state import, and cancellation that waits for child exit before disk recovery.
   Agreement and application begin/finish now share one writer; catalog imports
   cannot erase pending cleanup obligations or replay older applied state.
-- [ ] Implement multi-revision catch-up, durable request-status history, and
-  safe compaction/checkpointing for the complete distributed transaction manager.
+- [x] Implement durable committed checkpoint catch-up across multiple revisions,
+  retaining higher promises and applied/pending cleanup snapshots. Keep normal
+  worker imports strict and validate incarnation continuity on checkpoint imports.
+- [ ] Implement durable request-status history, backup/recovery policy and safe
+  history retention/compaction for the complete distributed transaction manager.
 - [x] Define full-cluster restart, stale-majority prevention, disk loss, backup
   restoration, and explicit disaster recovery. A lone high revision or a former
   minority must not establish authority by itself.
@@ -173,7 +176,7 @@ durable distributed configuration protocol.
 - [x] Implement transport-independent bounded BEGIN/CHUNK snapshot codecs,
   exact metadata validation, fixed deadlines, duplicate handling, membership
   checks, and complete-value validation. Wire-6 acceptor registration is implemented
-  below; network proposer handling is implemented below; synchronization remains pending.
+  below; network proposer and checkpoint synchronization are implemented below.
 - [x] Implement the local durable all-member readiness barrier, including
   quorum-only members, exact baseline/membership binding, a checksummed record,
   serialized nonblocking persistence, and application-aware configuration-vote
@@ -210,8 +213,14 @@ durable distributed configuration protocol.
   values, gather distinct promises/ACKs, and persist the chosen decision locally.
   Use one fixed deadline and shared storage writer; report unknown on interruption,
   and require newer IDs/ballots for retries. Notify acknowledged acceptors, leaving
-  nonparticipating/reconnected members to the pending synchronization path.
+  nonparticipating/reconnected members to checkpoint synchronization.
   This explicit internal entry point does not automatically activate or apply resources.
+- [x] Pull committed checkpoint snapshots over admitted wire-6 sessions, binding
+  requests to instances, static membership and frozen baseline. Validate original
+  majority decisions relayed by any configured member, serialize persistence,
+  and poll peers in rotation only after a durable barrier. Cover revision gaps,
+  delete/recreate cleanup, quorum-only receivers, deadlines and disconnected writes.
+  Learning remains separate from application and distributed startup admission.
 - [ ] Gate automatic activation on explicit capability and readiness confirmation
   from every configured member, including quorum-only nodes, with matching
   effective configuration. Unknown/offline members must not count as upgraded.

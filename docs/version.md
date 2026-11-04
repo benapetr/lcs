@@ -91,8 +91,20 @@ An internal network proposer can explicitly drive these existing frames through
 prepare, accept and learning, correlating replies and complete PROMISE snapshots
 with the request, ballot and admitted daemon instances. No additional frame type,
 wire version or local CLI protocol change accompanies that coordinator. Unsolicited
-replies do not count; SYNC and multi-revision synchronization, automatic activation
-and resource application remain unfinished.
+replies do not count. Automatic activation and resource application remain unfinished.
+
+Format-1 control kinds 5 (`SYNC_QUERY`) and 6 (`SYNC_STATUS`) add committed
+checkpoint pulls using these same wire-6 frame IDs. Queries allow revision zero,
+zero ballots, and bind the requester digest in `parent` and frozen baseline in
+`value`. A successful STATUS carries the server's committed revision/ballot,
+parent/value digests and zero promised/accepted fields; its bounded SYNC snapshot
+carries the original majority mask and request ID. Revision-zero STATUS uses a
+zero ballot and baseline digest as parent/value. Negative STATUS has a zero ballot
+and empty value. Matching requests and peer instances are mandatory; unsolicited
+snapshots cannot initialize state. Unlike a new PREPARE/ACCEPT/LEARN, a SYNC relay
+may carry another member's original proposer ballot. The checkpoint action admits
+validated revision gaps through the shared storage worker without applying resources.
+All these additions remain within unreleased wire 6; the CLI protocol is unchanged.
 
 Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.
 When releasing it for the first time, replace that label in `src/protocol.c` and

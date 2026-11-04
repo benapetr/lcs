@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "config_agreement.h"
+#include "config_candidate.h"
 #include "util.h"
 
 #include <jansson.h>
@@ -451,9 +452,9 @@ int lcs_config_agreement_open(lcs_config_agreement_t *agreement,
     return 0;
 }
 
-int lcs_config_agreement_import(lcs_config_agreement_t *agreement,
+static int import_record(lcs_config_agreement_t *agreement,
                                 const char *document, size_t length,
-                                char *err, size_t err_len)
+                                char *err, size_t err_len, bool checkpoint)
 {
     if (agreement->poisoned)
         return fail(err, err_len, "poisoned state requires disk recovery, not a worker replay");
@@ -469,13 +470,16 @@ int lcs_config_agreement_import(lcs_config_agreement_t *agreement,
     bool same_revision = next.committed.revision == agreement->committed.revision;
     if (next.promised < agreement->promised ||
         next.committed.revision < agreement->committed.revision ||
-        next.committed.revision > agreement->committed.revision + 1 ||
+        (!checkpoint && next.committed.revision > agreement->committed.revision + 1) ||
         (same_revision && (!lcs_config_value_equal(&next.committed, &agreement->committed) ||
             next.accepted_ballot < agreement->accepted_ballot ||
             (next.accepted_ballot && next.accepted_ballot == agreement->accepted_ballot &&
              !lcs_config_value_equal(&next.accepted, &agreement->accepted)))) ||
-        (!same_revision && (strcmp(next.parent_digest, agreement->committed.digest) ||
-            checked_successor(agreement, &next.committed, err, err_len))))
+        (!same_revision && (checkpoint ?
+            next.accepted.document || lcs_config_agreement_check_checkpoint(agreement, next.parent_digest,
+                next.committed_ballot, next.committed_voters, &next.committed, err, err_len) :
+            strcmp(next.parent_digest, agreement->committed.digest) ||
+                checked_successor(agreement, &next.committed, err, err_len))))
     {
         lcs_config_agreement_close(&next);
         agreement->poisoned = true;
@@ -484,6 +488,18 @@ int lcs_config_agreement_import(lcs_config_agreement_t *agreement,
     lcs_config_agreement_close(agreement);
     *agreement = next;
     return 0;
+}
+
+int lcs_config_agreement_import(lcs_config_agreement_t *agreement, const char *document,
+                                size_t length, char *err, size_t err_len)
+{
+    return import_record(agreement, document, length, err, err_len, false);
+}
+
+int lcs_config_agreement_import_checkpoint(lcs_config_agreement_t *agreement, const char *document,
+                                           size_t length, char *err, size_t err_len)
+{
+    return import_record(agreement, document, length, err, err_len, true);
 }
 
 static int slot_check(lcs_config_agreement_t *agreement, uint64_t revision,
@@ -618,6 +634,75 @@ int lcs_config_agreement_learn(lcs_config_agreement_t *agreement,
     {
         lcs_config_agreement_close(&next);
         return fail(err, err_len, "out of memory learning decision");
+    }
+    snprintf(next.parent_digest, sizeof(next.parent_digest), "%s", parent_digest);
+    next.committed_ballot = ballot;
+    next.committed_voters = voters;
+    if (next.promised < ballot)
+        next.promised = ballot;
+    next.accepted_ballot = 0;
+    lcs_config_value_clear(&next.accepted);
+    return publish(agreement, &next, err, err_len);
+}
+
+int lcs_config_agreement_check_checkpoint(const lcs_config_agreement_t *agreement,
+                                          const char *parent_digest, uint64_t ballot, uint32_t voters,
+                                          const lcs_config_value_t *value, char *err, size_t err_len)
+{
+    if (agreement->poisoned || !value || !value->document || !value->length || !value->revision || !digest_valid(parent_digest) ||
+        !quorum(agreement, voters) || !lcs_config_agreement_ballot_valid(agreement, ballot) ||
+        checked_value(agreement, value, err, err_len))
+        return fail(err, err_len, "invalid committed checkpoint or voting majority");
+    if (value->revision < agreement->committed.revision)
+        return LCS_CONFIG_STALE;
+    if (value->revision == agreement->committed.revision)
+        return lcs_config_value_equal(value, &agreement->committed) && !strcmp(parent_digest, agreement->parent_digest) ?
+            LCS_CONFIG_AGREED : LCS_CONFIG_REJECTED;
+    if (value->revision == agreement->committed.revision + 1)
+    {
+        if (strcmp(parent_digest, agreement->committed.digest) || checked_successor(agreement, value, err, err_len))
+            return LCS_CONFIG_REJECTED;
+        if (agreement->accepted_ballot >= ballot && !lcs_config_value_equal(&agreement->accepted, value))
+            return fail(err, err_len, "checkpoint conflicts with equal/newer accepted value");
+    }
+    lcs_config_t *configs = malloc(2 * sizeof(*configs));
+    if (!configs)
+        return fail(err, err_len, "out of memory validating checkpoint incarnations");
+    uint64_t before, after;
+    int result = lcs_resource_config_decode(agreement->committed.document, agreement->committed.length,
+        agreement->base, &configs[0], &before, err, err_len);
+    if (!result)
+        result = lcs_resource_config_decode(value->document, value->length, agreement->base, &configs[1], &after, err, err_len);
+    if (!result && configs[1].resource_schema_version != LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
+        result = fail(err, err_len, "checkpoint must use dynamic resource identities");
+    for (size_t i = 0; !result && i < configs[1].resource_count; i++)
+    {
+        const lcs_resource_config_t *resource = &configs[1].resources[i];
+        int old = lcs_config_resource_index(&configs[0], resource->name);
+        if (resource->birth_revision <= before && (old < 0 ||
+            configs[0].resources[old].birth_revision != resource->birth_revision ||
+            !lcs_config_backend_equal(&configs[0].resources[old], resource)))
+            result = fail(err, err_len, "checkpoint reuses an absent or conflicting old incarnation");
+    }
+    free(configs);
+    return result;
+}
+
+int lcs_config_agreement_checkpoint(lcs_config_agreement_t *agreement,
+                                    const char *parent_digest, uint64_t ballot, uint32_t voters,
+                                    const lcs_config_value_t *value, char *err, size_t err_len)
+{
+    int result = lcs_config_agreement_check_checkpoint(agreement, parent_digest, ballot, voters, value, err, err_len);
+    if (result || value->revision == agreement->committed.revision)
+        return result;
+    lcs_config_agreement_t next;
+    if (clone(&next, agreement))
+        return fail(err, err_len, "out of memory learning checkpoint");
+    lcs_config_value_clear(&next.committed);
+    if (lcs_config_value_copy(&next.committed, value))
+    {
+        lcs_config_agreement_close(&next);
+        return fail(err, err_len, "out of memory copying checkpoint");
     }
     snprintf(next.parent_digest, sizeof(next.parent_digest), "%s", parent_digest);
     next.committed_ballot = ballot;

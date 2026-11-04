@@ -10,7 +10,8 @@
 #define LCS_CONFIG_TX_CONTROL_MAX 256u
 
 enum { LCS_CONFIG_TX_PREPARE = 1, LCS_CONFIG_TX_PROMISE = 2,
-       LCS_CONFIG_TX_ACK = 3, LCS_CONFIG_TX_LEARNED = 4 };
+       LCS_CONFIG_TX_ACK = 3, LCS_CONFIG_TX_LEARNED = 4,
+       LCS_CONFIG_TX_SYNC_QUERY = 5, LCS_CONFIG_TX_SYNC_STATUS = 6 };
 enum { LCS_CONFIG_TX_OK = 0, LCS_CONFIG_TX_REJECTED = 1, LCS_CONFIG_TX_STALE = 2,
        LCS_CONFIG_TX_NOT_READY = 3, LCS_CONFIG_TX_BUSY = 4, LCS_CONFIG_TX_UNKNOWN = 5 };
 
@@ -79,6 +80,26 @@ typedef struct
     lcs_config_proposer_phase_t phase;
 } lcs_config_network_proposal_t;
 
+typedef enum
+{
+    LCS_CONFIG_SYNC_IDLE = 0,
+    LCS_CONFIG_SYNC_QUERYING,
+    LCS_CONFIG_SYNC_RECEIVING,
+    LCS_CONFIG_SYNC_PERSISTING,
+    LCS_CONFIG_SYNC_CURRENT,
+    LCS_CONFIG_SYNC_COMPLETE,
+    LCS_CONFIG_SYNC_UNKNOWN,
+} lcs_config_sync_phase_t;
+
+typedef struct
+{
+    lcs_config_tx_control_t query, status;
+    uint64_t deadline_ms, completion, next_ms, serial;
+    size_t node, cursor;
+    lcs_config_sync_phase_t phase;
+    bool sent;
+} lcs_config_sync_t;
+
 typedef struct
 {
     lcs_config_coordinator_t *coordinator;
@@ -90,6 +111,7 @@ typedef struct
     uint8_t pending_kind;
     bool active, reply_pending;
     lcs_config_network_proposal_t proposer;
+    lcs_config_sync_t sync;
 } lcs_config_transactions_t;
 
 void lcs_config_transactions_init(lcs_config_transactions_t *transactions,
@@ -112,7 +134,12 @@ int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
                                      uint64_t id, const lcs_config_value_t *requested, uint64_t now_ms);
 /* Selected phase-two value; a decision is known only in DISTRIBUTING/COMPLETE. */
 const lcs_config_value_t *lcs_config_transactions_selected(const lcs_config_transactions_t *transactions);
-/* Caller advances the shared coordinator first. At most eight queued frames per
+/* Pull one admitted peer's latest committed checkpoint, including revision gaps.
+ * Uses the existing readiness barrier and writer, retaining applied/pending state.
+ * A strictly increasing session-local ID is required; no initialization occurs. */
+int lcs_config_transactions_sync(lcs_config_transactions_t *transactions, size_t node,
+                                  uint64_t peer_instance, uint64_t id, uint64_t now_ms);
+/* Caller advances the shared coordinator first. At most nine queued frames per
  * call; bounded snapshot output retries do not extend the original deadline. */
 void lcs_config_transactions_process(lcs_config_transactions_t *transactions, uint64_t now_ms,
                                       lcs_config_tx_send_t send, void *context);

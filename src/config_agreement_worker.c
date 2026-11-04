@@ -160,6 +160,9 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
     else if (job->action == LCS_CONFIG_LEARN)
         result.result = lcs_config_agreement_learn(agreement, job->parent_digest,
             job->ballot, job->voters, job->value, result.error, sizeof(result.error));
+    else if (job->action == LCS_CONFIG_CHECKPOINT)
+        result.result = lcs_config_agreement_checkpoint(agreement, job->parent_digest,
+            job->ballot, job->voters, job->value, result.error, sizeof(result.error));
     else if (job->action == LCS_CONFIG_APPLICATION_BEGIN)
         result.result = lcs_config_application_begin(application, agreement,
                                                       result.error, sizeof(result.error));
@@ -205,7 +208,7 @@ static int start(lcs_config_agreement_worker_t *worker,
         (application && (application->poisoned || application->store != agreement->store ||
          strcmp(application->member, agreement->member) ||
          strcmp(application->membership, agreement->membership))) ||
-        (!application_job && (job->action < LCS_CONFIG_PREPARE || job->action > LCS_CONFIG_LEARN ||
+        (!application_job && (job->action < LCS_CONFIG_PREPARE || (job->action > LCS_CONFIG_LEARN && job->action != LCS_CONFIG_CHECKPOINT) ||
          (job->action != LCS_CONFIG_PREPARE && !job->value))) ||
         (job->action == LCS_CONFIG_APPLICATION_FINISH &&
          (!memchr(job->application_digest, 0, sizeof(job->application_digest)) ||
@@ -235,6 +238,7 @@ static int start(lcs_config_agreement_worker_t *worker,
     if (!child)
         execute_child(agreement, application, job, candidate, allow_initialize, barrier_runtime, fds[1], parent);
     close(fds[1]);
+    worker->checkpoint = job && job->action == LCS_CONFIG_CHECKPOINT;
     worker->application = application;
     worker->initialization_target = target;
     worker->initialization_candidate = candidate;
@@ -516,6 +520,7 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
     const char *record = (const char *)worker->buffer + sizeof(result);
     int imported = !result.length ? -1 : worker->application ?
         lcs_config_application_import(worker->application, agreement, record, result.length, err, err_len) :
+        worker->checkpoint ? lcs_config_agreement_import_checkpoint(agreement, record, result.length, err, err_len) :
         lcs_config_agreement_import(agreement, record, result.length, err, err_len);
     if (imported)
     {

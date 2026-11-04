@@ -117,7 +117,8 @@ The asynchronous wrapper performs these operations in a child worker. The parent
 drains a bounded result pipe without blocking and publishes the verified local
 record only after a complete successful worker exit. It rejects records that
 would roll back a promise, replace an equal committed revision, forget an accepted
-value, or skip a committed predecessor. A killed/incomplete worker requires disk
+value, or skip a committed predecessor. A distinct checkpoint job/import permits
+validated revision gaps while preserving promises and local application state. A killed/incomplete worker requires disk
 recovery before further configuration votes; an old worker result cannot repair
 that uncertainty. Workers close inherited network/listener descriptors and die
 with their parent.
@@ -185,9 +186,9 @@ The generic agreement library alone also supports legacy-schema successors, so
 activation recovery adds this stricter validation.
 
 `agreement.json` checkpoints the latest committed value and pending next
-slot. Catch-up across multiple revisions, request-status retention, backups,
-disaster recovery, and safe deletion of historical status records still require
-integration design. Restoring stale disks or losing all agreement state is not
+slot. The checkpoint path below supports catch-up across multiple revisions;
+request-status retention, backups, disaster recovery, and safe deletion of
+historical status records still require integration design. Restoring stale disks or losing all agreement state is not
 equivalent to an ordinary daemon restart and must not silently reset promises.
 
 ## Durable all-member activation barrier
@@ -267,11 +268,11 @@ revision-one activation must preserve the frozen definitions. Successful worker
 completion reports the actual agreed/rejected/stale result separately from
 uncertain persistence. Acceptance does not learn a majority decision, switch
 authority or apply resources. Wire-6 acceptor framing now verifies proposer
-identity before invoking these entry points. They are not live CLI mutation commands, and an automatic network
-proposer remains unfinished.
+identity before invoking these entry points. The internal network proposer uses
+these gates; live CLI mutation commands are not enabled.
 
-After `runtime_open` and application recovery, the coordinator can adopt an
-existing valid barrier entirely in memory. It does not need new peer observations
+After `runtime_open`, the coordinator can adopt an existing valid barrier entirely
+in memory, including when application is behind so checkpoint recovery can run. It does not need new peer observations
 or rewrite proof. A pending application or poisoned handle still prevents voting.
 The current daemon continues refusing distributed startup until activation-aware
 resource application/recovery is implemented, so this local recovery entry point
@@ -319,9 +320,10 @@ revision and canonical value digest before returning a candidate. Receiving
 bytes never produces an agreement vote or changes runtime resources.
 
 These codecs are now wrapped by wire-6 acceptor transaction messages after a
-valid HELLO. PROMISE output includes prior accepted values; incoming PROMISE/SYNC
-handling for the future automatic proposer/catch-up manager is still pending. Keep the released wire-5 HELLO payload unchanged; negotiate support and
-exchange dynamic configuration status after establishment rather than appending
+valid HELLO. The internal proposer consumes matching PROMISE snapshots and the
+checkpoint receiver consumes requested SYNC snapshots. Keep the released wire-5
+HELLO payload unchanged; negotiate support and exchange dynamic configuration
+status after establishment rather than appending
 fields that old strict-length decoders reject.
 
 Application ordering, stable identities, crash recovery and client outcomes are
@@ -342,7 +344,7 @@ One durable operation is in flight through the shared coordinator writer, with a
 bounded per-peer response slot. PREPARE returns a PROMISE only after its journal
 write completes and parent memory imports the durable result. If a prior value is
 accepted, that reply identifies its ballot and digest and streams the complete
-immutable snapshot; a future proposer must validate the entire snapshot and exact
+immutable snapshot; the proposer validates the entire snapshot and exact
 request correlation before counting it. ACCEPT receives a positive ACK only after
 its value is durably accepted. A conflict at the same ballot rejects without
 replacing the accepted value. Busy/backpressured requests may require retry.
@@ -354,13 +356,14 @@ Learning writes agreement only: it neither updates applied state nor touches
 backends or resource authority. Once learned configuration is ahead of local
 application, new configuration votes are blocked. An exact current decision may
 still be acknowledged idempotently while application is behind, after verifying
-the durable barrier and majority evidence. Multi-revision catch-up remains pending.
+the durable barrier and majority evidence. The separate checkpoint path below
+permits multi-revision catch-up.
 
 Snapshot BEGIN is admitted before allocation, with at most one 512-KiB incoming
 and one outgoing document per configured peer, chunks up to 16 KiB, and fixed
 ten-second input/output deadlines. Identical retries never extend those deadlines.
-The scheduler queues at most eight output frames per call (four acceptor replies
-and four proposer requests), retaining immutable accepted values while
+The scheduler queues at most nine output frames per call (four acceptor replies,
+four proposer requests and one checkpoint query), retaining immutable accepted values while
 backpressured. Expiration discards transport buffers, never
 a journal promise, accepted value or decision. A transfer alone never votes.
 
@@ -382,7 +385,7 @@ value counts only after its complete snapshot validates; the highest accepted
 value in the promise quorum takes precedence over the newly requested value.
 Duplicate replies cannot add votes. ACCEPT is sent only to members of that
 complete promise quorum; decision notification is sent only to acknowledged
-acceptors. Other members require the still-pending synchronization path.
+acceptors. Other members can pull the latest decision through checkpoint synchronization.
 
 One proposal and the acceptor share the existing storage writer. The proposal has
 a fixed ten-second deadline; backpressure and duplicate frames do not extend it.
@@ -395,12 +398,62 @@ notification timeout cannot erase the known decision. Completion identifies the
 chosen value, which may belong to an earlier recovered request, and never means
 that resources have been applied or all members have received the decision.
 
-Unsolicited control replies and PROMISE snapshots do not confer votes. SYNC
-transfers remain unimplemented. The three-node transport harness drives the actual
+Unsolicited control replies and PROMISE snapshots do not confer votes.
+The three-node transport harness drives the actual
 network proposer with independent durable stores, including remote accepted-value
 recovery, duplicate replies, mismatched IDs, deadline expiry and a higher-ballot
 retry. Automatic initialization/activation and dynamic commands remain disabled
 until the activation manager and safe resource application are complete.
+
+## Committed checkpoint synchronization
+
+The existing wire-6 control frame adds `SYNC_QUERY` (kind 5) and `SYNC_STATUS`
+(kind 6); no new frame IDs or HELLO/lease layout changes are needed. A query binds
+a strictly increasing local ID, both daemon instances, static membership,
+requester's learned revision/digest and frozen baseline digest. A server with a
+different baseline rejects the request. A prepared node with a valid durable
+barrier can serve its latest already committed decision, including when its own
+application is behind. INI-only nodes return not-ready without allocating a
+snapshot or creating history. No live quorum is required just to relay an already
+chosen decision; the original configured majority evidence remains mandatory.
+
+If the server is ahead, STATUS identifies the immutable latest revision, ballot,
+parent and value digest, then a bounded SYNC snapshot carries the complete value,
+request identity and original majority mask. The ballot identifies the original
+proposer; the relaying peer may be a different node. Unsolicited/stale responses
+never initialize state or allocate a receiver. Membership, baseline, request and
+instance admission precede transfer; ballot, majority and complete-value checks
+precede the storage job. A mask is the existing non-Byzantine decision evidence,
+not a cryptographic certificate or a substitute for configured peer admission.
+
+A checkpoint must advance or match local learned state. It cannot replace an
+existing revision with a different value/parent. Immediate successors retain the
+normal parent/incarnation validation. For a revision gap, any resource birth at
+or before the local learned revision must name the same existing incarnation and
+backend; absent/replaced incarnations must have a later birth. These checks
+prevent an offline node from reusing deleted/recreated resource state. An old
+accepted next-slot value may be discarded only as covered by a later committed
+checkpoint; an equal/newer-ballot conflict in that same slot still rejects.
+Existing promises never decrease, even when greater than the checkpoint ballot.
+
+The explicit checkpoint action uses the same serialized background writer.
+Normal worker imports still reject revision gaps; only checkpoint imports admit
+validated jumps. Local applied and pending snapshots are retained unchanged,
+including old cleanup hooks/backend definitions. Sync completion means durable
+learned metadata, not backend application or voting eligibility. The node cannot
+vote until application catches up with no pending cleanup. Timeout, disconnect,
+or uncertain I/O cannot cancel or roll back an already submitted durable write;
+recovery must inspect the journal after an unknown outcome. Matching/lower server
+revisions are read-only. IDs and ten-second deadlines are never reused/extended.
+
+The scheduler polls admitted wire-6 peers in rotation after a durable barrier is
+available, with one pull in flight and at least a second between starts. This does
+not authorize automatic initialization, switch resource authority, or bypass the
+existing refusal to start a daemon with distributed history. Startup/resource
+reconciliation and automatic activation remain unfinished. The transport harness
+covers multi-revision delete/recreate catch-up, a relayed ballot, quorum-only
+receivers, retained pending cleanup and higher promises, recovery from disk,
+baseline mismatch, fixed deadlines, stale instances and disconnect during a write.
 
 ## Remaining daemon activation and application rules
 

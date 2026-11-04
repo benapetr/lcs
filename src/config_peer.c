@@ -252,10 +252,41 @@ int config_peer_refresh(void)
     return 0;
 }
 
+static void process_checkpoint_sync(void)
+{
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed ||
+        coordinator->phase != LCS_CONFIG_COORD_READY || !g_state.config_bootstrap.initialization_locked ||
+        config_reload_in_progress())
+        return;
+    const lcs_config_runtime_t *runtime = coordinator->runtime;
+    if (!lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application))
+        return;
+    if (!g_state.config_transactions.instance)
+        lcs_config_transactions_init(&g_state.config_transactions, coordinator, g_state.instance_id);
+    lcs_config_sync_t *sync = &g_state.config_transactions.sync;
+    uint64_t now = lcs_now_ms();
+    if ((sync->phase >= LCS_CONFIG_SYNC_QUERYING && sync->phase <= LCS_CONFIG_SYNC_PERSISTING) ||
+        now < sync->next_ms || sync->serial == UINT64_MAX)
+        return;
+    sync->next_ms = now + 1000u;
+    for (size_t scanned = 0; scanned < g_state.cfg.node_count; scanned++)
+    {
+        size_t node = sync->cursor++ % g_state.cfg.node_count;
+        const peer_runtime_t *peer = &g_state.peers[node];
+        if ((int)node == g_state.self_index || peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED ||
+            peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS || !peer->instance_id)
+            continue;
+        if (!lcs_config_transactions_sync(&g_state.config_transactions, node, peer->instance_id, sync->serial + 1, now))
+            break;
+    }
+}
+
 void config_peer_process(int epoll_fd)
 {
     process_readiness(epoll_fd);
     lcs_config_transactions_process(&g_state.config_transactions, lcs_now_ms(), send_transaction, &epoll_fd);
+    process_checkpoint_sync();
     if (lcs_now_ms() < g_state.config_status_retry_ms)
         return;
     if (config_peer_refresh())

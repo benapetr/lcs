@@ -33,8 +33,8 @@ typedef struct
 
 /* Bounded snapshot codecs. The transaction transport wraps these with admitted
  * daemon instances for wire-6 ACCEPT/LEARN requests and accepted PROMISE output.
- * The internal proposer consumes correlated PROMISE snapshots; multi-revision
- * synchronization remains separate work. */
+ * The internal proposer consumes correlated PROMISE snapshots; requested SYNC
+ * snapshots carry committed majority checkpoints for multi-revision catch-up. */
 int lcs_config_transfer_encode_begin(const lcs_config_transfer_metadata_t *metadata,
                                      void *payload, size_t cap, size_t *length);
 int lcs_config_transfer_decode_begin(const void *payload, size_t length,

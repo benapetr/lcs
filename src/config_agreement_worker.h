@@ -16,6 +16,7 @@ typedef enum
     LCS_CONFIG_APPLICATION_BEGIN = 4,
     LCS_CONFIG_APPLICATION_FINISH = 5,
     LCS_CONFIG_BARRIER = 6,
+    LCS_CONFIG_CHECKPOINT = 7,
 } lcs_config_agreement_action_t;
 
 typedef struct
@@ -38,6 +39,7 @@ typedef struct
     size_t used;
     bool eof;
     bool cancelled;
+    bool checkpoint; /* Selects the explicit monotonic checkpoint import. */
     lcs_config_application_t *application; /* Borrowed until completion/cancellation is reaped. */
     lcs_config_runtime_t *initialization_target; /* Borrowed until reaped. */
     lcs_config_runtime_t *initialization_candidate; /* Private unpublished pristine state. */

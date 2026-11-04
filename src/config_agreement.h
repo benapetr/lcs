@@ -97,6 +97,20 @@ int lcs_config_agreement_learn(lcs_config_agreement_t *agreement,
                                uint32_t voters, const lcs_config_value_t *value,
                                char *err, size_t err_len);
 
+/* Snapshot catch-up is a distinct operation: a configured admitted peer relays
+ * a latest committed majority decision, not a new vote. Gaps are permitted only
+ * with monotonic incarnation identities; old local cleanup state is retained.
+ * No application/backends or revision-zero initialization occurs here. */
+int lcs_config_agreement_check_checkpoint(const lcs_config_agreement_t *agreement,
+                                          const char *parent_digest, uint64_t ballot, uint32_t voters,
+                                          const lcs_config_value_t *value, char *err, size_t err_len);
+int lcs_config_agreement_checkpoint(lcs_config_agreement_t *agreement,
+                                    const char *parent_digest, uint64_t ballot, uint32_t voters,
+                                    const lcs_config_value_t *value, char *err, size_t err_len);
+/* Same-host checkpoint worker handoff only; normal import still rejects gaps. */
+int lcs_config_agreement_import_checkpoint(lcs_config_agreement_t *agreement,
+                                           const char *document, size_t length, char *err, size_t err_len);
+
 /* A proposer collects distinct phase-one promises for one exact slot/ballot.
  * Its phase-two value must be the highest-ballot accepted value reported by the
  * promise quorum, or the requested value if none was previously accepted. */

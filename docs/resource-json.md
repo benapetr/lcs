@@ -6,8 +6,9 @@ currently a prepared local snapshot. **INI remains authoritative and runtime
 resource definition commands are not enabled yet.** Peering supports wire 5–6;
 wire 6 adds diagnostic bootstrap metadata and explicit readiness queries, without
 establishing dynamic authority.
-Distributed agreement, durable activation, peer synchronization, and runtime
-mutations must be implemented before JSON can become authoritative.
+The agreement and checkpoint synchronization paths are implemented internally;
+automatic activation and safe resource application must be connected before JSON
+can become authoritative or runtime definition commands can be enabled.
 
 ## Storage and upgrades
 
@@ -75,8 +76,10 @@ majority decisions after durable readiness. INI-only nodes refuse them without
 creating state. Learning remains separate from application: it does not start
 resources, change authority or enable dynamic commands. An internal network
 proposer can explicitly submit a whole snapshot and recover previously accepted
-values through correlated promises; automatic activation, multi-revision
-synchronization and live resource application remain unfinished. See
+values through correlated promises. Nodes with a valid durable readiness barrier
+can pull latest committed checkpoints across multiple revisions while retaining
+old applied/pending cleanup snapshots. Automatic activation and live resource
+application remain unfinished. See
 [network agreement handling](dynamic-config-agreement.md#network-acceptor-and-majority-decision-handling).
 
 ## Inspecting preparation across members

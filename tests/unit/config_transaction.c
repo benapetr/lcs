@@ -652,14 +652,196 @@ static void test_network_proposer(void)
 
 }
 
+static lcs_config_value_t next_value(const lcs_config_value_t *previous, bool present)
+{
+    lcs_config_t *configs = malloc(3 * sizeof(*configs));
+    assert(configs);
+    uint64_t revision;
+    assert(!lcs_resource_config_decode(previous->document, previous->length, &config,
+                                         &configs[0], &revision, error, sizeof(error)));
+    configs[1] = configs[0];
+    configs[1].resource_count = present ? 1 : 0;
+    if (present)
+        configs[1].resources[0] = config.resources[0];
+    assert(!lcs_resource_config_assign_identities(&configs[0], revision, &configs[1], &configs[2], error, sizeof(error)));
+    char *document;
+    size_t length;
+    assert(!lcs_resource_config_encode(&configs[2], revision + 1, &document, &length, error, sizeof(error)));
+    lcs_config_value_t value = {0};
+    char request[32];
+    snprintf(request, sizeof(request), "revision-%llu", (unsigned long long)(revision + 1));
+    assert(!lcs_config_value_init(&value, &config, request, document, length, error, sizeof(error)));
+    free(document); free(configs);
+    return value;
+}
+
+static void seed_decision(node_t *node, const lcs_config_value_t *value)
+{
+    assert(!lcs_config_agreement_learn(&node->runtime.agreement, node->runtime.agreement.committed.digest,
+        value->revision * 32, 3, value, error, sizeof(error)));
+}
+
+static void await_sync(size_t node, uint64_t now)
+{
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        network_tick(now);
+        lcs_config_sync_phase_t phase = nodes[node].transactions.sync.phase;
+        if (phase == LCS_CONFIG_SYNC_COMPLETE || phase == LCS_CONFIG_SYNC_CURRENT)
+            return;
+        assert(phase != LCS_CONFIG_SYNC_UNKNOWN);
+    }
+    assert(!"checkpoint synchronization timed out");
+}
+
+static void test_checkpoint_sync(void)
+{
+    setup();
+    network_errors = 0;
+    lcs_config_value_t first = candidate("activation");
+    lcs_config_value_t removed = next_value(&first, false);
+    lcs_config_value_t recreated = next_value(&removed, true);
+    seed_decision(&nodes[1], &first);
+    seed_decision(&nodes[1], &removed);
+    seed_decision(&nodes[1], &recreated);
+    seed_decision(&nodes[0], &first);
+    assert(!lcs_config_application_begin(&nodes[0].runtime.application, &nodes[0].runtime.agreement, error, sizeof(error)));
+    assert(!lcs_config_agreement_prepare(&nodes[0].runtime.agreement, 2, first.digest, 320, error, sizeof(error)));
+    assert(!lcs_config_agreement_accept(&nodes[0].runtime.agreement, first.digest, 320, &removed, error, sizeof(error)));
+    /* A conflicting historical incarnation cannot masquerade as unchanged. */
+    lcs_config_t *bad = malloc(sizeof(*bad));
+    assert(bad);
+    uint64_t revision;
+    assert(!lcs_resource_config_decode(recreated.document, recreated.length, &config, bad, &revision, error, sizeof(error)));
+    bad->resources[0].birth_revision = 0;
+    strcpy(bad->resources[0].address, "192.0.2.99/32");
+    char *document;
+    size_t length;
+    assert(!lcs_resource_config_encode(bad, revision, &document, &length, error, sizeof(error)));
+    lcs_config_value_t invalid = {0};
+    assert(!lcs_config_value_init(&invalid, &config, "invalid-checkpoint", document, length, error, sizeof(error)));
+    assert(lcs_config_agreement_check_checkpoint(&nodes[0].runtime.agreement,
+        nodes[1].runtime.agreement.parent_digest, 96, 3, &invalid, error, sizeof(error)) < 0);
+    free(document); free(bad); lcs_config_value_clear(&invalid);
+    assert(lcs_config_agreement_check_checkpoint(&nodes[0].runtime.agreement,
+        nodes[1].runtime.agreement.parent_digest, 96, 1, &recreated, error, sizeof(error)) < 0);
+    forbid_io = true;
+    assert(!lcs_config_transactions_sync(&nodes[0].transactions, 1, 101, 1, 1000));
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, (uint64_t[LCS_MAX_NODES]){100,101,102},
+        900, &removed, 1000) < 0);
+    await_sync(0, 1000);
+    assert(!network_errors);
+    assert(lcs_config_value_equal(&nodes[0].runtime.agreement.committed, &recreated));
+    assert(nodes[0].runtime.agreement.promised == 320 && !nodes[0].runtime.agreement.accepted.document);
+    assert(nodes[0].runtime.application.applied.revision == 0);
+    assert(lcs_config_value_equal(&nodes[0].runtime.application.pending, &first));
+    assert(!lcs_config_coordinator_can_vote(&nodes[0].coordinator));
+    /* Quorum-only nodes retain the same durable metadata and can skip activation. */
+    assert(!lcs_config_transactions_sync(&nodes[2].transactions, 1, 101, 2, 1000));
+    await_sync(2, 1000);
+    assert(lcs_config_value_equal(&nodes[2].runtime.agreement.committed, &recreated));
+    assert(nodes[2].runtime.application.applied.revision == 0);
+    /* Matching checkpoints are read-only and do not consume a durable operation. */
+    uint64_t completed = nodes[0].coordinator.completed_votes;
+    assert(!lcs_config_transactions_sync(&nodes[0].transactions, 1, 101, 3, 1000));
+    await_sync(0, 1000);
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_CURRENT && nodes[0].coordinator.completed_votes == completed);
+    assert(lcs_config_transactions_sync(&nodes[0].transactions, 1, 101, 3, 1000) < 0);
+    /* A different frozen baseline is never bridged by a checkpoint request. */
+    assert(!lcs_config_transactions_sync(&nodes[0].transactions, 1, 101, 4, 1000));
+    nodes[0].transactions.sync.query.value[0] = nodes[0].transactions.sync.query.value[0] == 'a' ? 'b' : 'a';
+    for (unsigned i = 0; i < 100 && nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_QUERYING; i++)
+        network_tick(1000);
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_UNKNOWN);
+    assert(nodes[0].coordinator.completed_votes == completed);
+    /* Cleanup still sees the old incarnation after catching up over delete/recreate. */
+    forbid_io = false;
+    assert(!lcs_config_application_finish(&nodes[0].runtime.application, first.digest, error, sizeof(error)));
+    assert(!lcs_config_application_begin(&nodes[0].runtime.application, &nodes[0].runtime.agreement, error, sizeof(error)));
+    lcs_config_t *configs = malloc(2 * sizeof(*configs));
+    assert(configs);
+    lcs_config_application_plan_t plan;
+    assert(!lcs_config_application_plan(&nodes[0].runtime.application, &configs[0], &configs[1], &plan, error, sizeof(error)));
+    assert(plan.cleanup == 1 && plan.new_to_old[0] == -1 && configs[1].resources[0].birth_revision == 3);
+    free(configs);
+    /* Reopening retains the checkpoint, promise, and pending cleanup obligations. */
+    lcs_config_agreement_t recovered = {0};
+    assert(!lcs_config_agreement_open(&recovered, &nodes[0].store, nodes[0].runtime.base, false, error, sizeof(error)));
+    assert(recovered.committed.revision == 3 && recovered.promised == 320);
+    lcs_config_application_t catalog = {0};
+    assert(!lcs_config_application_open(&catalog, &recovered, false, error, sizeof(error)));
+    assert(catalog.applied.revision == 1 && catalog.pending.revision == 3);
+    lcs_config_application_close(&catalog);
+    lcs_config_agreement_close(&recovered);
+    lcs_config_value_clear(&first); lcs_config_value_clear(&removed); lcs_config_value_clear(&recreated);
+    cleanup();
+
+    /* Session loss must not cancel an already submitted checkpoint write. */
+    setup();
+    network_errors = 0;
+    first = candidate("checkpoint-disconnect");
+    seed_decision(&nodes[1], &first);
+    forbid_io = true;
+    stop_sync = 1;
+    assert(!lcs_config_transactions_sync(&nodes[0].transactions, 1, 101, 1, 1000));
+    for (unsigned i = 0; i < 5000 && nodes[0].transactions.sync.phase != LCS_CONFIG_SYNC_PERSISTING; i++)
+        network_tick(1000);
+    stop_sync = 0;
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_PERSISTING);
+    await_stopped(&nodes[0]);
+    pid_t writer = nodes[0].coordinator.storage.pid;
+    assert(writer > 0 && nodes[0].runtime.agreement.committed.revision == 0);
+    lcs_config_transactions_disconnect(&nodes[0].transactions, 1);
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_UNKNOWN && nodes[0].coordinator.storage.pid == writer);
+    assert(!kill(writer, SIGCONT));
+    for (unsigned i = 0; i < 5000 && !nodes[0].coordinator.completed_votes; i++)
+        network_tick(1000);
+    assert(nodes[0].runtime.agreement.committed.revision == 1 && nodes[0].runtime.application.applied.revision == 0);
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_UNKNOWN && !network_errors);
+    assert(!lcs_config_transactions_sync(&nodes[0].transactions, 1, 101, 2, 1000));
+    await_sync(0, 1000);
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_CURRENT);
+    lcs_config_value_clear(&first);
+    cleanup();
+
+    /* Backpressure and disconnect cannot extend a request's original deadline. */
+    setup();
+    forbid_io = true;
+    network_blocked = true;
+    assert(!lcs_config_transactions_sync(&nodes[0].transactions, 1, 101, 1, 1000));
+    network_tick(10999);
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_QUERYING);
+    network_tick(11000);
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_UNKNOWN);
+    assert(nodes[0].runtime.agreement.committed.revision == 0 && !nodes[0].coordinator.storage.pid);
+    network_blocked = false;
+    assert(!lcs_config_transactions_sync(&nodes[0].transactions, 1, 101, 2, 12000));
+    lcs_config_transactions_disconnect(&nodes[0].transactions, 1);
+    assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_UNKNOWN);
+    assert(!lcs_config_transactions_sync(&nodes[0].transactions, 1, 999, 3, 12000));
+    /* Reply from a replacement session is not the peer instance queried. */
+    nodes[0].transactions.sync.sent = true;
+    lcs_config_tx_control_t stale = nodes[0].transactions.sync.query;
+    stale.kind = LCS_CONFIG_TX_SYNC_STATUS;
+    stale.sender_instance = 101; stale.target_instance = 100;
+    strcpy(stale.value, nodes[1].runtime.agreement.committed.digest);
+    unsigned char payload[256];
+    assert(!lcs_config_tx_encode(&stale, payload, sizeof(payload), &length));
+    assert(!lcs_config_transactions_receive(&nodes[0].transactions, 1, 101, LCS_MSG_CONFIG_TX_CONTROL, payload, length, 12000));
+    assert(nodes[0].transactions.sync.phase != LCS_CONFIG_SYNC_CURRENT);
+    cleanup();
+
+}
+
 int main(void)
 {
     parent = getpid();
     test_network_proposer();
+    test_checkpoint_sync();
     test_codecs_and_session_admission();
     test_majority_and_recovery();
     test_disconnect_and_uncertain_write();
     test_backpressure_and_partial_cleanup();
-    puts("network configuration proposer, acceptor and majority decision unit tests passed");
+    puts("network configuration proposer, checkpoint synchronization and majority decision unit tests passed");
     return 0;
 }

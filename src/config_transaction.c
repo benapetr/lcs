@@ -9,6 +9,11 @@ static int proposer_control(lcs_config_transactions_t *, size_t, const lcs_confi
 static int proposer_transfer(lcs_config_transactions_t *, size_t, uint16_t, const void *, size_t, uint64_t);
 static void proposer_clear(lcs_config_network_proposal_t *);
 
+static bool sync_active(const lcs_config_transactions_t *);
+static int sync_control(lcs_config_transactions_t *, size_t, const lcs_config_tx_control_t *, uint64_t);
+static int sync_transfer(lcs_config_transactions_t *, size_t, uint16_t, const void *, size_t, uint64_t);
+static void sync_process(lcs_config_transactions_t *, uint64_t, lcs_config_tx_send_t, void *);
+
 static bool digest_valid(const char *text, bool empty)
 {
     if (empty && !*text)
@@ -21,11 +26,20 @@ static bool digest_valid(const char *text, bool empty)
 
 static bool valid(const lcs_config_tx_control_t *control)
 {
-    if (control->kind < LCS_CONFIG_TX_PREPARE || control->kind > LCS_CONFIG_TX_LEARNED ||
+    if (control->kind < LCS_CONFIG_TX_PREPARE || control->kind > LCS_CONFIG_TX_SYNC_STATUS ||
         control->result > LCS_CONFIG_TX_UNKNOWN || !control->sender_instance || !control->target_instance ||
-        !control->id || !control->revision || control->revision > LCS_RESOURCE_REVISION_MAX ||
-        !(control->ballot >> 5) || !digest_valid(control->membership, false) ||
+        !control->id || control->revision > LCS_RESOURCE_REVISION_MAX ||
+        !digest_valid(control->membership, false) ||
         !digest_valid(control->parent, false) || !digest_valid(control->value, true))
+        return false;
+    if (control->kind == LCS_CONFIG_TX_SYNC_QUERY)
+        return !control->result && !control->ballot && !control->promised && !control->accepted_ballot &&
+            digest_valid(control->value, false);
+    if (control->kind == LCS_CONFIG_TX_SYNC_STATUS)
+        return !control->promised && !control->accepted_ballot && (control->result ?
+            !control->ballot && !*control->value : *control->value &&
+                (control->revision ? !!(control->ballot >> 5) : !control->ballot));
+    if (!control->revision || !(control->ballot >> 5))
         return false;
     if (control->kind == LCS_CONFIG_TX_PREPARE)
         return !control->result && !control->promised && !control->accepted_ballot && !*control->value;
@@ -131,6 +145,8 @@ void lcs_config_transactions_disconnect(lcs_config_transactions_t *transactions,
     if (node >= LCS_MAX_NODES)
         return;
     lcs_config_tx_peer_t *peer = &transactions->peers[node];
+    if (sync_active(transactions) && transactions->sync.node == node)
+        transactions->sync.phase = LCS_CONFIG_SYNC_UNKNOWN;
     lcs_config_transfer_clear(&transactions->proposer.peers[node].incoming);
     transactions->proposer.peers[node].instance = 0;
     lcs_config_transfer_clear(&peer->incoming);
@@ -243,6 +259,8 @@ int lcs_config_transactions_receive(lcs_config_transactions_t *transactions, siz
         if (lcs_config_tx_decode(payload, length, &control) || control.sender_instance != peer_instance ||
             control.target_instance != transactions->instance)
             return -1;
+        if (control.kind >= LCS_CONFIG_TX_SYNC_QUERY)
+            return sync_control(transactions, node, &control, now_ms);
         if (control.kind != LCS_CONFIG_TX_PREPARE)
             return proposer_control(transactions, node, &control);
         if ((control.ballot & 31u) != node)
@@ -259,7 +277,10 @@ int lcs_config_transactions_receive(lcs_config_transactions_t *transactions, siz
     if (lcs_config_tx_unwrap(payload, length, &sender, &target, &body, &body_length) ||
         sender != peer_instance || target != transactions->instance)
         return -1;
-    int routed = proposer_transfer(transactions, node, type, body, body_length, now_ms);
+    int routed = sync_transfer(transactions, node, type, body, body_length, now_ms);
+    if (routed)
+        return routed < 0 ? -1 : 0;
+    routed = proposer_transfer(transactions, node, type, body, body_length, now_ms);
     if (routed)
         return routed < 0 ? -1 : 0;
     if (type == LCS_MSG_CONFIG_TX_BEGIN)
@@ -389,6 +410,7 @@ void lcs_config_transactions_process(lcs_config_transactions_t *transactions, ui
         return;
     completed(transactions, now_ms);
     proposer_process(transactions, now_ms, send, context);
+    sync_process(transactions, now_ms, send, context);
     unsigned budget = 4;
     unsigned char payload[LCS_CONFIG_TRANSFER_CHUNK_MAX + 64], body[LCS_CONFIG_TRANSFER_CHUNK_MAX + 32];
     for (size_t scanned = 0; scanned < LCS_MAX_NODES && budget; scanned++)
@@ -506,7 +528,7 @@ int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
     lcs_config_network_proposal_t *proposer = &transactions->proposer;
     if (!instances || !requested || !transactions->instance || !id || id <= proposer->id ||
         now_ms > UINT64_MAX - LCS_CONFIG_TRANSFER_TIMEOUT_MS || !eligible(transactions) ||
-        proposing(proposer) || transactions->active || transactions->coordinator->storage.pid > 0)
+        proposing(proposer) || sync_active(transactions) || transactions->active || transactions->coordinator->storage.pid > 0)
         return -1;
     const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
     int self = lcs_config_self_index(agreement->base);
@@ -803,4 +825,199 @@ static void proposer_process(lcs_config_transactions_t *transactions, uint64_t n
     }
     if (!pending && proposer->phase == LCS_CONFIG_PROPOSER_DISTRIBUTING)
         proposer_phase(proposer, LCS_CONFIG_PROPOSER_COMPLETE);
+}
+
+static bool sync_active(const lcs_config_transactions_t *transactions)
+{
+    return transactions->sync.phase >= LCS_CONFIG_SYNC_QUERYING &&
+        transactions->sync.phase <= LCS_CONFIG_SYNC_PERSISTING;
+}
+
+static bool sync_ready(const lcs_config_transactions_t *transactions)
+{
+    const lcs_config_coordinator_t *coordinator = transactions->coordinator;
+    if (!coordinator || !coordinator->initialized || coordinator->closing || coordinator->failed ||
+        coordinator->phase != LCS_CONFIG_COORD_READY || coordinator->storage.pid > 0)
+        return false;
+    const lcs_config_runtime_t *runtime = coordinator->runtime;
+    return lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application);
+}
+
+int lcs_config_transactions_sync(lcs_config_transactions_t *transactions, size_t node,
+                                  uint64_t peer_instance, uint64_t id, uint64_t now_ms)
+{
+    if (!transactions->instance || !peer_instance || !id || id <= transactions->sync.serial ||
+        now_ms > UINT64_MAX - LCS_CONFIG_TRANSFER_TIMEOUT_MS || !sync_ready(transactions) ||
+        sync_active(transactions) || proposing(&transactions->proposer) || transactions->active ||
+        node >= transactions->coordinator->runtime->base->node_count ||
+        (int)node == lcs_config_self_index(transactions->coordinator->runtime->base) ||
+        transactions->peers[node].incoming.document || transactions->proposer.peers[node].incoming.document)
+        return -1;
+    lcs_config_sync_t *sync = &transactions->sync;
+    const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+    sync->query = (lcs_config_tx_control_t){ .kind = LCS_CONFIG_TX_SYNC_QUERY,
+        .sender_instance = transactions->instance, .target_instance = peer_instance,
+        .id = id, .revision = agreement->committed.revision };
+    memcpy(sync->query.membership, agreement->membership, sizeof(sync->query.membership));
+    memcpy(sync->query.parent, agreement->committed.digest, sizeof(sync->query.parent));
+    memcpy(sync->query.value, transactions->coordinator->runtime->activation.baseline.digest, sizeof(sync->query.value));
+    sync->status = (lcs_config_tx_control_t){0};
+    sync->node = node;
+    sync->serial = id;
+    sync->deadline_ms = now_ms + LCS_CONFIG_TRANSFER_TIMEOUT_MS;
+    sync->completion = 0;
+    sync->sent = false;
+    sync->phase = LCS_CONFIG_SYNC_QUERYING;
+    return 0;
+}
+
+static int sync_control(lcs_config_transactions_t *transactions, size_t node,
+                          const lcs_config_tx_control_t *control, uint64_t now_ms)
+{
+    lcs_config_sync_t *sync = &transactions->sync;
+    if (control->kind == LCS_CONFIG_TX_SYNC_STATUS)
+    {
+        if (sync->phase != LCS_CONFIG_SYNC_QUERYING || !sync->sent || node != sync->node ||
+            control->sender_instance != sync->query.target_instance || control->id != sync->query.id ||
+            strcmp(control->membership, sync->query.membership))
+            return 0;
+        if (control->result)
+            sync->phase = LCS_CONFIG_SYNC_UNKNOWN;
+        else if (control->revision <= sync->query.revision)
+        {
+            const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+            sync->phase = control->revision == sync->query.revision &&
+                (strcmp(control->value, sync->query.parent) ||
+                 (control->revision && strcmp(control->parent, agreement->parent_digest))) ?
+                LCS_CONFIG_SYNC_UNKNOWN : LCS_CONFIG_SYNC_CURRENT;
+        }
+        else
+        {
+            sync->status = *control;
+            sync->phase = LCS_CONFIG_SYNC_RECEIVING;
+        }
+        return 0;
+    }
+    lcs_config_tx_peer_t *peer = &transactions->peers[node];
+    if (peer->stage)
+        return 0;
+    if (sync_ready(transactions) && strcmp(control->membership, transactions->coordinator->runtime->agreement.membership))
+        return -1;
+    uint8_t result = !sync_ready(transactions) ? LCS_CONFIG_TX_NOT_READY :
+        strcmp(control->value, transactions->coordinator->runtime->activation.baseline.digest) ? LCS_CONFIG_TX_REJECTED :
+        peer->incoming.document || transactions->proposer.peers[node].incoming.document ||
+        transactions->active || proposing(&transactions->proposer) ? LCS_CONFIG_TX_BUSY : LCS_CONFIG_TX_OK;
+    response(transactions, node, control, LCS_CONFIG_TX_SYNC_STATUS, result, now_ms);
+    peer->response.ballot = 0;
+    if (result)
+        return 0;
+    const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+    peer->response.revision = agreement->committed.revision;
+    peer->response.ballot = agreement->committed_ballot;
+    memcpy(peer->response.value, agreement->committed.digest, sizeof(peer->response.value));
+    memcpy(peer->response.parent, agreement->committed.revision ? agreement->parent_digest : agreement->committed.digest,
+           sizeof(peer->response.parent));
+    if (agreement->committed.revision <= control->revision)
+        return 0;
+    if (lcs_config_value_copy(&peer->outgoing, &agreement->committed))
+    {
+        peer->response.result = LCS_CONFIG_TX_UNKNOWN;
+        peer->response.ballot = 0;
+        memset(peer->response.value, 0, sizeof(peer->response.value));
+        return 0;
+    }
+    peer->outgoing_metadata = (lcs_config_transfer_metadata_t){ .kind = LCS_CONFIG_TRANSFER_SYNC,
+        .id = control->id, .revision = agreement->committed.revision, .ballot = agreement->committed_ballot,
+        .voters = agreement->committed_voters, .length = (uint32_t)agreement->committed.length };
+    memcpy(peer->outgoing_metadata.membership, agreement->membership, sizeof(peer->outgoing_metadata.membership));
+    memcpy(peer->outgoing_metadata.parent_digest, agreement->parent_digest, sizeof(peer->outgoing_metadata.parent_digest));
+    memcpy(peer->outgoing_metadata.value_digest, agreement->committed.digest, sizeof(peer->outgoing_metadata.value_digest));
+    memcpy(peer->outgoing_metadata.request_id, agreement->committed.request_id, sizeof(peer->outgoing_metadata.request_id));
+    return 0;
+}
+
+static int sync_transfer(lcs_config_transactions_t *transactions, size_t node, uint16_t type,
+                           const void *body, size_t length, uint64_t now_ms)
+{
+    lcs_config_sync_t *sync = &transactions->sync;
+    lcs_config_tx_peer_t *peer = &transactions->peers[node];
+    if (type == LCS_MSG_CONFIG_TX_BEGIN)
+    {
+        lcs_config_transfer_metadata_t metadata;
+        if (lcs_config_transfer_decode_begin(body, length, &metadata) || metadata.kind != LCS_CONFIG_TRANSFER_SYNC)
+            return 0;
+        if (sync->phase != LCS_CONFIG_SYNC_RECEIVING || sync->node != node || now_ms >= sync->deadline_ms ||
+            sync->query.target_instance != peer->instance || metadata.id != sync->query.id)
+            return 1; /* Unsolicited/stale checkpoints never allocate or initialize. */
+        const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+        if (metadata.revision != sync->status.revision || metadata.ballot != sync->status.ballot ||
+            metadata.accepted_ballot || strcmp(metadata.membership, sync->status.membership) ||
+            strcmp(metadata.parent_digest, sync->status.parent) || strcmp(metadata.value_digest, sync->status.value) ||
+            !lcs_config_agreement_has_quorum(agreement, metadata.voters) ||
+            !lcs_config_agreement_ballot_valid(agreement, metadata.ballot) ||
+            transactions->proposer.peers[node].incoming.document ||
+            (peer->incoming.document && (peer->incoming.metadata.kind != LCS_CONFIG_TRANSFER_SYNC ||
+                                        peer->incoming.metadata.id != metadata.id)))
+            return -1;
+        return lcs_config_transfer_begin(&peer->incoming, &metadata, agreement->membership, now_ms) < 0 ? -1 : 1;
+    }
+    if (!peer->incoming.document || peer->incoming.metadata.kind != LCS_CONFIG_TRANSFER_SYNC)
+        return 0;
+    if (sync->phase != LCS_CONFIG_SYNC_RECEIVING || node != sync->node || now_ms >= sync->deadline_ms)
+    {
+        lcs_config_transfer_clear(&peer->incoming);
+        sync->phase = LCS_CONFIG_SYNC_UNKNOWN;
+        return 1;
+    }
+    if (type == LCS_MSG_CONFIG_TX_CHUNK)
+        return lcs_config_transfer_chunk(&peer->incoming, body, length, now_ms) ? -1 : 1;
+    lcs_buf_reader_t reader;
+    lcs_buf_reader_init(&reader, body, length);
+    uint64_t id;
+    if (type != LCS_MSG_CONFIG_TX_END || lcs_buf_get_u64(&reader, &id) || reader.off != reader.len)
+        return -1;
+    lcs_config_transfer_metadata_t metadata = peer->incoming.metadata;
+    lcs_config_value_t value = {0};
+    lcs_config_coordinator_t *coordinator = transactions->coordinator;
+    char error[256];
+    if (lcs_config_transfer_finish(&peer->incoming, id, coordinator->runtime->base, now_ms, &value, error, sizeof(error)))
+        return -1;
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_CHECKPOINT, .revision = value.revision,
+        .ballot = metadata.ballot, .voters = metadata.voters, .value = &value };
+    memcpy(job.parent_digest, metadata.parent_digest, sizeof(job.parent_digest));
+    int result = transactions->active || proposing(&transactions->proposer) ? -1 :
+        lcs_config_coordinator_start_checkpoint(coordinator, &job, error, sizeof(error));
+    lcs_config_value_clear(&value);
+    sync->phase = result ? LCS_CONFIG_SYNC_UNKNOWN : LCS_CONFIG_SYNC_PERSISTING;
+    if (!result)
+        sync->completion = coordinator->completed_votes + 1;
+    return 1;
+}
+
+static void sync_process(lcs_config_transactions_t *transactions, uint64_t now_ms,
+                            lcs_config_tx_send_t send, void *context)
+{
+    lcs_config_sync_t *sync = &transactions->sync;
+    if (!sync_active(transactions))
+        return;
+    lcs_config_coordinator_t *coordinator = transactions->coordinator;
+    if (sync->phase == LCS_CONFIG_SYNC_PERSISTING && coordinator->completed_votes >= sync->completion)
+        sync->phase = coordinator->completed_votes == sync->completion && !coordinator->failed &&
+            coordinator->last_vote_result == LCS_CONFIG_AGREED ? LCS_CONFIG_SYNC_COMPLETE : LCS_CONFIG_SYNC_UNKNOWN;
+    if (!sync_active(transactions))
+        return;
+    if (now_ms >= sync->deadline_ms || coordinator->failed || coordinator->closing)
+    {
+        lcs_config_transfer_clear(&transactions->peers[sync->node].incoming);
+        sync->phase = LCS_CONFIG_SYNC_UNKNOWN;
+        return; /* Already submitted durable work is never cancelled by a timeout. */
+    }
+    if (sync->phase == LCS_CONFIG_SYNC_QUERYING && !sync->sent)
+    {
+        unsigned char payload[LCS_CONFIG_TX_CONTROL_MAX];
+        size_t length;
+        if (!lcs_config_tx_encode(&sync->query, payload, sizeof(payload), &length) &&
+            !send(context, sync->node, LCS_MSG_CONFIG_TX_CONTROL, payload, length))
+            sync->sent = true;
+    }
 }

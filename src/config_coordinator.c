@@ -94,8 +94,8 @@ int lcs_config_coordinator_recover(lcs_config_coordinator_t *coordinator)
         coordinator->storage.pid > 0 || coordinator->phase != LCS_CONFIG_COORD_IDLE)
         return -1;
     lcs_config_runtime_t *runtime = coordinator->runtime;
-    if (!lcs_config_barrier_can_vote(&runtime->barrier, &runtime->activation,
-                                      &runtime->agreement, &runtime->application))
+    if (!lcs_config_barrier_valid(&runtime->barrier, &runtime->activation,
+                                   &runtime->agreement, &runtime->application))
         return -1;
     coordinator->phase = LCS_CONFIG_COORD_READY;
     return 0;
@@ -164,6 +164,27 @@ int lcs_config_coordinator_start_learn(lcs_config_coordinator_t *coordinator,
         !strcmp(job->parent_digest, runtime->agreement.parent_digest);
     if (!duplicate && (!lcs_config_coordinator_can_vote(coordinator) ||
         dynamic_successor(runtime, job->value, err, err_len)))
+        return -1;
+    int result = lcs_config_agreement_worker_start(&coordinator->storage, &runtime->agreement, job, err, err_len);
+    if (!result)
+        coordinator->phase = LCS_CONFIG_COORD_VOTING;
+    return result;
+}
+
+int lcs_config_coordinator_start_checkpoint(lcs_config_coordinator_t *coordinator,
+                                            const lcs_config_agreement_job_t *job,
+                                            char *err, size_t err_len)
+{
+    if (coordinator->initialized && coordinator->storage.pid > 0)
+        return 1;
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed ||
+        coordinator->phase != LCS_CONFIG_COORD_READY || !job || job->action != LCS_CONFIG_CHECKPOINT ||
+        coordinator->completed_votes == UINT64_MAX)
+        return -1;
+    lcs_config_runtime_t *runtime = coordinator->runtime;
+    if (!lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) ||
+        lcs_config_agreement_check_checkpoint(&runtime->agreement, job->parent_digest, job->ballot,
+                                                job->voters, job->value, err, err_len))
         return -1;
     int result = lcs_config_agreement_worker_start(&coordinator->storage, &runtime->agreement, job, err, err_len);
     if (!result)
