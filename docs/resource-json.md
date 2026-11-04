@@ -93,6 +93,12 @@ stale resource traffic before dispatch or RPC completion, while keeping config
 catch-up available. These APIs are not connected to automatic activation or live
 backend application yet; see [generation framing](dynamic-config-application.md#implemented-resource-generation-framing).
 
+The explicit local backend adapter now drains affected resources with old hooks,
+waits for dependents and indexed workers, and remaps matching incarnations without
+changing their ownership or promises. It requires projection and distributed
+old-owner barrier providers, which are not implemented yet; automatic daemon
+application remains disabled. See [local backend transitions](dynamic-config-application.md#local-backend-drain-and-runtime-adapter).
+
 ## Inspecting preparation across members
 
 Run `lcs config status` or `lcs --json config status` to inspect INI authority,

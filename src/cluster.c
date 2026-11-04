@@ -53,18 +53,20 @@ const char *cluster_node_name_or_none(int node_idx)
 
 int cluster_has_quorum(void)
 {
-    return (!g_state.resource_generation_enabled || g_state.resource_generation_admitted) &&
+    return !g_state.config_application_remapping &&
+        (!g_state.resource_generation_enabled || g_state.resource_generation_admitted) &&
         g_state.votes_seen >= g_state.quorum_needed;
 }
 
 bool cluster_local_voting_ready(void)
 {
-    return g_state.voting_ready && (!g_state.resource_generation_enabled || g_state.resource_generation_admitted);
+    return !g_state.config_application_remapping && g_state.voting_ready &&
+        (!g_state.resource_generation_enabled || g_state.resource_generation_admitted);
 }
 
 void cluster_update_recovery_state(void)
 {
-    if ((g_state.resource_generation_enabled && !g_state.resource_generation_admitted) ||
+    if (g_state.config_application_remapping || (g_state.resource_generation_enabled && !g_state.resource_generation_admitted) ||
         g_state.voting_ready || lcs_now_ms() < g_state.voting_not_before_ms)
         return;
     if (!resources_startup_cleanup_complete())

@@ -104,6 +104,9 @@ static void test_generation_admission_and_matching_votes(void)
     assert(cluster_local_voting_ready());
     cluster_recompute_votes();
     assert(g_state.votes_seen == 2 && cluster_has_quorum());
+    g_state.config_application_remapping = true;
+    assert(!cluster_local_voting_ready() && !cluster_has_quorum());
+    g_state.config_application_remapping = false;
     g_state.peers[2].resource_generation_matches = false;
     cluster_recompute_votes();
     assert(g_state.votes_seen == 1 && !cluster_has_quorum());

@@ -435,7 +435,7 @@ static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, ui
         lcs_buf_put_u16(&w, (uint16_t)hello_config->resource_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.nodes[g_state.self_index].role) != 0 ||
         lcs_buf_put_u8(&w, mode) != 0 ||
-        lcs_buf_put_u8(&w, !g_state.resource_generation_enabled && g_state.voting_ready ? 1 : 0) != 0 ||
+        lcs_buf_put_u8(&w, !g_state.resource_generation_enabled && cluster_local_voting_ready() ? 1 : 0) != 0 ||
         lcs_buf_put_u64(&w, g_state.instance_id) != 0 ||
         lcs_buf_put_u64(&w, lcs_config_voting_fingerprint(hello_config)) != 0 ||
         lcs_buf_put_u64(&w, lcs_config_full_fingerprint(hello_config)) != 0 ||
@@ -662,6 +662,8 @@ static int peer_queue_frame(int epoll_fd, int node_idx, uint16_t type, uint32_t 
     unsigned char prefix[LCS_RESOURCE_FRAME_PREFIX];
     size_t prefix_length = 0;
     uint32_t body_length = length;
+    if (g_state.config_application_remapping && lcs_resource_frame_type(type))
+        return 1;
     if (g_state.resource_generation_enabled && (type == LCS_MSG_CONFIG_RELOAD || type == LCS_MSG_CONFIG_RELOAD_COMMIT))
         return -1;
     if (g_state.resource_generation_enabled && lcs_resource_frame_type(type))
@@ -2110,6 +2112,7 @@ int peer_decode_resource_frame(int node_idx, const lcs_frame_header_t *wire, con
         peer->resource_generation = generation;
         peer->resource_generation_known = true;
         peer->resource_generation_matches = g_state.resource_generation_enabled && g_state.resource_generation_admitted &&
+            !g_state.config_application_remapping &&
             lcs_resource_generation_equal(&generation, &g_state.resource_generation);
         if (peer->resource_generation_matches)
         {
@@ -2121,7 +2124,7 @@ int peer_decode_resource_frame(int node_idx, const lcs_frame_header_t *wire, con
              (wire->type == LCS_MSG_CONFIG_RELOAD || wire->type == LCS_MSG_CONFIG_RELOAD_COMMIT))
         return -1;
     else if (!lcs_resource_frame_type(wire->type) ||
-             (!g_state.resource_generation_enabled && !peer->resource_generation_known))
+             (!g_state.resource_generation_enabled && !g_state.config_application_remapping && !peer->resource_generation_known))
         return 0;
     /* Resource mismatch is recovery-only, not a disconnected config channel. */
     peer->voting_ready = false;

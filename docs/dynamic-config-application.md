@@ -1,7 +1,8 @@
 # Configuration application and recovery contract
 
 Status: contract with implemented local catalog and reconciliation sequencing;
-live daemon backend adapters and automatic activation remain unfinished. The running daemon
+local backend callbacks are implemented, while distributed barriers, startup
+integration and automatic activation remain unfinished. The running daemon
 still uses INI authority and supports wire 5–6. Wire-6 bootstrap metadata does
 not enable dynamic edits.
 See [the agreement core](dynamic-config-agreement.md) and
@@ -93,8 +94,9 @@ that match; queued messages retain the existing bounded transport/backpressure
 rules. The 64-KiB frame limit includes the prefix.
 
 These APIs are not invoked automatically yet. The daemon still refuses persisted
-distributed startup. Backend/owner adapters, runtime remapping, startup projection
-and recovery admission, and automatic activation remain unfinished. Tests cover
+distributed startup. The local runtime adapter below now implements backend/remap callbacks;
+distributed owner proof, startup projection/recovery and automatic activation
+remain unfinished. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
 and cancellation-before-remap ordering. They do not yet constitute a running
@@ -232,7 +234,8 @@ uncertain worker result poisons both handles until disk recovery after child exi
 Tests cover shared-writer exclusion, delayed publication, large pipe results,
 stale imports, failed file/directory sync, and cancellation. The internal
 reconciliation sequencer below now coordinates catalog writes and explicit
-backend barriers; live daemon adapters remain pending.
+backend barriers; the local adapter below now supplies backend/remap callbacks, while its
+projection/owner providers and automatic daemon integration remain pending.
 
 ## Internal reconciliation sequencer
 
@@ -295,6 +298,58 @@ an interrupted callback or absent process as successful cleanup. Tests exercise
 ordering, failed stops, pending owners, failed generation admission, newer
 checkpoints during drain/admission, quorum-only paths, uncertain BEGIN/FINISH
 writes and shutdown while a writer is stopped at fsync.
+
+## Local backend drain and runtime adapter
+
+`config_live.c` now supplies explicit local quiesce/drain/install/admit callbacks
+for the reconciliation sequencer. It is not started automatically. Initialization
+requires both a projection publisher and a distributed old-owner barrier provider;
+there are no permissive defaults. The publisher receives the latest learned value,
+which may be newer than a pending application, and must complete an idempotent
+asynchronous publication. The owner provider must establish generation-bound
+stop, lease-expiry or fencing evidence. Gossip and a timer alone are not that
+proof. Unexpected positive provider statuses block the transition.
+
+Quiesce verifies the live table against the durable last-applied catalog and the
+target against pending state. It cancels moves and affected lease operations,
+fences new acquisitions and renewals for changed/dependency-affected resources,
+and leaves releases available. Late acquisition, hook, VIP probe/add and service
+start completions cannot activate a fenced definition. Administrative starts and
+moves are refused while affected definitions are being reconciled.
+
+Drain calls the existing local backend stop path with the OLD definition and stop
+hooks. Dependencies wait for their dependents to stop AND finish post-stop work.
+Active/queued hooks, probes, VIP/service workers and handoffs remain part of the
+barrier. Known cleanup failure blocks for explicit repair/fencing; it is not
+cleared by time or a new configuration. Local drain is rechecked before both the
+owner provider and installation, so a late failure cannot be overlooked.
+
+Installation fences indexed resource traffic, waits for the generation helper's
+all-worker barrier, and cancels peer/lease/move operations before copying runtime
+state. Only matching name, birth and backend identities retain runtime ownership,
+leases, private promises and administrative state across sorted index changes.
+New/replaced incarnations start stopped, ownerless and with empty epoch/promise
+state; changing a configuration revision does not increment unchanged epochs.
+Dependency indices come from the validated new table. A pending earlier target
+continues to completion before a newer checkpoint can replace its cleanup work.
+
+During the brief remap/admission pause, owned unchanged resources may keep only
+their EXISTING valid lease. No missing quorum/admission can extend it. Expiry
+still invokes the ordinary backend drop path and known stop failures remain
+unsafe. Background health work does not restart indexed workers during that
+pause. After the exact applied marker is durable, the adapter admits generation
+traffic so ordinary state-sync/restart recovery can run. It releases the remaining
+definition fences only after local voting readiness and quorum are established.
+
+The running daemon still lacks the projection publisher, distributed owner-barrier
+provider, startup reconstruction/cleanup adapter and automatic activation wiring.
+This live adapter assumes the last-applied backend/ownership state was recovered;
+ownerless runtime entries alone do not establish that old backends are absent.
+Tests exercise local callbacks with controlled backend/provider doubles, including
+old stop hooks, dependent post-stop work, failed cleanup, malformed provider
+status, mandatory barriers, sorted remapping, retained ownership/promises,
+replacement identity reset, lease expiry and generation admission. They do not
+yet constitute an end-to-end dynamic-cluster backend transition test.
 
 ## Client outcomes
 

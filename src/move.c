@@ -177,6 +177,11 @@ static void move_fail_immediate_cli_server(int epoll_fd, int cli_server_slot, ui
 
 static int move_validate_request(const void *payload, uint32_t len, int *resource_idx, int *target_idx, char *message, size_t message_len)
 {
+    if (g_state.config_application_fenced)
+    {
+        snprintf(message, message_len, "cluster resource definitions are being reconciled; moves are temporarily fenced");
+        return -1;
+    }
     char vip_name[LCS_NAME_MAX + 1];
     char target_name[LCS_NAME_MAX + 1];
     if (lcs_decode_move_req(payload, len, vip_name, sizeof(vip_name), target_name, sizeof(target_name)) != 0)
@@ -493,7 +498,7 @@ bool move_active_for_resource(int resource_idx)
 
 int move_start_internal(int epoll_fd, int resource_idx, int target_idx, const char *reason)
 {
-    if (config_reload_in_progress())
+    if (config_reload_in_progress() || g_state.config_application_fenced)
         return -1;
     if (resource_idx < 0 || (size_t)resource_idx >= g_state.cfg.resource_count ||
         target_idx < 0 || (size_t)target_idx >= g_state.cfg.node_count)

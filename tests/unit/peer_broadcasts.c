@@ -193,6 +193,10 @@ static void test_resource_generation_admission(void)
     peer->protocol_version = 6; peer->out_len = 0;
     peer_broadcast_lease_commit(-1, message, sizeof(message));
     assert(!peer->out_len);
+    g_state.resource_generation_admitted = true; g_state.config_application_remapping = true;
+    peer->state_sync_pending = true;
+    peer_broadcast_state_sync(-1);
+    assert(!peer->out_len && peer->state_sync_pending);
 }
 
 int main(void)

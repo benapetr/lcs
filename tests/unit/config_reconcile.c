@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_reconcile.h"
 #include "peer.h"
+#include "config_live.h"
+#include "util.h"
 #include <assert.h>
 #include <errno.h>
 #include <signal.h>
@@ -12,12 +14,29 @@
 
 daemon_state_t g_state;
 static unsigned generation_cancellations;
-static bool generation_reload;
+static bool generation_reload, expanded_fixture, live_mode, project_ready, owners_ready, invalid_owner_result;
+static unsigned released[16], released_count, projected, dropped;
+void resources_drop_local(int resource_idx, int epoll_fd)
+{ (void)epoll_fd; assert(resource_idx == 0); dropped++; }
+
+bool cluster_local_voting_ready(void) { return g_state.voting_ready; }
+int cluster_has_quorum(void) { return g_state.votes_seen >= 2; }
+void lease_cancel_operations(int resource_idx) { assert(resource_config_is_fenced(resource_idx)); }
+void resources_release_local(int resource_idx, int epoll_fd)
+{
+    (void)epoll_fd;
+    assert(released_count < 16 && resource_config_is_fenced(resource_idx));
+    assert(!strcmp(g_state.cfg.resources[resource_idx].post_stop, resource_idx == 0 ? "/old-parent-stop" : "/old-child-stop"));
+    released[released_count++] = (unsigned)resource_idx;
+    g_state.resources[resource_idx].state = LCS_RES_STOPPING;
+}
 
 bool config_reload_in_progress(void) { return generation_reload; }
 void move_cancel_all(int epoll_fd, const char *message)
 {
-    (void)epoll_fd; (void)message;
+    (void)epoll_fd;
+    if (!strcmp(message, "resource definitions are being reconciled"))
+    { assert(g_state.config_application_fenced); return; }
     assert(!g_state.resource_generation_admitted && !g_state.voting_ready);
     assert(generation_cancellations % 3 == 0); generation_cancellations++;
 }
@@ -114,7 +133,23 @@ static void setup(bool quorum_only)
     base->resource_count = 1;
     strcpy(base->resources[0].name, "vip"); base->resources[0].type = LCS_RESOURCE_VIP;
     strcpy(base->resources[0].address, "192.0.2.1/32"); strcpy(base->resources[0].interface, "eth0");
-    assert(!lcs_config_finalize(base, error, sizeof(error)));
+    if (expanded_fixture)
+    {
+        base->resource_count = 3;
+        strcpy(base->resources[0].name, "a_parent");
+        strcpy(base->resources[0].post_stop, "/old-parent-stop");
+        base->resources[1] = base->resources[0];
+        strcpy(base->resources[1].name, "b_child");
+        strcpy(base->resources[1].address, "192.0.2.2/32");
+        strcpy(base->resources[1].post_stop, "/old-child-stop");
+        base->resources[1].depends_on_count = 1;
+        strcpy(base->resources[1].depends_on_names[0], "a_parent");
+        base->resources[2] = base->resources[0];
+        strcpy(base->resources[2].name, "z_keep");
+        strcpy(base->resources[2].address, "192.0.2.3/32");
+    }
+    if (lcs_config_finalize(base, error, sizeof(error)))
+    { fprintf(stderr, "fixture config: %s\n", error); abort(); }
     strcpy(directory, "/tmp/lcs-reconcile.XXXXXX"); assert(mkdtemp(directory));
     assert(!lcs_config_store_open(&store, directory, error, sizeof(error)));
     runtime.base = malloc(sizeof(*runtime.base)); assert(runtime.base);
@@ -160,6 +195,11 @@ static void learn(const lcs_config_value_t *value)
 static int tick(void)
 {
     (void)lcs_config_coordinator_process(&coordinator, 1000);
+    if (live_mode)
+    {
+        g_state.config_runtime = runtime;
+        g_state.config_coordinator = coordinator;
+    }
     int result = lcs_config_reconcile_process(&reconcile);
     usleep(1000);
     return result;
@@ -407,6 +447,132 @@ static void test_generation_installation_and_admission(void)
     lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
 }
 
+static int project_live(void *context, const lcs_config_value_t *committed, char *err, size_t length)
+{
+    (void)context; (void)err; (void)length;
+    assert(lcs_config_value_equal(committed, &runtime.agreement.committed));
+    projected++;
+    return project_ready ? 1 : 0;
+}
+
+static int owner_live(void *context, const lcs_config_reconcile_view_t *view, char *err, size_t length)
+{
+    (void)context; (void)view; (void)err; (void)length;
+    assert(!released_count || released_count == 2);
+    return invalid_owner_result ? 2 : owners_ready ? 1 : 0;
+}
+
+static void complete_stopped(size_t index)
+{
+    g_state.resources[index].state = LCS_RES_STOPPED;
+    g_state.resources[index].owner_node = -1;
+    g_state.resources[index].owner_instance_id = 0;
+    g_state.resources[index].lease_id = g_state.resources[index].lease_deadline_ms = 0;
+    g_state.lease_grants[index].active = false;
+    g_state.lease_grants[index].owner_node = -1;
+}
+
+static void test_live_drain_and_incarnation_remap(void)
+{
+    expanded_fixture = true; setup(false); expanded_fixture = false;
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    assert(!lcs_config_application_finish(&runtime.application, first.digest, error, sizeof(error)));
+    lcs_config_t *configs = malloc(3 * sizeof(*configs)); assert(configs);
+    uint64_t revision;
+    assert(!lcs_resource_config_decode(first.document, first.length, runtime.base, &configs[0], &revision, error, sizeof(error)));
+    configs[1] = configs[0];
+    strcpy(configs[1].resources[0].address, "192.0.2.9/32");
+    strcpy(configs[1].resources[0].post_stop, "/new-parent-stop");
+    configs[1].resources[3] = configs[1].resources[2];
+    strcpy(configs[1].resources[3].name, "a_new"); strcpy(configs[1].resources[3].address, "192.0.2.4/32");
+    configs[1].resource_count = 4;
+    assert(!lcs_config_finalize(&configs[1], error, sizeof(error)));
+    assert(!lcs_resource_config_assign_identities(&configs[0], 1, &configs[1], &configs[2], error, sizeof(error)));
+    char *document; size_t length;
+    assert(!lcs_resource_config_encode(&configs[2], 2, &document, &length, error, sizeof(error)));
+    lcs_config_value_t second = {0};
+    assert(!lcs_config_value_init(&second, runtime.base, "live-remap", document, length, error, sizeof(error)));
+    free(document); learn(&second);
+    memset(&g_state, 0, sizeof(g_state));
+    g_state.cfg = configs[0]; g_state.self_index = 0; g_state.instance_id = 100;
+    g_state.voting_ready = true; g_state.votes_seen = 3;
+    generation_cancellations = 0; generation_reload = false; released_count = projected = 0;
+    for (size_t i = 0; i < 3; i++)
+    {
+        g_state.resources[i].owner_node = 0; g_state.resources[i].owner_instance_id = 100;
+        g_state.resources[i].state = LCS_RES_ACTIVE; g_state.resources[i].epoch = 10 + i;
+        g_state.resources[i].lease_id = 1000 + i; g_state.resources[i].lease_deadline_ms = lcs_now_ms() + 10000;
+        g_state.lease_grants[i].active = true; g_state.lease_grants[i].owner_node = 0;
+        g_state.lease_grants[i].promised_epoch = 50 + i;
+    }
+    resource_runtime_t kept = g_state.resources[2]; lease_grant_t grant = g_state.lease_grants[2];
+    lcs_config_live_t live;
+    assert(lcs_config_live_init(&live, -1, project_live, NULL, NULL) < 0);
+    assert(!lcs_config_live_init(&live, -1, project_live, owner_live, NULL));
+    lcs_config_reconcile_init(&reconcile, &coordinator, lcs_config_live_ops(), &live);
+    live_mode = true; project_ready = owners_ready = invalid_owner_result = false; forbid_io = true;
+    assert(!lcs_config_reconcile_start(&reconcile));
+    until(LCS_CONFIG_RECONCILE_QUIESCE);
+    assert(!tick());
+    assert(g_state.config_application_fenced && g_state.config_application_drain_mask == 3 && !released_count);
+    assert(projected && resource_config_is_fenced(0) && resource_config_is_fenced(1) && !resource_config_is_fenced(2));
+    project_ready = true;
+    until(LCS_CONFIG_RECONCILE_DRAIN);
+    assert(!tick() && released_count == 1 && released[0] == 1);
+    complete_stopped(1); g_state.resources[1].hook.pid = 999;
+    assert(!tick() && released_count == 1); /* Child post-stop work blocks parent cleanup. */
+    g_state.resources[1].hook.pid = 0;
+    assert(!tick() && released_count == 2 && released[1] == 0);
+    g_state.resources[0].state = LCS_RES_STOP_FAILED;
+    assert(tick() < 0 && reconcile.phase == LCS_CONFIG_RECONCILE_BLOCKED && !live.installed);
+    complete_stopped(0);
+    assert(!lcs_config_reconcile_retry(&reconcile));
+    until(LCS_CONFIG_RECONCILE_OWNERS);
+    for (unsigned i = 0; i < 5; i++) assert(!tick());
+    assert(!live.installed && g_state.cfg.resource_count == 3);
+    invalid_owner_result = true;
+    assert(tick() < 0 && reconcile.phase == LCS_CONFIG_RECONCILE_BLOCKED && !live.installed);
+    invalid_owner_result = false; owners_ready = true;
+    assert(!lcs_config_reconcile_retry(&reconcile));
+    until(LCS_CONFIG_RECONCILE_FINISH);
+    assert(live.installed && generation_cancellations == 3 && g_state.cfg.resource_count == 4);
+    assert(!memcmp(&kept, &g_state.resources[3], sizeof(kept)) && !memcmp(&grant, &g_state.lease_grants[3], sizeof(grant)));
+    assert(g_state.resources[0].owner_node == -1 && !g_state.resources[0].epoch && !g_state.lease_grants[0].promised_epoch);
+    assert(g_state.resources[1].owner_node == -1 && !g_state.resources[1].epoch && !g_state.lease_grants[1].promised_epoch);
+    assert(g_state.resources[2].epoch == 11 && g_state.lease_grants[2].promised_epoch == 51);
+    assert(g_state.config_application_drain_mask == 7 && g_state.config_application_remapping);
+    until(LCS_CONFIG_RECONCILE_ADMIT);
+    assert(!tick() && g_state.resource_generation_admitted && !g_state.config_application_remapping);
+    assert(g_state.config_application_fenced && coordinator.application_owner == &reconcile);
+    g_state.voting_ready = true; g_state.votes_seen = 2;
+    until(LCS_CONFIG_RECONCILE_DONE);
+    assert(!g_state.config_application_fenced && !g_state.config_application_drain_mask);
+    live_mode = false; memset(&g_state, 0, sizeof(g_state));
+    free(configs); lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
+}
+
+static void test_valid_lease_retention_during_remap(void)
+{
+    memset(&g_state, 0, sizeof(g_state));
+    g_state.self_index = 0; g_state.instance_id = 100; g_state.cfg.resource_count = 1;
+    g_state.config_application_fenced = g_state.config_application_remapping = true;
+    g_state.resources[0].owner_node = 0; g_state.resources[0].owner_instance_id = 100;
+    g_state.resources[0].state = LCS_RES_ACTIVE; g_state.resources[0].epoch = 7;
+    g_state.resources[0].lease_deadline_ms = lcs_now_ms() + 10000;
+    g_state.lease_grants[0].promised_epoch = 9; dropped = 0;
+    resource_runtime_t before = g_state.resources[0]; lease_grant_t grant = g_state.lease_grants[0];
+    assert(lcs_config_live_maintain_leases(-1) && !dropped);
+    assert(!memcmp(&before, &g_state.resources[0], sizeof(before)) && !memcmp(&grant, &g_state.lease_grants[0], sizeof(grant)));
+    g_state.resources[0].lease_deadline_ms = lcs_now_ms() - 1;
+    assert(lcs_config_live_maintain_leases(-1) && dropped == 1);
+    g_state.resources[0].state = LCS_RES_STOP_FAILED;
+    assert(lcs_config_live_maintain_leases(-1) && dropped == 1);
+    g_state.config_application_remapping = false; g_state.voting_ready = true; g_state.votes_seen = 2;
+    assert(!lcs_config_live_maintain_leases(-1));
+    memset(&g_state, 0, sizeof(g_state));
+}
+
 int main(void)
 {
     parent = getpid();
@@ -416,6 +582,8 @@ int main(void)
     test_quorum_only_and_missing_adapters();
     test_uncertain_writes_and_shutdown();
     test_generation_installation_and_admission();
+    test_live_drain_and_incarnation_remap();
+    test_valid_lease_retention_during_remap();
     puts("durable configuration reconciliation ordering and safety barriers unit tests passed");
     return 0;
 }

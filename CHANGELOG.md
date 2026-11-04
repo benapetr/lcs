@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added explicit local application callbacks for definition fencing, backend drain with old hooks/dependency ordering, and incarnation-aware runtime remapping. Unchanged ownership/private promises are preserved, replacements start with fresh identity state, and existing leases cannot be extended through missing quorum/admission. Projection publication and distributed old-owner proof remain mandatory unfinished providers; startup recovery and automatic activation remain disabled.
+
 - Added wire-6 resource-generation envelopes binding lease/state-sync/control traffic and voting heartbeats to the applied snapshot, membership and daemon instances before dispatch or RPC completion. Different generations retain configuration catch-up access without resource votes. Explicit install/admit APIs fence traffic around indexed-operation cancellation and durable matching applied state; live adapters and automatic activation remain unfinished.
 
 - Added an internal reconciliation sequencer with durable cleanup intent, explicit backend/old-owner/install barriers, and a voting hold through durable application and generation admission. Pending cleanup survives newer checkpoints; quorum-only nodes skip backend work, and failed barriers or uncertain writes stay fenced. Live daemon adapters, startup reconciliation and automatic activation remain unfinished.

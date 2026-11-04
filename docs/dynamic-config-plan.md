@@ -166,8 +166,14 @@ durable distributed configuration protocol.
   sessions. Explicit install/admit APIs cancel indexed peer operations before
   remapping and require durable matching applied state before generation traffic.
   Live backend/remap/startup adapters are not connected yet.
-- [ ] Preserve unchanged resources' ownership and runtime state; reuse safe
-  resource transition and dependency-ordering machinery for affected resources.
+- [x] Implement explicit local backend callbacks with definition fences, existing
+  stop machinery/old hooks, dependency/post-stop ordering, failed-cleanup blocking,
+  incarnation-aware sorted remapping and preserved unchanged ownership/promises.
+  Pause indexed traffic/work without extending existing leases through missing
+  quorum/admission; reset replacement incarnations and wait for generation recovery.
+- [ ] Implement the required asynchronous latest-projection publisher and distributed
+  generation-bound old-owner stop/expiry/fencing provider; connect these and the
+  local adapter to live daemon startup/application. No default proof is permitted.
 - [ ] Define how read-only status/export reports configuration origin, committed
   revision, and pending operations, without treating file edits as commits.
   Legacy INI origin and prepared-member diagnostics are available through

@@ -77,6 +77,8 @@ static void lease_expire_grant(lease_grant_t *grant, uint64_t now)
 
 static int lease_grant_acquire(int resource_idx, int owner_idx, uint64_t owner_instance_id, uint64_t epoch, uint64_t lease_id, uint64_t deadline_ms)
 {
+    if (resource_config_is_fenced(resource_idx))
+        return -1;
     resource_runtime_t *res = &g_state.resources[resource_idx];
     lease_grant_t *grant = &g_state.lease_grants[resource_idx];
     uint64_t now = lcs_now_ms();
@@ -172,6 +174,8 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
         return 0;
     }
 
+    if (resource_config_is_fenced((int)resource_id))
+        return -1;
     if (lease_ms != g_state.cfg.lease_ms)
         return -1;
 
@@ -412,7 +416,8 @@ static void lease_op_send_release_to_acked(int epoll_fd, lease_runtime_t *op)
 
 static int lease_start_operation(int epoll_fd, lease_op_type_t type, int resource_idx, int owner_idx, uint64_t epoch, uint64_t lease_id)
 {
-    if (type != LCS_LEASE_OP_RELEASE && !cluster_local_voting_ready())
+    if (type != LCS_LEASE_OP_RELEASE &&
+        (!cluster_local_voting_ready() || resource_config_is_fenced(resource_idx)))
         return -1;
 
     lease_runtime_t *op = lease_op_alloc(resource_idx, type);

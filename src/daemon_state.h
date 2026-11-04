@@ -459,6 +459,8 @@ typedef struct
     config_reload_runtime_t config_reload;
     lcs_resource_generation_t resource_generation;
     bool resource_generation_enabled, resource_generation_admitted;
+    bool config_application_fenced, config_application_remapping;
+    uint32_t config_application_drain_mask;
     lcs_config_bootstrap_t config_bootstrap;
     lcs_config_runtime_t config_runtime;
     lcs_config_status_t config_status;
@@ -473,6 +475,13 @@ typedef struct
 } daemon_state_t;
 
 extern daemon_state_t g_state;
+
+static inline bool resource_config_is_fenced(int resource_idx)
+{
+    return g_state.config_application_fenced &&
+        (g_state.config_application_remapping || (resource_idx >= 0 && resource_idx < LCS_MAX_RESOURCES &&
+         (g_state.config_application_drain_mask & (UINT32_C(1) << resource_idx))));
+}
 
 enum
 {

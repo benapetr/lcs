@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Petr Bena <petr@bena.rocks>
 
 #include "resources.h"
+#include "config_live.h"
 
 #include "cluster.h"
 #include "group.h"
@@ -504,6 +505,12 @@ static void resources_mark_local_active(int resource_idx, uint64_t epoch, uint64
 static int resources_complete_local_activation(int resource_idx, uint64_t epoch, uint64_t lease_id, int epoll_fd)
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
+    if (resource_config_is_fenced(resource_idx))
+    {
+        lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
+        resources_clear_local_lease(res, epoch);
+        return -1;
+    }
     uint64_t now = lcs_now_ms();
     const lcs_resource_config_t *resource = &g_state.cfg.resources[resource_idx];
     if (resource->type == LCS_RESOURCE_SERVICE)
@@ -946,9 +953,9 @@ int resources_activate_acquired_local(int resource_idx, uint64_t epoch, uint64_t
 {
     resource_runtime_t *res = &g_state.resources[resource_idx];
     uint64_t now = lcs_now_ms();
-    if (!resource_dependencies_active_locally(resource_idx))
+    if (resource_config_is_fenced(resource_idx) || !resource_dependencies_active_locally(resource_idx))
     {
-        lcs_log_warn("auto-place failed %s %s: dependencies are not active locally", resource_kind(&g_state.cfg.resources[resource_idx]), g_state.cfg.resources[resource_idx].name);
+        lcs_log_warn("auto-place failed %s %s: configuration fence or inactive dependencies", resource_kind(&g_state.cfg.resources[resource_idx]), g_state.cfg.resources[resource_idx].name);
         lease_release_majority(resource_idx, g_state.self_index, epoch, lease_id, epoll_fd);
         resources_clear_local_lease(res, epoch);
         res->next_activation_attempt_ms = now + lcs_jittered_delay_ms(g_state.cfg.lease_ms);
@@ -973,6 +980,8 @@ int resources_activate_acquired_local(int resource_idx, uint64_t epoch, uint64_t
 
 int resources_activate_local(int resource_idx, uint64_t epoch, int epoll_fd)
 {
+    if (resource_config_is_fenced(resource_idx))
+        return -1;
     if (g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL)
     {
         lcs_log_debug("refusing to activate resource %s on non-full-member node", g_state.cfg.resources[resource_idx].name);
@@ -1200,7 +1209,8 @@ static void resources_finish_backend_stop(int resource_idx, bool handoff, int ha
 
 static bool resources_activation_lease_current(const resource_runtime_t *res, uint64_t epoch, uint64_t lease_id, uint64_t now)
 {
-    return res->owner_node == g_state.self_index &&
+    return !resource_config_is_fenced((int)(res - g_state.resources)) &&
+           res->owner_node == g_state.self_index &&
            res->owner_instance_id == g_state.instance_id &&
            res->state == LCS_RES_STARTING &&
            res->epoch == epoch &&
@@ -1555,7 +1565,7 @@ void resources_process_service_operations(int epoll_fd)
         }
         if (type == LCS_SERVICE_OP_START)
         {
-            bool still_current = res->owner_node == g_state.self_index &&
+            bool still_current = !resource_config_is_fenced((int)i) && res->owner_node == g_state.self_index &&
                                  res->owner_instance_id == g_state.instance_id &&
                                  res->state == LCS_RES_STARTING &&
                                  res->epoch == epoch &&
@@ -1612,6 +1622,11 @@ int resources_set_disabled(int resource_idx, bool disabled, int epoll_fd, char *
         return -1;
     }
 
+    if (!disabled && resource_config_is_fenced(resource_idx))
+    {
+        snprintf(message, message_len, "resource definition is being reconciled; start is temporarily fenced");
+        return -1;
+    }
     resource_runtime_t *res = &g_state.resources[resource_idx];
     bool retry_stop_failed = disabled &&
                              res->disabled &&
@@ -1754,6 +1769,8 @@ void resources_home_rebalance(int epoll_fd)
 void resources_maintain_owned_leases(int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
+    if (lcs_config_live_maintain_leases(epoll_fd))
+        return;
     if (!cluster_has_quorum())
     {
         if (g_state.had_quorum && !g_state.no_quorum_state_cleared)
@@ -1805,6 +1822,8 @@ void resources_maintain_owned_leases(int epoll_fd)
             resources_release_local_internal((int)i, epoll_fd, false);
             continue;
         }
+        if (resource_config_is_fenced((int)i))
+            continue; /* The adapter drains it with old hooks; never renew it. */
         if (g_state.cfg.resources[i].type == LCS_RESOURCE_SERVICE)
         {
             if (res->state == LCS_RES_ACTIVE &&
