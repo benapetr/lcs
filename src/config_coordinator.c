@@ -23,7 +23,7 @@ bool lcs_config_coordinator_can_close(const lcs_config_coordinator_t *coordinato
 
 bool lcs_config_coordinator_can_vote(const lcs_config_coordinator_t *coordinator)
 {
-    if (!coordinator->initialized || coordinator->closing || coordinator->failed ||
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed || coordinator->application_owner ||
         coordinator->phase != LCS_CONFIG_COORD_READY || coordinator->storage.pid > 0)
         return false;
     const lcs_config_runtime_t *runtime = coordinator->runtime;
@@ -192,6 +192,27 @@ int lcs_config_coordinator_start_checkpoint(lcs_config_coordinator_t *coordinato
     return result;
 }
 
+int lcs_config_coordinator_start_application(lcs_config_coordinator_t *coordinator,
+                                             const void *owner, const lcs_config_agreement_job_t *job,
+                                             char *err, size_t err_len)
+{
+    if (coordinator->initialized && coordinator->storage.pid > 0)
+        return 1;
+    if (!owner || coordinator->application_owner != owner || !coordinator->initialized || coordinator->closing ||
+        coordinator->failed || coordinator->phase != LCS_CONFIG_COORD_READY || !job ||
+        (job->action != LCS_CONFIG_APPLICATION_BEGIN && job->action != LCS_CONFIG_APPLICATION_FINISH) ||
+        coordinator->completed_applications == UINT64_MAX)
+        return -1;
+    lcs_config_runtime_t *runtime = coordinator->runtime;
+    if (!lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application))
+        return -1;
+    int result = lcs_config_agreement_worker_start_application(&coordinator->storage, &runtime->agreement,
+                                                                  &runtime->application, job, err, err_len);
+    if (!result)
+        coordinator->phase = LCS_CONFIG_COORD_APPLYING;
+    return result;
+}
+
 int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64_t now_ms)
 {
     if (!coordinator->initialized || coordinator->phase == LCS_CONFIG_COORD_IDLE ||
@@ -213,8 +234,9 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
     if (coordinator->phase == LCS_CONFIG_COORD_READY)
         return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
     lcs_config_runtime_t *runtime = coordinator->runtime;
-    if (coordinator->phase == LCS_CONFIG_COORD_VOTING)
+    if (coordinator->phase == LCS_CONFIG_COORD_VOTING || coordinator->phase == LCS_CONFIG_COORD_APPLYING)
     {
+        bool application_job = coordinator->phase == LCS_CONFIG_COORD_APPLYING;
         int operation = -1;
         int result = lcs_config_agreement_worker_poll(&coordinator->storage, &runtime->agreement,
             &operation, coordinator->error, sizeof(coordinator->error));
@@ -226,8 +248,16 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
             coordinator->phase = coordinator->storage.pid > 0 ? LCS_CONFIG_COORD_CANCELLING : LCS_CONFIG_COORD_FAILED;
             return coordinator->storage.pid > 0 ? 0 : -1;
         }
-        coordinator->last_vote_result = operation;
-        coordinator->completed_votes++;
+        if (application_job)
+        {
+            coordinator->last_application_result = operation;
+            coordinator->completed_applications++;
+        }
+        else
+        {
+            coordinator->last_vote_result = operation;
+            coordinator->completed_votes++;
+        }
         coordinator->phase = LCS_CONFIG_COORD_READY;
         return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
     }

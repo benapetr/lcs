@@ -12,6 +12,7 @@ typedef enum
     LCS_CONFIG_COORD_PERSISTING,
     LCS_CONFIG_COORD_READY,
     LCS_CONFIG_COORD_VOTING,
+    LCS_CONFIG_COORD_APPLYING,
     LCS_CONFIG_COORD_CANCELLING,
     LCS_CONFIG_COORD_STOPPED,
     LCS_CONFIG_COORD_FAILED,
@@ -27,6 +28,9 @@ typedef struct
     uint64_t attempt;
     uint64_t completed_votes; /* Process-local completion counter, not durable request history. */
     int last_vote_result;
+    uint64_t completed_applications;
+    int last_application_result;
+    const void *application_owner; /* Reconciler holds voting through admission. */
     lcs_config_coordinator_phase_t phase;
     bool initialized;
     bool closing;
@@ -68,6 +72,12 @@ int lcs_config_coordinator_start_learn(lcs_config_coordinator_t *coordinator,
 int lcs_config_coordinator_start_checkpoint(lcs_config_coordinator_t *coordinator,
                                             const lcs_config_agreement_job_t *job,
                                             char *err, size_t err_len);
+/* Catalog-only application writes through the same worker. The reconciler must
+ * hold application_owner before BEGIN/FINISH. FINISH records the exact pending
+ * digest after the caller's backend/owner/install barriers. No backend I/O here. */
+int lcs_config_coordinator_start_application(lcs_config_coordinator_t *coordinator,
+                                             const void *owner, const lcs_config_agreement_job_t *job,
+                                             char *err, size_t err_len);
 /* Nonblocking: collect -> shared barrier writer -> durable READY. Returns 1
  * while proof is eligible, -1 for terminal failure, 0 for pending/stopped/idle.
  * Never publish a result for a replaced readiness attempt. */

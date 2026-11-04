@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added an internal reconciliation sequencer with durable cleanup intent, explicit backend/old-owner/install barriers, and a voting hold through durable application and generation admission. Pending cleanup survives newer checkpoints; quorum-only nodes skip backend work, and failed barriers or uncertain writes stay fenced. Live daemon adapters, startup reconciliation and automatic activation remain unfinished.
+
 - Added wire-6 committed checkpoint pulls across revision gaps, with fixed deadlines, instance/membership/baseline binding and original majority validation. Catch-up retains higher promises and old applied/pending cleanup definitions, including delete/recreate identities, and shares the existing storage writer. Prepared nodes poll admitted peers after the durable readiness barrier; automatic activation and live resource application remain unfinished.
 
 - Added an internal wire-6 configuration proposer that coordinates durable prepare/accept/learn operations, correlates instance-bound replies, and recovers complete previously accepted values. Fixed deadlines, duplicate-vote protection and unknown-outcome retries are covered by the three-node transport harness. Automatic activation, synchronization and live resource application remain unfinished.

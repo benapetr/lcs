@@ -153,6 +153,12 @@ durable distributed configuration protocol.
   after activation. Do not introduce a permanent mixed static/dynamic namespace.
 - [ ] Route existing coordinated reload and dynamic updates through compatible
   serialization rules so they cannot race or overwrite each other's changes.
+- [x] Add an explicit internal application sequencer through the shared storage
+  coordinator: persist pending cleanup before callbacks, enforce quiesce/drain/
+  old-owner/install ordering, persist the applied marker before admission, and
+  hold voting until admission succeeds. Resume exact pending targets across
+  newer checkpoints, skip backend work for quorum-only nodes, and retain holds
+  on failed cleanup or uncertain persistence. Live adapters remain unfinished.
 - [ ] Preserve unchanged resources' ownership and runtime state; reuse safe
   resource transition and dependency-ordering machinery for affected resources.
 - [ ] Define how read-only status/export reports configuration origin, committed

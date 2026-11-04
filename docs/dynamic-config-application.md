@@ -1,6 +1,7 @@
 # Configuration application and recovery contract
 
-Status: design contract for the remaining implementation. The running daemon
+Status: contract with implemented local catalog and reconciliation sequencing;
+live daemon backend adapters and automatic activation remain unfinished. The running daemon
 still uses INI authority and supports wire 5–6. Wire-6 bootstrap metadata does
 not enable dynamic edits.
 See [the agreement core](dynamic-config-agreement.md) and
@@ -106,8 +107,9 @@ Ordinary full-cluster restart recovers each node's monotonic agreement records
 before seeking a matching majority and admitting resource activity. Revisions
 alone cannot establish authority. Historical decision compaction must retain the
 checkpoint's verified predecessor/decision evidence and the state needed for
-unfinished requests and cleanup. Compaction and multi-revision catch-up are not
-implemented by the current single-slot core.
+unfinished requests and cleanup. The committed checkpoint path now supports
+multi-revision catch-up; durable request-status history and compaction remain
+unfinished.
 
 Disk replacement or restoring stale backups is disaster recovery, not an ordinary
 restart. A node with lost/rolled-back promises must remain excluded from votes
@@ -170,8 +172,71 @@ or completion of the exact pending application. Replays that erase cleanup
 obligations or regress the applied revision are rejected. Cancellation or an
 uncertain worker result poisons both handles until disk recovery after child exit.
 Tests cover shared-writer exclusion, delayed publication, large pipe results,
-stale imports, failed file/directory sync, and cancellation. Backend execution
-and the daemon application coordinator are still pending.
+stale imports, failed file/directory sync, and cancellation. The internal
+reconciliation sequencer below now coordinates catalog writes and explicit
+backend barriers; live daemon adapters remain pending.
+
+## Internal reconciliation sequencer
+
+`config_reconcile.c` implements the local ordering state machine. It requires an
+explicit start after durable activation authorization and startup fencing; no daemon backend
+adapter, automatic authority switch or permissive default callbacks are installed.
+Projection publication, resource-message generation binding and startup ownership
+recovery still need daemon integration before this path can run live. An already
+current catalog returns done without adapters; callers must separately establish
+ordinary restart and generation admission, including a crash after applied
+persistence but before the prior process completed admission.
+
+One reconciler takes a coordinator ownership hold that blocks configuration votes
+until admission finishes. Catalog BEGIN/FINISH use the same background writer as
+agreement/checkpoint operations, with separate application completion counters so
+a catalog result cannot be mistaken for a peer transaction vote. BEGIN must be
+durable before any adapter is invoked. Recovery of an existing pending catalog
+uses its exact target even if newer decisions have already been learned.
+
+The required nonblocking adapters execute in this order:
+
+1. Quiesce affected grants/acquisition while preserving eligible unaffected work.
+2. Drain local backends and indexed workers using old definitions/hooks and safe
+   dependency ordering; failed stops block application.
+3. Establish the old-owner barrier through confirmed stop or valid lease expiry;
+   known/suspected failed cleanup needs confirmed repair/fencing.
+4. Install the target while keeping resource activity fenced. Close old indexed
+   sessions and operations, then remap only matching name/incarnation/backends.
+5. After the exact installed target is durably recorded as applied, establish
+   generation/restart/lease admission before releasing the hold.
+
+Adapters return pending, complete, or blocked. A completed step must maintain its
+guarantees until admission or shutdown. They may not block the lease event loop,
+retain borrowed plan pointers, or reenter/mutate the coordinator or durable
+handles. Asynchronous results must bind to the immutable target digest/incarnation
+and monotonically increasing reconciler attempt. Adapters copy needed data; late
+results cannot stand in for another attempt. Quorum-only nodes skip the three
+backend/owner steps, while still installing metadata and completing admission.
+
+A failed adapter preserves the exact stage, error and cleanup target in blocked
+state. It advances only after an explicit retry following external repair;
+no elapsed timeout proves cleanup or admission. Uncertain persistence is terminal
+recovery state and cannot use that retry path. Both kinds of failure retain the
+voting hold. An applied marker alone cannot enable votes while admission is
+pending or failed.
+
+Checkpoint learning may advance during drain. It cannot overwrite the pending
+application. The sequencer finishes that target, then stages the latest decision
+without admitting the intermediate generation. It also waits for any in-flight
+checkpoint before admission, preventing the old generation from being admitted
+while a newer decision is being imported. Stop/install callbacks are trusted
+local safety barriers, not distributed owner acknowledgements created by this
+module. Live adapters must provide the actual peer, backend and lease checks.
+
+Shutdown stops the shared coordinator and retains storage and snapshots until its
+writer is reaped. Closing a live owning reconciler is refused. Adapters must also
+cancel/drain their asynchronous work before disposal. A restart resumes from the
+durable pending catalog and repeats idempotent barriers, rather than interpreting
+an interrupted callback or absent process as successful cleanup. Tests exercise
+ordering, failed stops, pending owners, failed generation admission, newer
+checkpoints during drain/admission, quorum-only paths, uncertain BEGIN/FINISH
+writes and shutdown while a writer is stopped at fsync.
 
 ## Client outcomes
 

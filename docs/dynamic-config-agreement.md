@@ -455,6 +455,13 @@ covers multi-revision delete/recreate catch-up, a relayed ballot, quorum-only
 receivers, retained pending cleanup and higher promises, recovery from disk,
 baseline mismatch, fixed deadlines, stale instances and disconnect during a write.
 
+The internal [reconciliation sequencer](dynamic-config-application.md#internal-reconciliation-sequencer)
+now shares this writer for catalog BEGIN/FINISH, with a separate completion counter
+and an ownership hold through backend/generation admission. A learned checkpoint
+can advance while cleanup is in progress without replacing its pending target.
+The sequencer and explicit backend barriers remain disconnected from live daemon
+resource application until safe generation/owner adapters are implemented.
+
 ## Remaining daemon activation and application rules
 
 - Confirm support, durable readiness, matching full definitions, and compatible

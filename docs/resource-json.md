@@ -82,6 +82,12 @@ old applied/pending cleanup snapshots. Automatic activation and live resource
 application remain unfinished. See
 [network agreement handling](dynamic-config-agreement.md#network-acceptor-and-majority-decision-handling).
 
+The internal reconciliation sequencer persists pending cleanup before invoking
+backend/owner/install barriers and records applied state before generation
+admission. It retains old pending targets across newer checkpoints and blocks
+votes on failures. Its live daemon adapters and automatic activation remain
+unfinished; see [application ordering](dynamic-config-application.md#internal-reconciliation-sequencer).
+
 ## Inspecting preparation across members
 
 Run `lcs config status` or `lcs --json config status` to inspect INI authority,
