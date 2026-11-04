@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added wire-6 configuration acceptor/learner messages with instance/proposer admission, bounded snapshot transfer, durable PROMISE/ACK/LEARNED replies and majority-decision validation. Session loss does not cancel an in-flight write; uncertain persistence reports outcome-unknown. Learned decisions keep further votes blocked until application catches up. Automatic network proposal, activation and dynamic commands remain unfinished.
+
 - Connected explicit peer readiness collection to durable barrier persistence through the scheduler and shared configuration writer. Local PREPARE/ACCEPT jobs now have coordinator-level readiness/application gates and activation successor checks. Cancellation and shutdown retain storage until child exit; automatic migration, peer transaction votes and dynamic commands remain unfinished.
 
 - Added explicit wire-6 readiness queries/replies with strict peer/instance admission, attempt correlation, and a fixed deadline for all-member collection. INI-only nodes reply not-ready without creating state; frozen definitions reject legacy resource reloads. Automatic initialization, activation, and live configuration mutation remain unfinished.

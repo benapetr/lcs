@@ -11,6 +11,7 @@
 #include "config_status_protocol.h"
 #include "config_readiness.h"
 #include "config_coordinator.h"
+#include "config_transaction.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -460,6 +461,7 @@ typedef struct
     uint64_t config_status_retry_ms;
     lcs_config_readiness_t config_readiness;
     lcs_config_coordinator_t config_coordinator;
+    lcs_config_transactions_t config_transactions;
     uint64_t config_readiness_attempt;
     uint64_t config_readiness_next_send_ms;
     bool config_bootstrap_initialized;

@@ -81,6 +81,7 @@ uint64_t lcs_config_agreement_next_ballot(const lcs_config_agreement_t *agreemen
                                          uint64_t observed);
 bool lcs_config_agreement_ballot_valid(const lcs_config_agreement_t *agreement,
                                       uint64_t ballot);
+bool lcs_config_agreement_has_quorum(const lcs_config_agreement_t *agreement, uint32_t voters);
 int lcs_config_agreement_prepare(lcs_config_agreement_t *agreement,
                                  uint64_t revision, const char *parent_digest,
                                  uint64_t ballot, char *err, size_t err_len);

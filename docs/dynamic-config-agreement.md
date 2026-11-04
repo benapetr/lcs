@@ -3,8 +3,10 @@
 Implementation status: the agreement core, storage worker, and snapshot-transfer
 codecs, incarnation validation, local readiness barrier and application catalog
 are implemented and unit-tested. Explicit peer readiness queries/replies are wired
-into admitted wire-6 sessions. Durable transactions are not connected to daemon peer sessions,
-automatic activation, resource application, or CLI mutation endpoints. Separate
+into admitted wire-6 sessions. The network acceptor/learner is registered with
+daemon peer sessions. Automatic
+proposal coordination, activation, resource application and CLI mutation endpoints
+remain unfinished. Separate
 wire-6 bootstrap metadata now reports prepared definitions diagnostically; wire-5
 compatibility and INI authority remain. This document
 records the rules the remaining integration must preserve.
@@ -173,8 +175,8 @@ not make an unsuccessful worker return successful. A missing intent without
 explicit authorization, a different frozen baseline, or existing promises/chosen
 successors requires disk recovery rather than a pristine-result import.
 
-The automatic initialization coordinator remains to be implemented. The initialization worker is not yet invoked by ordinary daemon
-startup/peering. Preparing local files alone does not permit configuration voting
+The automatic initialization coordinator remains to be implemented. Its worker
+is not yet invoked by ordinary daemon startup/peering. Preparing local files alone does not permit configuration voting
 or switch resource authority.
 
 After preparation, nonzero committed/accepted values must use the dynamic schema;
@@ -264,9 +266,9 @@ write cannot race another vote. ACCEPT additionally requires a schema-2 successo
 revision-one activation must preserve the frozen definitions. Successful worker
 completion reports the actual agreed/rejected/stale result separately from
 uncertain persistence. Acceptance does not learn a majority decision, switch
-authority or apply resources. Peer PREPARE/ACCEPT transaction framing and proposer
-identity admission are not implemented yet; these entry points are not live
-mutation commands.
+authority or apply resources. Wire-6 acceptor framing now verifies proposer
+identity before invoking these entry points. They are not live CLI mutation commands, and an automatic network
+proposer remains unfinished.
 
 After `runtime_open` and application recovery, the coordinator can adopt an
 existing valid barrier entirely in memory. It does not need new peer observations
@@ -316,15 +318,67 @@ Completion validates the entire resource document and checks the declared
 revision and canonical value digest before returning a candidate. Receiving
 bytes never produces an agreement vote or changes runtime resources.
 
-These codecs are not currently registered as peer message types. Integration
-must negotiate a new feature version and send new messages only after a valid
-HELLO. Keep the released wire-5 HELLO payload unchanged; negotiate support and
+These codecs are now wrapped by wire-6 acceptor transaction messages after a
+valid HELLO. PROMISE output includes prior accepted values; incoming PROMISE/SYNC
+handling for the future automatic proposer/catch-up manager is still pending. Keep the released wire-5 HELLO payload unchanged; negotiate support and
 exchange dynamic configuration status after establishment rather than appending
 fields that old strict-length decoders reject.
 
 Application ordering, stable identities, crash recovery and client outcomes are
 specified in [the application contract](dynamic-config-application.md). The
-following integration requirements remain unimplemented.
+remaining activation/application requirements follow the implemented network
+endpoint description below.
+
+## Network acceptor and majority decision handling
+
+`config_transaction.c` registers separate wire-6 control and bounded snapshot
+messages. Every frame carries source and target daemon instances, checked against
+the admitted configured peer. PREPARE, ACCEPT and LEARN must use a ballot whose
+index identifies that source node. Slot/value/membership checks remain required;
+a successful HELLO alone never grants configuration readiness. INI-only nodes
+answer not-ready without reading or initializing durable configuration files.
+
+One durable operation is in flight through the shared coordinator writer, with a
+bounded per-peer response slot. PREPARE returns a PROMISE only after its journal
+write completes and parent memory imports the durable result. If a prior value is
+accepted, that reply identifies its ballot and digest and streams the complete
+immutable snapshot; a future proposer must validate the entire snapshot and exact
+request correlation before counting it. ACCEPT receives a positive ACK only after
+its value is durably accepted. A conflict at the same ballot rejects without
+replacing the accepted value. Busy/backpressured requests may require retry.
+
+LEARN requires a configured voting majority including a full member, valid
+membership/parent identity and an immediate schema-2 successor. The voter mask
+uses the existing non-Byzantine evidence model; it is not a signed certificate.
+Learning writes agreement only: it neither updates applied state nor touches
+backends or resource authority. Once learned configuration is ahead of local
+application, new configuration votes are blocked. An exact current decision may
+still be acknowledged idempotently while application is behind, after verifying
+the durable barrier and majority evidence. Multi-revision catch-up remains pending.
+
+Snapshot BEGIN is admitted before allocation, with at most one 512-KiB incoming
+and one outgoing document per configured peer, chunks up to 16 KiB, and fixed
+ten-second input/output deadlines. Identical retries never extend those deadlines.
+The scheduler queues at most four output frames per call, retaining immutable
+accepted values while backpressured. Expiration discards transport buffers, never
+a journal promise, accepted value or decision. A transfer alone never votes.
+
+Disconnect clears session buffers and suppresses the pending response, but does
+not cancel an already submitted durable write. Completion is correlated to the
+specific coordinator operation; an unexpected completion or uncertain persistence
+cannot produce a positive vote. Outcome-unknown is reported separately from
+rejection and must not be interpreted as an abort. Recovery retains any visible
+promise/decision before another attempt. Shutdown keeps the previous coordinator
+reaping/lock rules. No request-status history or client exactly-once semantics are
+introduced by transport request IDs.
+
+The automatic network proposer is not implemented. Incoming unsolicited control
+replies are validated but do not count toward a quorum; incoming PROMISE/SYNC
+snapshot transfers are rejected by the current acceptor endpoint. The three-node
+transport harness uses the tested proposer core to demonstrate promise quorum,
+highest accepted-value recovery, acceptance quorum and majority learning, including
+a quorum-only voter. Automatic initialization/activation and dynamic commands stay
+disabled until proposal coordination and safe resource application are complete.
 
 ## Remaining daemon activation and application rules
 

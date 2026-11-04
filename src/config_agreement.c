@@ -203,6 +203,11 @@ bool lcs_config_agreement_ballot_valid(const lcs_config_agreement_t *agreement,
     return ballot >> 5 && (ballot & 31) < agreement->base->node_count;
 }
 
+bool lcs_config_agreement_has_quorum(const lcs_config_agreement_t *agreement, uint32_t voters)
+{
+    return quorum(agreement, voters);
+}
+
 uint64_t lcs_config_agreement_next_ballot(const lcs_config_agreement_t *agreement,
                                          uint64_t observed)
 {

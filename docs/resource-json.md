@@ -70,6 +70,13 @@ configuration-vote eligibility is available. Neither collection nor proof change
 authority or applies resources. Frozen definitions reject legacy INI resource reloads. See
 [the readiness contract](dynamic-config-agreement.md#durable-all-member-activation-barrier).
 
+Wire-6 acceptor transactions can persist promises, accepted successors and
+majority decisions after durable readiness. INI-only nodes refuse them without
+creating state. Learning remains separate from application: it does not start
+resources, change authority or enable dynamic commands. The automatic network
+proposer and multi-revision synchronization are still unfinished. See
+[network agreement handling](dynamic-config-agreement.md#network-acceptor-and-majority-decision-handling).
+
 ## Inspecting preparation across members
 
 Run `lcs config status` or `lcs --json config status` to inspect INI authority,

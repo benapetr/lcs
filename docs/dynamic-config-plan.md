@@ -172,7 +172,8 @@ durable distributed configuration protocol.
   exchange, reconnect synchronization, and retry/idempotency behavior.
 - [x] Implement transport-independent bounded BEGIN/CHUNK snapshot codecs,
   exact metadata validation, fixed deadlines, duplicate handling, membership
-  checks, and complete-value validation. Peer feature registration is still pending.
+  checks, and complete-value validation. Wire-6 acceptor registration is implemented
+  below; network proposer and synchronization transfer handling remain pending.
 - [x] Implement the local durable all-member readiness barrier, including
   quorum-only members, exact baseline/membership binding, a checksummed record,
   serialized nonblocking persistence, and application-aware configuration-vote
@@ -193,7 +194,17 @@ durable distributed configuration protocol.
 - [x] Gate explicit local coordinator PREPARE/ACCEPT writes on durable readiness
   and caught-up application, using that same writer. Require schema-2 successors
   and unchanged definitions for activation; distinguish durable vote rejection
-  from uncertain persistence. Peer transaction codecs/admission are still pending.
+  from uncertain persistence. Network acceptor framing/admission is implemented below; automatic proposal
+  coordination is still pending.
+- [x] Register wire-6 acceptor control and bounded snapshot messages for PREPARE,
+  ACCEPT and LEARN, with source/target instance and proposer-index checks. Send
+  success only after durable worker completion; return unknown on uncertain I/O,
+  isolate session buffers, and retain in-flight writes after disconnect.
+- [x] Learn an exact immediate schema-2 decision only with a configured majority
+  including a full member. Keep learned/applied state separate, block new votes
+  while application lags, and acknowledge exact decision retries idempotently.
+  A three-node transport harness exercises promises, accepted-value recovery,
+  acceptance quorum and decision learning; no automatic network proposer yet.
 - [ ] Gate automatic activation on explicit capability and readiness confirmation
   from every configured member, including quorum-only nodes, with matching
   effective configuration. Unknown/offline members must not count as upgraded.

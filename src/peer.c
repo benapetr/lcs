@@ -354,6 +354,10 @@ static bool peer_is_request_type(uint16_t type)
         case LCS_MSG_CONFIG_BOOTSTRAP_STATUS:
         case LCS_MSG_CONFIG_READINESS_QUERY:
         case LCS_MSG_CONFIG_READINESS_REPLY:
+        case LCS_MSG_CONFIG_TX_CONTROL:
+        case LCS_MSG_CONFIG_TX_BEGIN:
+        case LCS_MSG_CONFIG_TX_CHUNK:
+        case LCS_MSG_CONFIG_TX_END:
         case LCS_MSG_CONFIG_RELOAD:
         case LCS_MSG_CONFIG_RELOAD_COMMIT:
             return true;
@@ -699,6 +703,19 @@ int peer_queue_config_readiness(int epoll_fd, int node_idx, uint16_t type,
         return 1;
     /* Both envelopes use fresh frame sequences; request correlation and replay
      * protection are carried by the daemon-instance/attempt fields. */
+    return peer_queue_frame(epoll_fd, node_idx, type, lcs_next_seq(), payload, length);
+}
+
+int peer_queue_config_transaction(int epoll_fd, int node_idx, uint16_t type,
+                                   const void *payload, uint32_t length)
+{
+    if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count || node_idx == g_state.self_index ||
+        type < LCS_MSG_CONFIG_TX_CONTROL || type > LCS_MSG_CONFIG_TX_END)
+        return 1;
+    const peer_runtime_t *peer = &g_state.peers[node_idx];
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED ||
+        peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS)
+        return 1;
     return peer_queue_frame(epoll_fd, node_idx, type, lcs_next_seq(), payload, length);
 }
 
@@ -1146,6 +1163,9 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
     if ((hdr->type == LCS_MSG_CONFIG_READINESS_QUERY || hdr->type == LCS_MSG_CONFIG_READINESS_REPLY) &&
         g_state.peers[source_node_idx].protocol_version < LCS_PROTO_FEATURE_CONFIG_READINESS)
         return -1;
+    if (hdr->type >= LCS_MSG_CONFIG_TX_CONTROL && hdr->type <= LCS_MSG_CONFIG_TX_END &&
+        g_state.peers[source_node_idx].protocol_version < LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS)
+        return -1;
     if (hdr->seq == 0)
     {
         peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "invalid sequence");
@@ -1163,6 +1183,11 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
         case LCS_MSG_CONFIG_READINESS_QUERY:
         case LCS_MSG_CONFIG_READINESS_REPLY:
             return config_peer_receive_readiness(epoll_fd, source_node_idx, hdr->type, payload, hdr->length);
+        case LCS_MSG_CONFIG_TX_CONTROL:
+        case LCS_MSG_CONFIG_TX_BEGIN:
+        case LCS_MSG_CONFIG_TX_CHUNK:
+        case LCS_MSG_CONFIG_TX_END:
+            return config_peer_receive_transaction(epoll_fd, source_node_idx, hdr->type, payload, hdr->length);
         case LCS_MSG_HEARTBEAT:
         {
             lcs_buf_reader_t reader;
@@ -1297,6 +1322,7 @@ void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const 
     peer->state_sync_pending = false;
     peer->initial_sync_complete = false;
     peer->config_status_known = false;
+    lcs_config_transactions_disconnect(&g_state.config_transactions, (size_t)node_idx);
     peer->config_status_sent = 0;
     memset(&peer->config_status, 0, sizeof(peer->config_status));
     peer->voting_ready = false;

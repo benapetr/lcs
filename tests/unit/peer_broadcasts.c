@@ -96,6 +96,7 @@ static void test_config_status_feature_gate(void)
         assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 1);
         assert(peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_QUERY, payload, sizeof(payload)) == 1);
         assert(peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_REPLY, payload, sizeof(payload)) == 1);
+        assert(peer_queue_config_transaction(-1, 1, LCS_MSG_CONFIG_TX_CONTROL, payload, sizeof(payload)) == 1);
         assert(!peer->out_len);
     }
     peer->conn_state = LCS_PEER_ESTABLISHED;
@@ -103,6 +104,7 @@ static void test_config_status_feature_gate(void)
     assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 1);
     assert(peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_QUERY, payload, sizeof(payload)) == 1);
     assert(peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_REPLY, payload, sizeof(payload)) == 1);
+    assert(peer_queue_config_transaction(-1, 1, LCS_MSG_CONFIG_TX_CONTROL, payload, sizeof(payload)) == 1);
     assert(!peer->out_len);
     peer->protocol_version = 6;
     assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 0);
@@ -117,6 +119,10 @@ static void test_config_status_feature_gate(void)
     assert(!peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_REPLY, payload, sizeof(payload)));
     memcpy(&header, peer->outbuf, sizeof(header));
     assert(ntohs(header.type) == LCS_MSG_CONFIG_READINESS_REPLY);
+    peer->out_len = 0;
+    assert(!peer_queue_config_transaction(-1, 1, LCS_MSG_CONFIG_TX_CONTROL, payload, sizeof(payload)));
+    memcpy(&header, peer->outbuf, sizeof(header));
+    assert(ntohs(header.type) == LCS_MSG_CONFIG_TX_CONTROL);
 }
 
 int main(void)

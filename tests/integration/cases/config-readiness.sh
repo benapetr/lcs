@@ -59,7 +59,7 @@ def closed(sock):
     try:
         while True:
             kind, _, _ = frame(sock)
-            assert kind != 32, "rejected request received a readiness reply"
+            assert kind not in (32, 33), "rejected request received a configuration reply"
     except (EOFError, ConnectionResetError):
         return
 
@@ -96,11 +96,29 @@ with socket.socket() as listener:
                 send(sock, 32, 60004, unsolicited)
                 send(sock, 31, 60005, query(5))
                 assert receive_type(sock, 32)[27] == 2
+                # Transaction requests are separate and cannot initialize an INI-only node.
+                membership, baseline = digests[:65], digests[65:]
+                def prepare(txid, ballot=33):
+                    return struct.pack("!HBBQQQQQQQ", 1, 1, 0, INSTANCE, local_instance,
+                                       txid, 1, ballot, 0, 0) + membership + baseline + b"\0" * 65
+                send(sock, 33, 61000, prepare(42))
+                promise = receive_type(sock, 33)
+                assert len(promise) == 255 and promise[2:4] == bytes((2, 3))
+                assert struct.unpack("!QQQ", promise[4:28]) == (local_instance, INSTANCE, 42)
+                metadata = (struct.pack("!BBHQQQQII", 1, 1, 0, 43, 1, 33, 0, 0, 16) +
+                            membership + baseline + b"1" * 64 + b"\0" + b"upgrade" + b"\0" * 57)
+                send(sock, 34, 61001, struct.pack("!HQQ", 1, INSTANCE, local_instance) + metadata)
+                rejected = receive_type(sock, 33)
+                assert rejected[2:4] == bytes((3, 3))
                 send(sock, 31, 60006, query(6, requester=INSTANCE + 1))
                 closed(sock)
             sock, _ = establish(listener, 5)
             with sock:
                 send(sock, 31, 60007, query(7))
+                closed(sock)
+            sock, local_instance = establish(listener, 5)
+            with sock:
+                send(sock, 33, 61002, prepare(44))
                 closed(sock)
             state = Path(config + ".state")
             for name in ("activation.json", "barrier.json", "agreement.json", "application.json"):

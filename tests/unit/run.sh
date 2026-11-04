@@ -16,10 +16,11 @@ BOOTSTRAP_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-bootstrap.XXXXXX")"
 AGREEMENT_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-agreement.XXXXXX")"
 ACTIVATION_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-activation.XXXXXX")"
 CONFIG_PEER_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-peer.XXXXXX")"
+TRANSACTION_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-transaction.XXXXXX")"
 COORDINATOR_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-coordinator.XXXXXX")"
 FREEZE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-reload-freeze.XXXXXX")"
 CANDIDATE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-candidate.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN" "$ACTIVATION_BIN" "$FREEZE_BIN" "$COORDINATOR_BIN"' EXIT
+trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN" "$ACTIVATION_BIN" "$FREEZE_BIN" "$COORDINATOR_BIN" "$TRANSACTION_BIN"' EXIT
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic \
@@ -39,6 +40,17 @@ read -ra JSON_CFLAGS <<< "$(pkg-config --cflags jansson)"
 read -ra JSON_LIBS <<< "$(pkg-config --libs jansson)"
 read -ra CRYPTO_CFLAGS <<< "$(pkg-config --cflags libcrypto)"
 read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_transaction.c" "$ROOT_DIR/src/config_transaction.c" "$ROOT_DIR/src/config_transfer.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_agreement_worker.c" \
+    "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
+    "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_store.c" \
+    "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/protocol.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$TRANSACTION_BIN"
+"$TRANSACTION_BIN"
+
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_coordinator.c" "$ROOT_DIR/src/config_coordinator.c" \
@@ -63,6 +75,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_peer.c" "$ROOT_DIR/src/config_peer.c" \
+    "$ROOT_DIR/src/config_transaction.c" "$ROOT_DIR/src/config_transfer.c" \
     "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_agreement_worker.c" \
     "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_barrier.c" \
     "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_runtime.c" \

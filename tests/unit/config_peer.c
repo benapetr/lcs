@@ -48,6 +48,12 @@ int peer_queue_config_readiness(int epoll_fd, int node, uint16_t type, const voi
     return 0;
 }
 
+int peer_queue_config_transaction(int epoll_fd, int node, uint16_t type, const void *payload, uint32_t length)
+{
+    (void)epoll_fd; (void)node; (void)type; (void)payload; (void)length;
+    return 1;
+}
+
 static void initialize(void)
 {
     memset(&g_state, 0, sizeof(g_state));

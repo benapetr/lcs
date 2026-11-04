@@ -194,7 +194,7 @@ void lcs_config_barrier_close(lcs_config_barrier_t *barrier)
     memset(barrier, 0, sizeof(*barrier));
 }
 
-bool lcs_config_barrier_can_vote(const lcs_config_barrier_t *barrier,
+bool lcs_config_barrier_valid(const lcs_config_barrier_t *barrier,
                                    const lcs_config_activation_t *activation,
                                    const lcs_config_agreement_t *agreement,
                                    const lcs_config_application_t *application)
@@ -203,7 +203,15 @@ bool lcs_config_barrier_can_vote(const lcs_config_barrier_t *barrier,
         barrier->store == activation->store && barrier->base == activation->base &&
         barrier->ready == all_members(activation->base) &&
         !strcmp(barrier->member, activation->member) && !strcmp(barrier->membership, activation->membership) &&
-        !strcmp(barrier->baseline, activation->baseline.digest) && !application->pending.document &&
+        !strcmp(barrier->baseline, activation->baseline.digest);
+}
+
+bool lcs_config_barrier_can_vote(const lcs_config_barrier_t *barrier,
+                                   const lcs_config_activation_t *activation,
+                                   const lcs_config_agreement_t *agreement,
+                                   const lcs_config_application_t *application)
+{
+    return lcs_config_barrier_valid(barrier, activation, agreement, application) && !application->pending.document &&
         lcs_config_value_equal(&application->applied, &agreement->committed) &&
         (agreement->committed.revision || lcs_config_value_equal(&activation->baseline, &agreement->committed));
 }

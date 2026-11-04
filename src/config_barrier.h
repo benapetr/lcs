@@ -62,4 +62,10 @@ bool lcs_config_barrier_can_vote(const lcs_config_barrier_t *barrier,
                                    const lcs_config_activation_t *activation,
                                    const lcs_config_agreement_t *agreement,
                                    const lcs_config_application_t *application);
+/* Durable proof validity independent of application catch-up. Used only for
+ * idempotent decision recovery, never as a substitute for the vote gate. */
+bool lcs_config_barrier_valid(const lcs_config_barrier_t *barrier,
+                              const lcs_config_activation_t *activation,
+                              const lcs_config_agreement_t *agreement,
+                              const lcs_config_application_t *application);
 #endif

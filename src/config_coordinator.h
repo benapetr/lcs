@@ -51,8 +51,15 @@ int lcs_config_coordinator_recover(lcs_config_coordinator_t *coordinator);
  * the exact successor rules (activation preserves frozen definitions). Caller
  * still verifies the transport proposer/ballot identity and quorum policy.
  * Returns 0 started, 1 busy, -1 rejected before any write. Completion advances
- * completed_votes and reports last_vote_result; no peer transaction frames yet. */
+ * completed_votes and reports last_vote_result; the network acceptor uses these
+ * same gated operations. */
 int lcs_config_coordinator_start_vote(lcs_config_coordinator_t *coordinator,
+                                       const lcs_config_agreement_job_t *job,
+                                       char *err, size_t err_len);
+/* Learn only a validated immediate schema-2 successor with a configured voting
+ * majority. A duplicate exact current decision may be acknowledged while local
+ * application is behind. Learning never applies backends or enables authority. */
+int lcs_config_coordinator_start_learn(lcs_config_coordinator_t *coordinator,
                                        const lcs_config_agreement_job_t *job,
                                        char *err, size_t err_len);
 /* Nonblocking: collect -> shared barrier writer -> durable READY. Returns 1

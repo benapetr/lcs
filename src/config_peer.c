@@ -11,6 +11,30 @@
 
 _Static_assert(LCS_CONFIG_STATUS_DIGEST_SIZE == LCS_CONFIG_DIGEST_SIZE, "digest format mismatch");
 
+static int send_transaction(void *context, size_t node, uint16_t type, const void *payload, size_t length)
+{
+    return peer_queue_config_transaction(*(int *)context, (int)node, type, payload, (uint32_t)length);
+}
+
+int config_peer_receive_transaction(int epoll_fd, int node, uint16_t type, const void *payload, size_t length)
+{
+    if (node < 0 || (size_t)node >= g_state.cfg.node_count || node == g_state.self_index)
+        return -1;
+    const peer_runtime_t *peer = &g_state.peers[node];
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED || !peer->instance_id ||
+        peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS)
+        return -1;
+    if (!g_state.config_transactions.instance)
+        lcs_config_transactions_init(&g_state.config_transactions, &g_state.config_coordinator, g_state.instance_id);
+    if (config_reload_in_progress() && g_state.config_coordinator.initialized)
+        return -1;
+    int result = lcs_config_transactions_receive(&g_state.config_transactions, (size_t)node,
+        peer->instance_id, type, payload, length, lcs_now_ms());
+    if (!result)
+        lcs_config_transactions_process(&g_state.config_transactions, lcs_now_ms(), send_transaction, &epoll_fd);
+    return result;
+}
+
 static bool durable_readiness_available(void)
 {
     const lcs_config_runtime_t *runtime = &g_state.config_runtime;
@@ -64,6 +88,7 @@ void config_peer_stop(void)
 {
     g_state.config_coordinator.closing = true;
     lcs_config_coordinator_stop(&g_state.config_coordinator);
+    lcs_config_transactions_close(&g_state.config_transactions);
 }
 
 bool config_peer_stopped(void)
@@ -212,6 +237,7 @@ int config_peer_refresh(void)
 void config_peer_process(int epoll_fd)
 {
     process_readiness(epoll_fd);
+    lcs_config_transactions_process(&g_state.config_transactions, lcs_now_ms(), send_transaction, &epoll_fd);
     if (lcs_now_ms() < g_state.config_status_retry_ms)
         return;
     if (config_peer_refresh())

@@ -24,5 +24,7 @@ bool config_peer_stopped(void);
 bool config_peer_configuration_vote_ready(void);
 int config_peer_receive_readiness(int epoll_fd, int node, uint16_t type,
                                    const void *payload, size_t length);
+int config_peer_receive_transaction(int epoll_fd, int node, uint16_t type,
+                                     const void *payload, size_t length);
 
 #endif

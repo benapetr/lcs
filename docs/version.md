@@ -71,6 +71,27 @@ collection now goes through the scheduler's barrier storage worker before local
 configuration-vote eligibility is available. No application or
 local CLI protocol version changes accompany this exchange.
 
+Wire 6 also reserves `CONFIG_TX_CONTROL` (33), `CONFIG_TX_BEGIN` (34),
+`CONFIG_TX_CHUNK` (35), and `CONFIG_TX_END` (36) for acceptor transactions.
+Format-1 control frames are exactly 255 bytes and carry a kind/result, sender and
+target daemon instances, request ID, revision, ballot, promised/accepted ballots,
+and membership/parent/value digests. A PREPARE receives a PROMISE only after its
+journal write completes. Successful ACCEPT and LEARN receive ACK and LEARNED,
+respectively; non-success statuses distinguish rejection, stale history,
+not-ready, busy and outcome-unknown. Outcome-unknown never implies abort.
+
+Snapshot frames prefix the existing bounded transfer codec with an 18-byte
+format/sender/target envelope. ACCEPT and LEARN are received; a PROMISE may send
+its complete prior accepted snapshot. Source node identity must match the ballot
+index. Streams reset on session teardown, and chunk/input/output limits and fixed
+deadlines apply. No released HELLO or lease layouts change, and these frames are
+never sent on wire 5. INI-only nodes refuse requests without creating history.
+
+This is an acceptor/learner endpoint. An automatic network proposer, correlation
+of incoming PROMISE snapshots into its quorum, multi-revision synchronization and
+resource application remain unfinished. Unsolicited control replies are not counted
+as votes, and incoming PROMISE/SYNC transfers are not accepted by this endpoint.
+
 Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.
 When releasing it for the first time, replace that label in `src/protocol.c` and
 update the corresponding protocol-label assertions in

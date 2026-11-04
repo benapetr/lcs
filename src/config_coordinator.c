@@ -101,6 +101,29 @@ int lcs_config_coordinator_recover(lcs_config_coordinator_t *coordinator)
     return 0;
 }
 
+static int dynamic_successor(lcs_config_runtime_t *runtime, const lcs_config_value_t *value,
+                               char *err, size_t err_len)
+{
+    lcs_config_t *configs = malloc(2 * sizeof(*configs));
+    uint64_t old_revision, new_revision;
+    int result = -1;
+    if (configs && value && value->document &&
+        !lcs_resource_config_decode(runtime->agreement.committed.document, runtime->agreement.committed.length,
+                                     runtime->base, &configs[0], &old_revision, err, err_len) &&
+        !lcs_resource_config_decode(value->document, value->length, runtime->base,
+                                     &configs[1], &new_revision, err, err_len) &&
+        configs[1].resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
+        result = lcs_resource_config_validate_successor(&configs[0], old_revision, &configs[1], new_revision, err, err_len);
+    free(configs);
+    if (result)
+    {
+        if (err && err_len)
+            snprintf(err, err_len, "configuration acceptance requires a valid dynamic successor; activation preserves definitions");
+        return -1;
+    }
+    return 0;
+}
+
 int lcs_config_coordinator_start_vote(lcs_config_coordinator_t *coordinator,
                                        const lcs_config_agreement_job_t *job,
                                        char *err, size_t err_len)
@@ -115,26 +138,33 @@ int lcs_config_coordinator_start_vote(lcs_config_coordinator_t *coordinator,
         return -1;
     }
     lcs_config_runtime_t *runtime = coordinator->runtime;
-    if (job->action == LCS_CONFIG_ACCEPT)
-    {
-        lcs_config_t *configs = malloc(2 * sizeof(*configs));
-        uint64_t old_revision, new_revision;
-        int result = -1;
-        if (configs && job->value && job->value->document &&
-            !lcs_resource_config_decode(runtime->agreement.committed.document, runtime->agreement.committed.length,
-                                         runtime->base, &configs[0], &old_revision, err, err_len) &&
-            !lcs_resource_config_decode(job->value->document, job->value->length, runtime->base,
-                                         &configs[1], &new_revision, err, err_len) &&
-            configs[1].resource_schema_version == LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
-            result = lcs_resource_config_validate_successor(&configs[0], old_revision, &configs[1], new_revision, err, err_len);
-        free(configs);
-        if (result)
-        {
-            if (err && err_len)
-                snprintf(err, err_len, "configuration acceptance requires a valid dynamic successor; activation preserves definitions");
-            return -1;
-        }
-    }
+    if (job->action == LCS_CONFIG_ACCEPT && dynamic_successor(runtime, job->value, err, err_len))
+        return -1;
+    int result = lcs_config_agreement_worker_start(&coordinator->storage, &runtime->agreement, job, err, err_len);
+    if (!result)
+        coordinator->phase = LCS_CONFIG_COORD_VOTING;
+    return result;
+}
+
+int lcs_config_coordinator_start_learn(lcs_config_coordinator_t *coordinator,
+                                       const lcs_config_agreement_job_t *job,
+                                       char *err, size_t err_len)
+{
+    if (coordinator->initialized && coordinator->storage.pid > 0)
+        return 1;
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed ||
+        coordinator->phase != LCS_CONFIG_COORD_READY || !job || job->action != LCS_CONFIG_LEARN ||
+        !job->value || !job->value->revision || coordinator->completed_votes == UINT64_MAX)
+        return -1;
+    lcs_config_runtime_t *runtime = coordinator->runtime;
+    if (!lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) ||
+        !lcs_config_agreement_has_quorum(&runtime->agreement, job->voters))
+        return -1;
+    bool duplicate = lcs_config_value_equal(job->value, &runtime->agreement.committed) &&
+        !strcmp(job->parent_digest, runtime->agreement.parent_digest);
+    if (!duplicate && (!lcs_config_coordinator_can_vote(coordinator) ||
+        dynamic_successor(runtime, job->value, err, err_len)))
+        return -1;
     int result = lcs_config_agreement_worker_start(&coordinator->storage, &runtime->agreement, job, err, err_len);
     if (!result)
         coordinator->phase = LCS_CONFIG_COORD_VOTING;

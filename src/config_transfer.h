@@ -31,8 +31,9 @@ typedef struct
     char request_id[LCS_CONFIG_REQUEST_MAX + 1];
 } lcs_config_transfer_metadata_t;
 
-/* Transport-independent codecs for future negotiated dynamic-config messages.
- * They are not registered in peer.c and do not advertise a protocol feature. */
+/* Bounded snapshot codecs. The transaction transport wraps these with admitted
+ * daemon instances for wire-6 ACCEPT/LEARN requests and accepted PROMISE output.
+ * Automatic proposer and multi-revision synchronization remain separate work. */
 int lcs_config_transfer_encode_begin(const lcs_config_transfer_metadata_t *metadata,
                                      void *payload, size_t cap, size_t *length);
 int lcs_config_transfer_decode_begin(const void *payload, size_t length,
