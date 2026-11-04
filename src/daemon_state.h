@@ -12,6 +12,7 @@
 #include "config_readiness.h"
 #include "config_coordinator.h"
 #include "config_transaction.h"
+#include "resource_frame.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -251,6 +252,8 @@ typedef struct
     lcs_config_status_t config_status;
     bool config_status_known;
     uint64_t config_status_sent;
+    lcs_resource_generation_t resource_generation;
+    bool resource_generation_known, resource_generation_matches;
 } peer_runtime_t;
 
 typedef struct
@@ -454,6 +457,8 @@ typedef struct
     resource_runtime_t resources[LCS_MAX_RESOURCES];
     lease_grant_t lease_grants[LCS_MAX_RESOURCES];
     config_reload_runtime_t config_reload;
+    lcs_resource_generation_t resource_generation;
+    bool resource_generation_enabled, resource_generation_admitted;
     lcs_config_bootstrap_t config_bootstrap;
     lcs_config_runtime_t config_runtime;
     lcs_config_status_t config_status;

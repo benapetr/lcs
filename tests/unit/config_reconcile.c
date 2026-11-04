@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_reconcile.h"
+#include "peer.h"
 #include <assert.h>
 #include <errno.h>
 #include <signal.h>
@@ -8,6 +9,27 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+daemon_state_t g_state;
+static unsigned generation_cancellations;
+static bool generation_reload;
+
+bool config_reload_in_progress(void) { return generation_reload; }
+void move_cancel_all(int epoll_fd, const char *message)
+{
+    (void)epoll_fd; (void)message;
+    assert(!g_state.resource_generation_admitted && !g_state.voting_ready);
+    assert(generation_cancellations % 3 == 0); generation_cancellations++;
+}
+void lease_cancel_all_operations(void)
+{
+    assert(generation_cancellations % 3 == 1); generation_cancellations++;
+}
+void peer_close_all_for_config_reload(int epoll_fd)
+{
+    (void)epoll_fd;
+    assert(generation_cancellations % 3 == 2); generation_cancellations++;
+}
 
 static lcs_config_store_t store;
 static lcs_config_runtime_t runtime;
@@ -333,6 +355,58 @@ static void test_uncertain_writes_and_shutdown(void)
     lcs_config_value_clear(&first); cleanup();
 }
 
+static void test_generation_installation_and_admission(void)
+{
+    setup(false);
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    memset(&g_state, 0, sizeof(g_state));
+    g_state.cfg = *runtime.base; g_state.self_index = 0; g_state.instance_id = 100;
+    g_state.config_runtime = runtime;
+    g_state.config_coordinator = coordinator;
+    g_state.config_bootstrap.initialization_locked = true;
+    generation_cancellations = 0; generation_reload = true;
+    assert(peer_install_resource_generation(-1, &first) < 0);
+    generation_reload = false;
+    g_state.resources[LCS_MAX_RESOURCES - 1].vip.pid = 999;
+    assert(peer_install_resource_generation(-1, &first) == 1 && !generation_cancellations);
+    g_state.resources[LCS_MAX_RESOURCES - 1].vip.pid = 0;
+    g_state.resources[0].hook.next_type = LCS_HOOK_POST_STOP;
+    assert(peer_install_resource_generation(-1, &first) == 1 && !generation_cancellations);
+    g_state.resources[0].hook.next_type = LCS_HOOK_NONE;
+    g_state.voting_ready = true; g_state.votes_seen = 3;
+    assert(!peer_install_resource_generation(-1, &first));
+    assert(generation_cancellations == 3 && g_state.resource_generation_enabled && !g_state.resource_generation_admitted);
+    assert(!g_state.voting_ready && !g_state.votes_seen && g_state.cfg.resource_schema_version == LCS_RESOURCE_SCHEMA_VERSION);
+    assert(peer_admit_resource_generation() < 0); /* Marker is not durable. */
+    assert(!peer_install_resource_generation(-1, &first) && generation_cancellations == 3);
+    uint64_t revision;
+    assert(!lcs_resource_config_decode(first.document, first.length, runtime.base, &g_state.cfg, &revision, error, sizeof(error)));
+    assert(!lcs_config_application_finish(&runtime.application, first.digest, error, sizeof(error)));
+    g_state.config_runtime = runtime;
+    g_state.config_coordinator.phase = LCS_CONFIG_COORD_VOTING;
+    assert(peer_admit_resource_generation() < 0); /* A checkpoint is still in flight. */
+    g_state.config_coordinator.phase = LCS_CONFIG_COORD_READY;
+    strcpy(g_state.cfg.resources[0].address, "192.0.2.2/32");
+    assert(peer_admit_resource_generation() < 0); /* Runtime table must match full snapshot. */
+    assert(!lcs_resource_config_decode(first.document, first.length, runtime.base, &g_state.cfg, &revision, error, sizeof(error)));
+    assert(!peer_admit_resource_generation() && g_state.resource_generation_admitted && !g_state.voting_ready);
+    g_state.peers[1].state_sync_pending = false;
+    assert(!peer_admit_resource_generation() && !g_state.peers[1].state_sync_pending);
+    lcs_config_value_t second = successor(&first, true); learn(&second);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    g_state.config_runtime = runtime;
+    assert(!peer_install_resource_generation(-1, &second) && generation_cancellations == 6);
+    assert(g_state.cfg.resource_count == 1 && !g_state.resource_generation_admitted); /* Remap happens AFTER cancellation. */
+    assert(peer_install_resource_generation(-1, &first) < 0);
+    assert(!lcs_resource_config_decode(second.document, second.length, runtime.base, &g_state.cfg, &revision, error, sizeof(error)));
+    assert(!lcs_config_application_finish(&runtime.application, second.digest, error, sizeof(error)));
+    g_state.config_runtime = runtime;
+    assert(!peer_admit_resource_generation() && g_state.resource_generation.revision == 2);
+    memset(&g_state, 0, sizeof(g_state));
+    lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
+}
+
 int main(void)
 {
     parent = getpid();
@@ -341,6 +415,7 @@ int main(void)
     test_checkpoint_during_admission();
     test_quorum_only_and_missing_adapters();
     test_uncertain_writes_and_shutdown();
+    test_generation_installation_and_admission();
     puts("durable configuration reconciliation ordering and safety barriers unit tests passed");
     return 0;
 }

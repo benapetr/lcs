@@ -23,7 +23,8 @@ full-snapshot catch-up. Inferring identity from just the old and new endpoint
 definitions is insufficient: a node can miss deletion and recreation between
 two identical definitions. The existing schema-1 shadow JSON has no incarnation
 metadata. The implemented schema-2 library carries and validates these identities;
-its daemon activation and resource-message gates remain to be implemented.
+daemon activation remains unfinished; explicit generation-bound resource framing
+is now implemented below.
 The coordinator allocates identities; acceptors check them against the immediate
 predecessor. Clients cannot supply or reuse birth revisions.
 
@@ -41,6 +42,63 @@ Preserve runtime ownership/grants only for a matching incarnation and backend.
 Configuration revision changes alone do not increment resource epochs. New
 incarnations start without ownership or inherited grants, and old messages cannot
 populate them. Dependencies are resolved again against the new sorted table.
+
+## Implemented resource-generation framing
+
+Wire 6 now reserves `RESOURCE_FRAME` (37), a format-1 envelope around resource
+requests and replies, including lease/state-sync/move traffic and voting
+heartbeats. The fixed 158-byte prefix carries inner type, both daemon instances,
+applied revision, static membership digest and the complete applied value digest.
+The value digest includes persisted incarnation metadata, so identical backend
+properties after delete/recreate cannot reuse an old generation. The outer RPC
+sequence is retained. Configuration readiness/agreement/checkpoint messages stay
+outside this envelope and remain available between different resource generations.
+
+Admission runs before resource dispatch, state import or RPC completion. It
+requires negotiated wire 6, the admitted peer's instance, this daemon's instance,
+a valid resource inner type and canonical digests. One socket can advertise only
+one immutable generation. A malformed envelope or an in-place generation change
+closes that connection. A well-formed generation mismatch drops resource traffic
+and clears peer voting/recovery-sync eligibility, while retaining configuration
+transport so catch-up can proceed. Unwrapped resource traffic cannot restore a
+socket that has advertised a generation. An INI-authoritative receiver cannot
+consume wrapped resource state. HELLO's voting-ready bit cannot enable a dynamic
+peer; matching wrapped heartbeat/state traffic is required.
+
+For explicitly installed dynamic authority, HELLO retains its released layout but
+uses the frozen baseline's resource/group counts and fingerprints. Static identity,
+roles, timing, source-address and secret checks remain in place. Peers with the
+same baseline but different current resource definitions can therefore connect
+for configuration synchronization. Legacy reload proofs cannot mutate dynamic
+state, and wire-5 sessions are rejected under dynamic authority. Legacy INI
+sessions otherwise retain their existing layouts and behavior.
+
+`resource_generation.c` provides explicit install/admit entry points for the
+future live reconciler adapter. Installation requires a durable pending/applied
+snapshot and valid barrier, and refuses active or queued indexed backend/hook/
+probe/handoff work in any slot, including removed resources. It fences generation
+traffic and voting, cancels move/lease operations, and closes peer/handshake
+sessions BEFORE the caller remaps indices. Old-owner cleanup and correct runtime
+remapping remain the adapter's responsibility; this helper does not prove them.
+Reinstalling the exact same context is idempotent; regression/conflict is rejected.
+There is no API to silently revert an installed generation to legacy mode.
+
+Admission requires the exact durable applied snapshot with no pending catalog,
+no configuration writer in flight, and a complete matching installed resource/
+group definition table. It enables generation traffic, then ordinary lease restart
+recovery still controls local voting. Mismatched peers cannot contribute votes or
+restart state-sync receipts. Resource RPCs are refused before registration until
+a peer's generation matches. Initial wrapped heartbeats/state-sync may establish
+that match; queued messages retain the existing bounded transport/backpressure
+rules. The 64-KiB frame limit includes the prefix.
+
+These APIs are not invoked automatically yet. The daemon still refuses persisted
+distributed startup. Backend/owner adapters, runtime remapping, startup projection
+and recovery admission, and automatic activation remain unfinished. Tests cover
+strict codecs, stale instances and generations, inner reply/sequence preservation,
+legacy refusal with an intact config channel, worker/marker admission barriers,
+and cancellation-before-remap ordering. They do not yet constitute a running
+dynamic-cluster backend transition test.
 
 ## Decision, drain and application ordering
 
@@ -181,8 +239,8 @@ backend barriers; live daemon adapters remain pending.
 `config_reconcile.c` implements the local ordering state machine. It requires an
 explicit start after durable activation authorization and startup fencing; no daemon backend
 adapter, automatic authority switch or permissive default callbacks are installed.
-Projection publication, resource-message generation binding and startup ownership
-recovery still need daemon integration before this path can run live. An already
+Projection publication, live adapter calls to the generation binding APIs, and
+startup ownership recovery still need daemon integration before this path can run live. An already
 current catalog returns done without adapters; callers must separately establish
 ordinary restart and generation admission, including a crash after applied
 persistence but before the prior process completed admission.

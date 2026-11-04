@@ -116,6 +116,20 @@ with socket.socket() as listener:
                 send(sock, 33, 61003, sync_query)
                 status = receive_type(sock, 33)
                 assert len(status) == 255 and status[2:4] == bytes((6, 3))
+                # Dynamic resource envelopes cannot grant votes or alter INI authority.
+                envelope = (struct.pack("!HHQQQ", 1, 26, INSTANCE, local_instance, 1) +
+                            membership + baseline + b"\1")
+                send(sock, 37, 62000, envelope)
+                send(sock, 31, 60008, query(8))
+                assert receive_type(sock, 32)[27] == 2
+                # The same socket cannot switch to another generation in place.
+                changed_envelope = (struct.pack("!HHQQQ", 1, 26, INSTANCE, local_instance, 2) +
+                                    membership + baseline + b"\1")
+                send(sock, 37, 62001, changed_envelope)
+                closed(sock)
+                closed(sock)
+            sock, local_instance = establish(listener, 6)
+            with sock:
                 send(sock, 31, 60006, query(6, requester=INSTANCE + 1))
                 closed(sock)
             sock, _ = establish(listener, 5)
@@ -125,6 +139,12 @@ with socket.socket() as listener:
             sock, local_instance = establish(listener, 5)
             with sock:
                 send(sock, 33, 61002, prepare(44))
+                closed(sock)
+            sock, local_instance = establish(listener, 5)
+            with sock:
+                envelope = (struct.pack("!HHQQQ", 1, 26, INSTANCE, local_instance, 1) +
+                            membership + baseline + b"\1")
+                send(sock, 37, 62002, envelope)
                 closed(sock)
             state = Path(config + ".state")
             for name in ("activation.json", "barrier.json", "agreement.json", "application.json"):

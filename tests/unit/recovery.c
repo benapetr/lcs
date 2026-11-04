@@ -83,9 +83,37 @@ static void test_elapsed_timer_without_sync_is_not_enough(void)
     assert(g_state.voting_ready);
 }
 
+static void test_generation_admission_and_matching_votes(void)
+{
+    initialize_restarted_voter();
+    fake_now_ms = g_state.voting_not_before_ms;
+    g_state.peers[2].last_seen_ms = fake_now_ms;
+    g_state.peers[2].voting_ready = true;
+    g_state.resource_generation_enabled = true;
+    g_state.voting_ready = true; g_state.votes_seen = 2;
+    assert(!cluster_local_voting_ready() && !cluster_has_quorum());
+    assert(cluster_node_state(1) == LCS_NODE_RECOVERING);
+    g_state.voting_ready = false;
+    cluster_update_recovery_state();
+    assert(!g_state.voting_ready);
+    g_state.resource_generation_admitted = true;
+    cluster_update_recovery_state();
+    assert(!g_state.voting_ready); /* A stale state-sync receipt cannot end recovery. */
+    g_state.peers[2].resource_generation_matches = true;
+    cluster_update_recovery_state();
+    assert(cluster_local_voting_ready());
+    cluster_recompute_votes();
+    assert(g_state.votes_seen == 2 && cluster_has_quorum());
+    g_state.peers[2].resource_generation_matches = false;
+    cluster_recompute_votes();
+    assert(g_state.votes_seen == 1 && !cluster_has_quorum());
+    assert(cluster_node_state(2) == LCS_NODE_RECOVERING);
+}
+
 int main(void)
 {
     test_partitioned_restart_waits_out_forgotten_grant();
     test_elapsed_timer_without_sync_is_not_enough();
+    test_generation_admission_and_matching_votes();
     return 0;
 }

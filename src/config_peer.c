@@ -222,13 +222,15 @@ int config_peer_refresh(void)
     bool changed = !next.serial;
     if (!next.serial || g_state.config_status_generation != g_state.config_reload.active_generation)
     {
+        const lcs_config_t *definition_base = g_state.resource_generation_enabled && g_state.config_runtime.base ?
+            g_state.config_runtime.base : &g_state.cfg;
         char error[256], *document = NULL;
         size_t length;
         lcs_config_value_t value = {0};
-        if (lcs_config_agreement_membership(&g_state.cfg, next.membership) ||
-            lcs_resource_config_encode(&g_state.cfg, 0, &document, &length, error, sizeof(error)))
+        if (lcs_config_agreement_membership(definition_base, next.membership) ||
+            lcs_resource_config_encode(definition_base, 0, &document, &length, error, sizeof(error)))
             return withdraw_preparation();
-        int result = lcs_config_value_init(&value, &g_state.cfg, "bootstrap", document,
+        int result = lcs_config_value_init(&value, definition_base, "bootstrap", document,
                                            length, error, sizeof(error));
         free(document);
         if (result)
@@ -237,7 +239,7 @@ int config_peer_refresh(void)
         memcpy(next.baseline, value.digest, sizeof(next.baseline));
         lcs_config_value_clear(&value);
     }
-    bool prepared = g_state.config_bootstrap_initialized && g_state.config_bootstrap.prepared &&
+    bool prepared = !g_state.resource_generation_enabled && g_state.config_bootstrap_initialized && g_state.config_bootstrap.prepared &&
         !config_reload_in_progress() && !g_state.config_runtime.requires_recovery;
     changed = changed || next.prepared != prepared;
     next.prepared = prepared;

@@ -106,6 +106,20 @@ may carry another member's original proposer ballot. The checkpoint action admit
 validated revision gaps through the shared storage worker without applying resources.
 All these additions remain within unreleased wire 6; the CLI protocol is unchanged.
 
+Wire 6 also adds `RESOURCE_FRAME` (37) for dynamic resource-generation binding.
+Its format-1 payload is a fixed 158-byte prefix (u16 format, u16 inner message
+kind, u64 sender instance, u64 target instance, u64 applied revision, two canonical
+65-byte membership/applied-value digests), followed by the unchanged inner body.
+The outer sequence is preserved for request/reply matching. Inner kinds are
+resource lease/state-sync/move/control messages, voting heartbeats and their
+errors; HELLO, configuration messages and nested envelopes are forbidden. The
+whole payload, including prefix, must fit the existing 64-KiB limit. Strict
+instance/context checks run before dispatch and RPC completion. This remains
+within unreleased wire 6 and does not change CLI protocol or released HELLO size.
+Dynamic HELLO uses frozen baseline fingerprints/counts and cannot advertise voting
+readiness; legacy INI HELLO fields keep their existing meaning. Dynamic authority
+requires wire 6 even though legacy peering still supports wire 5.
+
 Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.
 When releasing it for the first time, replace that label in `src/protocol.c` and
 update the corresponding protocol-label assertions in

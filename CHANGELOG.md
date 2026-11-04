@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added wire-6 resource-generation envelopes binding lease/state-sync/control traffic and voting heartbeats to the applied snapshot, membership and daemon instances before dispatch or RPC completion. Different generations retain configuration catch-up access without resource votes. Explicit install/admit APIs fence traffic around indexed-operation cancellation and durable matching applied state; live adapters and automatic activation remain unfinished.
+
 - Added an internal reconciliation sequencer with durable cleanup intent, explicit backend/old-owner/install barriers, and a voting hold through durable application and generation admission. Pending cleanup survives newer checkpoints; quorum-only nodes skip backend work, and failed barriers or uncertain writes stay fenced. Live daemon adapters, startup reconciliation and automatic activation remain unfinished.
 
 - Added wire-6 committed checkpoint pulls across revision gaps, with fixed deadlines, instance/membership/baseline binding and original majority validation. Catch-up retains higher promises and old applied/pending cleanup definitions, including delete/recreate identities, and shares the existing storage writer. Prepared nodes poll admitted peers after the durable readiness barrier; automatic activation and live resource application remain unfinished.

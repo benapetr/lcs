@@ -88,6 +88,11 @@ admission. It retains old pending targets across newer checkpoints and blocks
 votes on failures. Its live daemon adapters and automatic activation remain
 unfinished; see [application ordering](dynamic-config-application.md#internal-reconciliation-sequencer).
 
+Dynamic resource-generation framing and explicit install/admit APIs now reject
+stale resource traffic before dispatch or RPC completion, while keeping config
+catch-up available. These APIs are not connected to automatic activation or live
+backend application yet; see [generation framing](dynamic-config-application.md#implemented-resource-generation-framing).
+
 ## Inspecting preparation across members
 
 Run `lcs config status` or `lcs --json config status` to inspect INI authority,

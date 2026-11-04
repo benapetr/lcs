@@ -159,6 +159,13 @@ durable distributed configuration protocol.
   hold voting until admission succeeds. Resume exact pending targets across
   newer checkpoints, skip backend work for quorum-only nodes, and retain holds
   on failed cleanup or uncertain persistence. Live adapters remain unfinished.
+- [x] Bind dynamic resource requests/replies, state sync and voting heartbeats to
+  complete applied generation digests, membership and daemon instances before
+  resource dispatch or RPC completion. Reject in-place session generation changes;
+  keep configuration catch-up available for mismatches and reject wire-5 dynamic
+  sessions. Explicit install/admit APIs cancel indexed peer operations before
+  remapping and require durable matching applied state before generation traffic.
+  Live backend/remap/startup adapters are not connected yet.
 - [ ] Preserve unchanged resources' ownership and runtime state; reuse safe
   resource transition and dependency-ordering machinery for affected resources.
 - [ ] Define how read-only status/export reports configuration origin, committed

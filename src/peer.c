@@ -422,27 +422,30 @@ static int peer_update_epoll(int epoll_fd, int node_idx)
 
 static int peer_encode_hello(unsigned char *payload, size_t cap, size_t *len, uint8_t mode)
 {
+    const lcs_config_t *hello_config = g_state.resource_generation_enabled && g_state.config_runtime.base ?
+        g_state.config_runtime.base : &g_state.cfg;
+    bool legacy_reload = !g_state.resource_generation_enabled;
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, cap);
     if (lcs_buf_put_u16(&w, LCS_PEER_PROTO_MIN_VERSION) != 0 ||
         lcs_buf_put_u16(&w, LCS_PEER_PROTO_VERSION) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.self_index) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.node_count) != 0 ||
-        lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.group_count) != 0 ||
-        lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.resource_count) != 0 ||
+        lcs_buf_put_u16(&w, (uint16_t)hello_config->group_count) != 0 ||
+        lcs_buf_put_u16(&w, (uint16_t)hello_config->resource_count) != 0 ||
         lcs_buf_put_u16(&w, (uint16_t)g_state.cfg.nodes[g_state.self_index].role) != 0 ||
         lcs_buf_put_u8(&w, mode) != 0 ||
-        lcs_buf_put_u8(&w, g_state.voting_ready ? 1 : 0) != 0 ||
+        lcs_buf_put_u8(&w, !g_state.resource_generation_enabled && g_state.voting_ready ? 1 : 0) != 0 ||
         lcs_buf_put_u64(&w, g_state.instance_id) != 0 ||
-        lcs_buf_put_u64(&w, lcs_config_voting_fingerprint(&g_state.cfg)) != 0 ||
-        lcs_buf_put_u64(&w, lcs_config_full_fingerprint(&g_state.cfg)) != 0 ||
-        lcs_buf_put_u8(&w, g_state.config_reload.loaded ? 1 : 0) != 0 ||
-        lcs_buf_put_u8(&w, g_state.config_reload.agreed ? 1 : 0) != 0 ||
-        lcs_buf_put_u8(&w, g_state.config_reload.ready ? 1 : 0) != 0 ||
-        lcs_buf_put_u8(&w, g_state.config_reload.committed_transition ? 1 : 0) != 0 ||
-        lcs_buf_put_u64(&w, g_state.config_reload.loaded ?
+        lcs_buf_put_u64(&w, lcs_config_voting_fingerprint(hello_config)) != 0 ||
+        lcs_buf_put_u64(&w, lcs_config_full_fingerprint(hello_config)) != 0 ||
+        lcs_buf_put_u8(&w, legacy_reload && g_state.config_reload.loaded ? 1 : 0) != 0 ||
+        lcs_buf_put_u8(&w, legacy_reload && g_state.config_reload.agreed ? 1 : 0) != 0 ||
+        lcs_buf_put_u8(&w, legacy_reload && g_state.config_reload.ready ? 1 : 0) != 0 ||
+        lcs_buf_put_u8(&w, legacy_reload && g_state.config_reload.committed_transition ? 1 : 0) != 0 ||
+        lcs_buf_put_u64(&w, legacy_reload && g_state.config_reload.loaded ?
                         g_state.config_reload.voting_fingerprint : 0) != 0 ||
-        lcs_buf_put_u64(&w, g_state.config_reload.loaded ?
+        lcs_buf_put_u64(&w, legacy_reload && g_state.config_reload.loaded ?
                         g_state.config_reload.full_fingerprint : 0) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.nodes[g_state.self_index].name, LCS_NAME_MAX + 1) != 0 ||
         lcs_buf_put_fixed_string(&w, g_state.cfg.cluster_name, LCS_NAME_MAX + 1) != 0 ||
@@ -553,16 +556,23 @@ static int peer_decode_hello(const void *payload, size_t len, const struct socka
         return -1;
     }
 
-    uint64_t local_voting = lcs_config_voting_fingerprint(&g_state.cfg);
-    uint64_t local_full = lcs_config_full_fingerprint(&g_state.cfg);
+    if (g_state.resource_generation_enabled && *protocol_version < LCS_PROTO_FEATURE_RESOURCE_GENERATION)
+    {
+        snprintf(error, error_len, "dynamic resource authority requires wire 6 resource-generation binding");
+        return -1;
+    }
+    const lcs_config_t *hello_config = g_state.resource_generation_enabled && g_state.config_runtime.base ?
+        g_state.config_runtime.base : &g_state.cfg;
+    uint64_t local_voting = lcs_config_voting_fingerprint(hello_config);
+    uint64_t local_full = lcs_config_full_fingerprint(hello_config);
     bool compare_full = g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL &&
                         role == LCS_NODE_FULL;
     bool active_matches = voting_fingerprint == local_voting &&
                           (!compare_full || full_fingerprint == local_full) &&
-                          resource_count == g_state.cfg.resource_count &&
-                          group_count == g_state.cfg.group_count;
+                          resource_count == hello_config->resource_count &&
+                          group_count == hello_config->group_count;
     *transition_only = false;
-    if (commit_proof && g_state.config_reload.loaded &&
+    if (!g_state.resource_generation_enabled && commit_proof && g_state.config_reload.loaded &&
         voting_fingerprint == g_state.config_reload.voting_fingerprint &&
         full_fingerprint == g_state.config_reload.full_fingerprint)
     {
@@ -572,7 +582,7 @@ static int peer_decode_hello(const void *payload, size_t len, const struct socka
         lcs_log_info("configuration reload convergence detected from %s; scheduling local commit", name);
         return -1;
     }
-    if (commit_proof && !active_matches)
+    if (!g_state.resource_generation_enabled && commit_proof && !active_matches)
     {
         bool local_full = g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL;
         bool remote_full = role == LCS_NODE_FULL;
@@ -588,7 +598,7 @@ static int peer_decode_hello(const void *payload, size_t len, const struct socka
         snprintf(error, error_len, "configuration mismatch: peer has committed a newer resource configuration; deploy the matching config on this node and run lcs reload");
         return -1;
     }
-    if (!active_matches && g_state.config_reload.committed_transition)
+    if (!g_state.resource_generation_enabled && !active_matches && g_state.config_reload.committed_transition)
         *transition_only = true;
     else if (!active_matches)
     {
@@ -607,7 +617,7 @@ static int peer_decode_hello(const void *payload, size_t len, const struct socka
     }
 
     *node_idx = idx;
-    *voting_ready = ready != 0;
+    *voting_ready = !g_state.resource_generation_enabled && ready != 0;
     return 0;
 }
 
@@ -647,8 +657,26 @@ static int peer_queue_frame(int epoll_fd, int node_idx, uint16_t type, uint32_t 
     if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count || length > LCS_MAX_FRAME)
         return -1;
     peer_runtime_t *peer = &g_state.peers[node_idx];
-    if (peer->fd < 0 || !peer->outbuf)
+    if (peer->fd < 0 || !peer->outbuf || (length && !payload))
         return -1;
+    unsigned char prefix[LCS_RESOURCE_FRAME_PREFIX];
+    size_t prefix_length = 0;
+    uint32_t body_length = length;
+    if (g_state.resource_generation_enabled && (type == LCS_MSG_CONFIG_RELOAD || type == LCS_MSG_CONFIG_RELOAD_COMMIT))
+        return -1;
+    if (g_state.resource_generation_enabled && lcs_resource_frame_type(type))
+    {
+        if (!g_state.resource_generation_admitted || peer->conn_state != LCS_PEER_ESTABLISHED ||
+            peer->protocol_version < LCS_PROTO_FEATURE_RESOURCE_GENERATION ||
+            (!peer->resource_generation_matches && type != LCS_MSG_HEARTBEAT &&
+             type != LCS_MSG_STATE_SYNC_REQ && type != LCS_MSG_STATE_SYNC_RESP))
+            return 1;
+        if (lcs_resource_frame_prefix(&g_state.resource_generation, g_state.instance_id, peer->instance_id,
+                                         type, body_length, prefix, sizeof(prefix), &prefix_length))
+            return -1;
+        type = LCS_MSG_RESOURCE_FRAME;
+        length += (uint32_t)prefix_length;
+    }
     size_t frame_len = LCS_FRAME_HEADER_SIZE + (size_t)length;
     size_t queued = peer->out_len - peer->out_off;
     if (frame_len > LCS_PEER_OUTBUF_SIZE - queued)
@@ -668,10 +696,15 @@ static int peer_queue_frame(int epoll_fd, int node_idx, uint16_t type, uint32_t 
     wire.seq = htonl(seq);
     memcpy(peer->outbuf + peer->out_len, &wire, sizeof(wire));
     peer->out_len += sizeof(wire);
-    if (length)
+    if (prefix_length)
     {
-        memcpy(peer->outbuf + peer->out_len, payload, length);
-        peer->out_len += length;
+        memcpy(peer->outbuf + peer->out_len, prefix, prefix_length);
+        peer->out_len += prefix_length;
+    }
+    if (body_length)
+    {
+        memcpy(peer->outbuf + peer->out_len, payload, body_length);
+        peer->out_len += body_length;
     }
     lcs_log_debug3("queued peer %s frame type=%u seq=%u length=%u pending_bytes=%zu",
                    g_state.cfg.nodes[node_idx].name, type, seq, length,
@@ -1205,12 +1238,13 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
                 return -1;
             }
             g_state.peers[source_node_idx].initial_sync_complete = true;
-            if (cluster_encode_state(payload, LCS_MAX_FRAME, &len) != 0)
+            unsigned char state_payload[LCS_MAX_FRAME];
+            if (cluster_encode_state(state_payload, sizeof(state_payload), &len) != 0)
             {
                 peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "failed to encode state");
                 return -1;
             }
-            return peer_queue_frame(epoll_fd, source_node_idx, LCS_MSG_STATE_SYNC_RESP, hdr->seq, payload, (uint32_t)len);
+            return peer_queue_frame(epoll_fd, source_node_idx, LCS_MSG_STATE_SYNC_RESP, hdr->seq, state_payload, (uint32_t)len);
         case LCS_MSG_LEASE_REQ:
         case LCS_MSG_LEASE_RENEW:
         case LCS_MSG_LEASE_RELEASE:
@@ -1321,6 +1355,9 @@ void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const 
     peer->next_heartbeat_ms = 0;
     peer->state_sync_pending = false;
     peer->initial_sync_complete = false;
+    peer->resource_generation_known = false;
+    peer->resource_generation_matches = false;
+    memset(&peer->resource_generation, 0, sizeof(peer->resource_generation));
     peer->config_status_known = false;
     lcs_config_transactions_disconnect(&g_state.config_transactions, (size_t)node_idx);
     peer->config_status_sent = 0;
@@ -1356,6 +1393,9 @@ static int peer_register_connection(int epoll_fd, int node_idx, int fd, bool out
     peer->hello_seq = 0;
     peer->state_sync_pending = true;
     peer->initial_sync_complete = false;
+    peer->resource_generation_known = false;
+    peer->resource_generation_matches = false;
+    memset(&peer->resource_generation, 0, sizeof(peer->resource_generation));
     peer->next_heartbeat_ms = lcs_now_ms() + peer_heartbeat_interval_ms();
     lcs_log_debug("peer %s persistent connection established direction=%s", g_state.cfg.nodes[node_idx].name, outbound ? "outbound" : "inbound");
     return 0;
@@ -1448,6 +1488,10 @@ int peer_rpc_async(int epoll_fd, int node_idx, uint16_t req_type,
                       peer_inflight_count(peer));
         return -1;
     }
+    if (g_state.resource_generation_enabled && lcs_resource_frame_type(req_type) &&
+        (!g_state.resource_generation_admitted || !peer->resource_generation_matches ||
+         peer->protocol_version < LCS_PROTO_FEATURE_RESOURCE_GENERATION))
+        return -1;
     uint64_t deadline_ms = lcs_now_ms() + timeout_ms;
     peer_rpc_runtime_t *rpc = peer_register_rpc(peer, node_idx, req_type, expected_type,
                                                 deadline_ms, resp_payload, resp_cap,
@@ -1503,6 +1547,13 @@ static int peer_process_frame(int epoll_fd, int node_idx, const lcs_frame_header
         return -1;
     }
     peer_mark_seen(node_idx, g_state.peers[node_idx].instance_id);
+    lcs_frame_header_t decoded;
+    const void *body;
+    int admitted = peer_decode_resource_frame(node_idx, hdr, payload, &decoded, &body);
+    if (admitted)
+        return admitted < 0 ? -1 : 0;
+    hdr = &decoded;
+    payload = (unsigned char *)body;
     if (peer_is_request_type(hdr->type))
         return peer_handle_request_frame(epoll_fd, node_idx, hdr, payload);
 
@@ -1995,22 +2046,26 @@ void peer_poll(int epoll_fd)
         // frames carry liveness when no state has changed.
         if (g_state.peers[i].state_sync_pending)
         {
-            if (peer_send_state_sync(epoll_fd, (int)i) != 0)
+            int sync_result = peer_send_state_sync(epoll_fd, (int)i);
+            if (sync_result < 0)
             {
                 peer_close_connection(epoll_fd, (int)i, true, "state sync failed");
                 continue;
             }
-            g_state.peers[i].state_sync_pending = false;
+            if (!sync_result)
+                g_state.peers[i].state_sync_pending = false;
         }
 
         if (!g_state.peers[i].next_heartbeat_ms || now >= g_state.peers[i].next_heartbeat_ms)
         {
-            if (peer_send_heartbeat(epoll_fd, (int)i) != 0)
+            int heartbeat_result = peer_send_heartbeat(epoll_fd, (int)i);
+            if (heartbeat_result < 0)
             {
                 peer_close_connection(epoll_fd, (int)i, true, "heartbeat failed");
                 continue;
             }
-            g_state.peers[i].next_heartbeat_ms = now + peer_heartbeat_interval_ms();
+            if (!heartbeat_result)
+                g_state.peers[i].next_heartbeat_ms = now + peer_heartbeat_interval_ms();
         }
     }
     cluster_update_recovery_state();
@@ -2032,4 +2087,45 @@ void handshake_expire(int epoll_fd)
         if (g_state.handshakes[i].active && g_state.handshakes[i].deadline_ms && now >= g_state.handshakes[i].deadline_ms)
             handshake_close(epoll_fd, (int)i, "handshake timeout");
     }
+}
+
+int peer_decode_resource_frame(int node_idx, const lcs_frame_header_t *wire, const void *payload,
+                                 lcs_frame_header_t *inner, const void **body)
+{
+    if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count || wire->flags || wire->length > LCS_MAX_FRAME)
+        return -1;
+    peer_runtime_t *peer = &g_state.peers[node_idx];
+    *inner = *wire; *body = payload;
+    if (wire->type == LCS_MSG_RESOURCE_FRAME)
+    {
+        lcs_resource_generation_t generation;
+        uint16_t type;
+        size_t length;
+        if (!wire->seq || peer->protocol_version < LCS_PROTO_FEATURE_RESOURCE_GENERATION ||
+            lcs_resource_frame_decode(payload, wire->length, peer->instance_id, g_state.instance_id,
+                                         &generation, &type, body, &length))
+            return -1;
+        if (peer->resource_generation_known && !lcs_resource_generation_equal(&peer->resource_generation, &generation))
+            return -1; /* Generations are immutable for the lifetime of one socket. */
+        peer->resource_generation = generation;
+        peer->resource_generation_known = true;
+        peer->resource_generation_matches = g_state.resource_generation_enabled && g_state.resource_generation_admitted &&
+            lcs_resource_generation_equal(&generation, &g_state.resource_generation);
+        if (peer->resource_generation_matches)
+        {
+            inner->type = type; inner->length = (uint32_t)length;
+            return 0;
+        }
+    }
+    else if (g_state.resource_generation_enabled &&
+             (wire->type == LCS_MSG_CONFIG_RELOAD || wire->type == LCS_MSG_CONFIG_RELOAD_COMMIT))
+        return -1;
+    else if (!lcs_resource_frame_type(wire->type) ||
+             (!g_state.resource_generation_enabled && !peer->resource_generation_known))
+        return 0;
+    /* Resource mismatch is recovery-only, not a disconnected config channel. */
+    peer->voting_ready = false;
+    peer->initial_sync_complete = false;
+    peer->resource_generation_matches = false;
+    return 1;
 }
