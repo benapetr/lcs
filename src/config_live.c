@@ -69,13 +69,18 @@ static int provider_result(int result, char *err, size_t length)
     return result;
 }
 
+static int publish_current(lcs_config_live_t *live, char *err, size_t length)
+{
+    return provider_result(live->project(live->managed_projection ? &live->projection : live->barrier_context,
+        &g_state.config_runtime.agreement.committed, err, length), err, length);
+}
+
 static int quiesce(void *context, const lcs_config_reconcile_view_t *view, char *err, size_t length)
 {
     lcs_config_live_t *live = context;
     if (bind_attempt(live, view, err, length))
         return -1;
-    return provider_result(live->project(live->barrier_context,
-        &g_state.config_runtime.agreement.committed, err, length), err, length);
+    return publish_current(live, err, length);
 }
 
 static bool workers_busy(const resource_runtime_t *resource)
@@ -151,8 +156,7 @@ static int install(void *context, const lcs_config_reconcile_view_t *view, char 
     /* Quorum-only nodes skip quiesce, so project before installing their table. */
     if (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_QUORUM_ONLY)
     {
-        int projected = provider_result(live->project(live->barrier_context,
-            &g_state.config_runtime.agreement.committed, err, length), err, length);
+        int projected = publish_current(live, err, length);
         if (projected != 1)
             return projected;
     }
@@ -236,6 +240,18 @@ int lcs_config_live_init(lcs_config_live_t *live, int epoll_fd,
     memset(live, 0, sizeof(*live));
     live->epoll_fd = epoll_fd; live->project = project;
     live->owner_barrier = owner_barrier; live->barrier_context = context;
+    return 0;
+}
+
+int lcs_config_live_init_with_projection(lcs_config_live_t *live, int epoll_fd,
+                                          lcs_config_coordinator_t *coordinator,
+                                          lcs_config_bootstrap_t *bootstrap,
+                                          lcs_config_reconcile_step_t owner_barrier, void *context)
+{
+    if (!coordinator || !bootstrap || lcs_config_live_init(live, epoll_fd, lcs_config_projection_step, owner_barrier, context))
+        return -1;
+    live->managed_projection = true;
+    lcs_config_projection_init(&live->projection, coordinator, bootstrap);
     return 0;
 }
 

@@ -213,6 +213,30 @@ int lcs_config_coordinator_start_application(lcs_config_coordinator_t *coordinat
     return result;
 }
 
+int lcs_config_coordinator_start_projection(lcs_config_coordinator_t *coordinator,
+                                            lcs_config_bootstrap_t *bootstrap,
+                                            char *err, size_t err_len)
+{
+    if (coordinator->initialized && coordinator->storage.pid > 0)
+        return 1;
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed ||
+        coordinator->phase != LCS_CONFIG_COORD_READY || coordinator->completed_projections == UINT64_MAX)
+        return -1;
+    lcs_config_runtime_t *runtime = coordinator->runtime;
+    if (!lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) ||
+        !runtime->agreement.committed.revision)
+        return -1;
+    int result = lcs_config_agreement_worker_start_projection(&coordinator->storage, &runtime->agreement,
+                                                                bootstrap, err, err_len);
+    if (!result)
+    {
+        coordinator->projecting_revision = runtime->agreement.committed.revision;
+        memcpy(coordinator->projecting_digest, runtime->agreement.committed.digest, sizeof(coordinator->projecting_digest));
+        coordinator->phase = LCS_CONFIG_COORD_PROJECTING;
+    }
+    return result;
+}
+
 int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64_t now_ms)
 {
     if (!coordinator->initialized || coordinator->phase == LCS_CONFIG_COORD_IDLE ||
@@ -234,9 +258,11 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
     if (coordinator->phase == LCS_CONFIG_COORD_READY)
         return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
     lcs_config_runtime_t *runtime = coordinator->runtime;
-    if (coordinator->phase == LCS_CONFIG_COORD_VOTING || coordinator->phase == LCS_CONFIG_COORD_APPLYING)
+    if (coordinator->phase == LCS_CONFIG_COORD_VOTING || coordinator->phase == LCS_CONFIG_COORD_APPLYING ||
+        coordinator->phase == LCS_CONFIG_COORD_PROJECTING)
     {
         bool application_job = coordinator->phase == LCS_CONFIG_COORD_APPLYING;
+        bool projection_job = coordinator->phase == LCS_CONFIG_COORD_PROJECTING;
         int operation = -1;
         int result = lcs_config_agreement_worker_poll(&coordinator->storage, &runtime->agreement,
             &operation, coordinator->error, sizeof(coordinator->error));
@@ -248,7 +274,22 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
             coordinator->phase = coordinator->storage.pid > 0 ? LCS_CONFIG_COORD_CANCELLING : LCS_CONFIG_COORD_FAILED;
             return coordinator->storage.pid > 0 ? 0 : -1;
         }
-        if (application_job)
+        if (projection_job)
+        {
+            coordinator->last_projection_result = operation;
+            coordinator->completed_projections++;
+            if (!operation)
+            {
+                coordinator->projected_revision = coordinator->projecting_revision;
+                memcpy(coordinator->projected_digest, coordinator->projecting_digest, sizeof(coordinator->projected_digest));
+            }
+            else
+            {
+                coordinator->projected_revision = 0;
+                memset(coordinator->projected_digest, 0, sizeof(coordinator->projected_digest));
+            }
+        }
+        else if (application_job)
         {
             coordinator->last_application_result = operation;
             coordinator->completed_applications++;

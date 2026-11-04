@@ -95,7 +95,7 @@ rules. The 64-KiB frame limit includes the prefix.
 
 These APIs are not invoked automatically yet. The daemon still refuses persisted
 distributed startup. The local runtime adapter below now implements backend/remap callbacks;
-distributed owner proof, startup projection/recovery and automatic activation
+distributed owner proof, startup recovery and automatic activation
 remain unfinished. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
@@ -235,7 +235,7 @@ Tests cover shared-writer exclusion, delayed publication, large pipe results,
 stale imports, failed file/directory sync, and cancellation. The internal
 reconciliation sequencer below now coordinates catalog writes and explicit
 backend barriers; the local adapter below now supplies backend/remap callbacks, while its
-projection/owner providers and automatic daemon integration remain pending.
+distributed owner provider and automatic daemon integration remain pending.
 
 ## Internal reconciliation sequencer
 
@@ -341,8 +341,8 @@ pause. After the exact applied marker is durable, the adapter admits generation
 traffic so ordinary state-sync/restart recovery can run. It releases the remaining
 definition fences only after local voting readiness and quorum are established.
 
-The running daemon still lacks the projection publisher, distributed owner-barrier
-provider, startup reconstruction/cleanup adapter and automatic activation wiring.
+The running daemon still lacks the distributed owner-barrier provider, startup
+reconstruction/cleanup adapter and automatic activation wiring.
 This live adapter assumes the last-applied backend/ownership state was recovered;
 ownerless runtime entries alone do not establish that old backends are absent.
 Tests exercise local callbacks with controlled backend/provider doubles, including
@@ -350,6 +350,37 @@ old stop hooks, dependent post-stop work, failed cleanup, malformed provider
 status, mandatory barriers, sorted remapping, retained ownership/promises,
 replacement identity reset, lease expiry and generation admission. They do not
 yet constitute an end-to-end dynamic-cluster backend transition test.
+
+## Durable projection publisher
+
+`config_projection.c` supplies the concrete asynchronous publisher used by
+`lcs_config_live_init_with_projection()`. It borrows the bootstrap snapshot
+directory and the reconciliation coordinator; these must remain open until the
+shared worker exits. The distributed owner barrier is still a required caller
+provider. Neither initializer starts automatic daemon application.
+
+Publication shares the single storage worker with configuration agreement and
+application markers. Only the latest learned dynamic value may be submitted,
+after frozen initialization and the durable activation barrier. The child writes
+the exact schema-2 document, including revision and incarnation metadata, using
+private mode-0600 replacement, file fsync, rename and directory fsync. Parent
+polling performs no filesystem I/O. Agreement and application records remain the
+authority; `resources.json` is a derived projection, never a new decision.
+
+Completion identifies the published revision and value digest. If a newer
+checkpoint arrived before the callback observes completion, it schedules the
+latest projection before reporting success. Repeated calls for the same completed
+value require no new write. A known projection file error blocks application and
+clears that receipt, while retaining healthy agreement/application handles for
+retry after repair. A failure after rename may already have replaced the file;
+retry rewrites the authoritative value. A cancelled, broken or uncertain worker
+retains the existing conservative recovery requirement and must be reaped before
+storage closes. Startup must rewrite/verify projection from recovered authority;
+an in-memory publication receipt does not survive restart.
+
+Tests cover shared-writer exclusion, delayed fsync, exact contents and permissions,
+superseded completion, retry after directory fsync failure, symlink rejection,
+cancellation lifetime, and publication through the local application adapter.
 
 ## Client outcomes
 

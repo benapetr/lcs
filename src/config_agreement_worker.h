@@ -17,6 +17,7 @@ typedef enum
     LCS_CONFIG_APPLICATION_FINISH = 5,
     LCS_CONFIG_BARRIER = 6,
     LCS_CONFIG_CHECKPOINT = 7,
+    LCS_CONFIG_PROJECTION = 8,
 } lcs_config_agreement_action_t;
 
 typedef struct
@@ -28,6 +29,7 @@ typedef struct
     uint32_t voters;
     char application_digest[LCS_CONFIG_DIGEST_SIZE]; /* Exact pending value for FINISH. */
     const lcs_config_value_t *value; /* borrowed until start returns */
+    lcs_config_bootstrap_t *projection; /* Locked snapshot destination, borrowed until worker reaped. */
     const lcs_config_barrier_round_t *barrier_round; /* Same-host sealed readiness only. */
 } lcs_config_agreement_job_t;
 
@@ -86,6 +88,16 @@ int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t 
                                                   lcs_config_application_t *application,
                                                   const lcs_config_agreement_job_t *job,
                                                   char *err, size_t err_len);
+/* Publish exactly the current learned schema-2 document through the SAME worker.
+ * The bootstrap state descriptors must match agreement's exclusively locked store;
+ * INI refresh must be permanently excluded and its worker already reaped. Keep
+ * both snapshot/state handles alive until poll/cancellation finishes. A completed
+ * projection I/O failure does not poison the authoritative journal; interrupted
+ * or malformed worker handoff retains the ordinary conservative recovery rule. */
+int lcs_config_agreement_worker_start_projection(lcs_config_agreement_worker_t *worker,
+                                                 lcs_config_agreement_t *agreement,
+                                                 lcs_config_bootstrap_t *bootstrap,
+                                                 char *err, size_t err_len);
 /* Returns 0 for pending/idle, 1 for completion with operation_result, -1 for a
  * failed worker/uncertain persistence (agreement is poisoned in that case). */
 int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,

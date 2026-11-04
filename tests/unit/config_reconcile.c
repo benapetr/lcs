@@ -5,11 +5,13 @@
 #include "util.h"
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 daemon_state_t g_state;
@@ -573,6 +575,188 @@ static void test_valid_lease_retention_during_remap(void)
     memset(&g_state, 0, sizeof(g_state));
 }
 
+
+/* The projection directory is deliberately separate from the authoritative state. */
+static void projection_open(lcs_config_bootstrap_t *bootstrap)
+{
+    memset(bootstrap, 0, sizeof(*bootstrap));
+    bootstrap->state = store; /* Borrowed; cleanup() owns these descriptors. */
+    bootstrap->initialization_locked = true;
+    assert(!mkdirat(store.directory_fd, "snapshots", 0700));
+    char path[128]; snprintf(path, sizeof(path), "%s/snapshots", directory);
+    assert(!lcs_config_store_open(&bootstrap->snapshots, path, error, sizeof(error)));
+    /* Production snapshot directories borrow the state lock. */
+    assert(!unlinkat(bootstrap->snapshots.directory_fd, "lock", 0));
+    close(bootstrap->snapshots.lock_fd); bootstrap->snapshots.lock_fd = -1;
+    strcpy(bootstrap->snapshot_name, "resources.json");
+}
+
+static void projection_close(lcs_config_bootstrap_t *bootstrap)
+{
+    assert(coordinator.storage.pid <= 0);
+    const char *names[] = {"resources.json", ".resources.json.tmp"};
+    for (size_t i = 0; i < 2; i++)
+        assert(!unlinkat(bootstrap->snapshots.directory_fd, names[i], 0) || errno == ENOENT);
+    lcs_config_store_close(&bootstrap->snapshots);
+    assert(!unlinkat(store.directory_fd, "snapshots", AT_REMOVEDIR));
+}
+
+static void projection_matches(lcs_config_bootstrap_t *bootstrap, const lcs_config_value_t *value)
+{
+    char *data = NULL; size_t length = 0;
+    assert(!lcs_config_store_read(&bootstrap->snapshots, bootstrap->snapshot_name,
+        &data, &length, value->length + 1, error, sizeof(error)));
+    assert(length == value->length && !memcmp(data, value->document, length));
+    free(data);
+    struct stat st;
+    assert(!fstatat(bootstrap->snapshots.directory_fd, bootstrap->snapshot_name, &st, AT_SYMLINK_NOFOLLOW));
+    assert(S_ISREG(st.st_mode) && (st.st_mode & 0777) == 0600);
+}
+
+static void projection_wait(void)
+{
+    for (unsigned i = 0; i < 5000 && coordinator.storage.pid > 0; i++)
+    { (void)lcs_config_coordinator_process(&coordinator, 1000); usleep(1000); }
+    assert(coordinator.storage.pid <= 0);
+}
+
+static void projection_stopped(pid_t writer)
+{
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        int status;
+        if (waitpid(writer, &status, WNOHANG | WUNTRACED) > 0)
+        { assert(WIFSTOPPED(status)); return; }
+        usleep(1000);
+    }
+    assert(!"projection writer did not reach fsync");
+}
+
+static void test_durable_projection(void)
+{
+    setup(false);
+    lcs_config_bootstrap_t bootstrap; projection_open(&bootstrap);
+    lcs_config_projection_t publisher;
+    lcs_config_projection_init(&publisher, &coordinator, &bootstrap);
+    assert(lcs_config_projection_step(&publisher, &runtime.agreement.committed, error, sizeof(error)) < 0);
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    bootstrap.initialization_locked = false;
+    assert(lcs_config_projection_step(&publisher, &first, error, sizeof(error)) < 0);
+    bootstrap.initialization_locked = true;
+    bootstrap.worker_pid = 123;
+    assert(lcs_config_projection_step(&publisher, &first, error, sizeof(error)) < 0);
+    bootstrap.worker_pid = 0;
+    forbid_io = true; stop_sync = 1;
+    assert(!lcs_config_projection_step(&publisher, &first, error, sizeof(error)));
+    stop_sync = 0;
+    pid_t writer = coordinator.storage.pid; assert(writer > 0);
+    projection_stopped(writer);
+    assert(!lcs_config_projection_step(&publisher, &first, error, sizeof(error)));
+    assert(lcs_config_coordinator_start_application(&coordinator, NULL, NULL, error, sizeof(error)) == 1);
+    struct stat st;
+    assert(fstatat(bootstrap.snapshots.directory_fd, "resources.json", &st, 0) < 0 && errno == ENOENT);
+    assert(!coordinator.completed_projections && !coordinator.completed_applications && !coordinator.completed_votes);
+    assert(!kill(writer, SIGCONT)); projection_wait();
+    assert(lcs_config_projection_step(&publisher, &first, error, sizeof(error)) == 1);
+    projection_matches(&bootstrap, &first);
+    assert(coordinator.completed_projections == 1 && coordinator.projected_revision == 1);
+    assert(lcs_config_projection_step(&publisher, &first, error, sizeof(error)) == 1 && coordinator.storage.pid <= 0);
+    assert(runtime.application.applied.revision == 0 && !runtime.application.pending.document);
+
+    /* Complete a publication, then learn a newer revision before observing it. */
+    coordinator.projected_revision = 0;
+    assert(!lcs_config_projection_step(&publisher, &first, error, sizeof(error)));
+    projection_wait();
+    forbid_io = false;
+    lcs_config_value_t second = successor(&first, true); learn(&second);
+    forbid_io = true;
+    assert(lcs_config_projection_step(&publisher, &first, error, sizeof(error)) < 0);
+    assert(!lcs_config_projection_step(&publisher, &second, error, sizeof(error)));
+    assert(coordinator.storage.pid > 0 && coordinator.projected_revision == 1);
+    projection_wait();
+    assert(lcs_config_projection_step(&publisher, &second, error, sizeof(error)) == 1);
+    projection_matches(&bootstrap, &second);
+
+    /* Retain cleanup obligations even if publication fails after rename. */
+    forbid_io = false;
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    forbid_io = true;
+    /* A directory fsync error after rename is retryable for this derived file. */
+    coordinator.projected_revision = 0; fail_sync = 2;
+    assert(!lcs_config_projection_step(&publisher, &second, error, sizeof(error)));
+    fail_sync = 0; projection_wait();
+    assert(lcs_config_projection_step(&publisher, &second, error, sizeof(error)) < 0);
+    assert(!coordinator.failed && !runtime.agreement.poisoned && !runtime.application.poisoned);
+    assert(!coordinator.projected_revision && !coordinator.completed_applications && !coordinator.completed_votes);
+    assert(lcs_config_value_equal(&runtime.agreement.committed, &second));
+    assert(lcs_config_value_equal(&runtime.application.pending, &second) && runtime.application.applied.revision == 0);
+    assert(!lcs_config_projection_step(&publisher, &second, error, sizeof(error)));
+    projection_wait();
+    assert(lcs_config_projection_step(&publisher, &second, error, sizeof(error)) == 1);
+    projection_matches(&bootstrap, &second);
+
+    /* Unsafe destination rejection must not touch the authoritative journal. */
+    assert(!unlinkat(bootstrap.snapshots.directory_fd, "resources.json", 0));
+    assert(!symlinkat("../agreement.json", bootstrap.snapshots.directory_fd, "resources.json"));
+    coordinator.projected_revision = 0;
+    assert(!lcs_config_projection_step(&publisher, &second, error, sizeof(error)));
+    projection_wait();
+    assert(lcs_config_projection_step(&publisher, &second, error, sizeof(error)) < 0 && !coordinator.failed);
+    assert(!unlinkat(bootstrap.snapshots.directory_fd, "resources.json", 0));
+    assert(!lcs_config_projection_step(&publisher, &second, error, sizeof(error)));
+    projection_wait();
+    assert(lcs_config_projection_step(&publisher, &second, error, sizeof(error)) == 1);
+    projection_matches(&bootstrap, &second);
+    projection_close(&bootstrap);
+    lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
+}
+
+static void test_projection_cancellation(void)
+{
+    setup(false);
+    lcs_config_bootstrap_t bootstrap; projection_open(&bootstrap);
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    lcs_config_projection_t publisher;
+    lcs_config_projection_init(&publisher, &coordinator, &bootstrap);
+    forbid_io = true; stop_sync = 1;
+    assert(!lcs_config_projection_step(&publisher, &first, error, sizeof(error)));
+    stop_sync = 0;
+    pid_t writer = coordinator.storage.pid; projection_stopped(writer);
+    lcs_config_coordinator_stop(&coordinator);
+    assert(coordinator.storage.pid == writer && !lcs_config_coordinator_can_close(&coordinator));
+    assert(lcs_config_projection_step(&publisher, &first, error, sizeof(error)) < 0);
+    projection_wait();
+    assert(!coordinator.completed_projections && runtime.agreement.poisoned);
+    projection_close(&bootstrap);
+    lcs_config_value_clear(&first); cleanup();
+}
+
+static void test_live_managed_projection(bool quorum_only)
+{
+    setup(quorum_only);
+    lcs_config_bootstrap_t bootstrap; projection_open(&bootstrap);
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    memset(&g_state, 0, sizeof(g_state)); g_state.cfg = *runtime.base;
+    g_state.self_index = 0; g_state.instance_id = 100;
+    g_state.self_index = quorum_only ? 2 : 0;
+    g_state.resources[0].owner_node = -1;
+    generation_cancellations = 0; generation_reload = false; released_count = 0;
+    owners_ready = true; invalid_owner_result = false;
+    lcs_config_live_t live;
+    assert(!lcs_config_live_init_with_projection(&live, -1, &coordinator, &bootstrap, owner_live, NULL));
+    lcs_config_reconcile_init(&reconcile, &coordinator, lcs_config_live_ops(), &live);
+    live_mode = true; forbid_io = true;
+    assert(!lcs_config_reconcile_start(&reconcile));
+    until(LCS_CONFIG_RECONCILE_ADMIT);
+    assert(coordinator.completed_projections == 1 && coordinator.completed_applications == 2);
+    projection_matches(&bootstrap, &first);
+    assert(!tick()); g_state.voting_ready = true; g_state.votes_seen = 2;
+    until(LCS_CONFIG_RECONCILE_DONE);
+    live_mode = false; memset(&g_state, 0, sizeof(g_state));
+    projection_close(&bootstrap);
+    lcs_config_value_clear(&first); cleanup();
+}
+
 int main(void)
 {
     parent = getpid();
@@ -584,6 +768,10 @@ int main(void)
     test_generation_installation_and_admission();
     test_live_drain_and_incarnation_remap();
     test_valid_lease_retention_during_remap();
+    test_durable_projection();
+    test_projection_cancellation();
+    test_live_managed_projection(false);
+    test_live_managed_projection(true);
     puts("durable configuration reconciliation ordering and safety barriers unit tests passed");
     return 0;
 }

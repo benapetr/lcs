@@ -2,7 +2,9 @@
 
 ## Next
 
-- Added explicit local application callbacks for definition fencing, backend drain with old hooks/dependency ordering, and incarnation-aware runtime remapping. Unchanged ownership/private promises are preserved, replacements start with fresh identity state, and existing leases cannot be extended through missing quorum/admission. Projection publication and distributed old-owner proof remain mandatory unfinished providers; startup recovery and automatic activation remain disabled.
+- Added an asynchronous learned-resource projection publisher through the shared configuration writer, including revision-bound completion, safe file replacement, retryable projection errors and an explicit local-adapter initializer. Distributed old-owner proof, startup reconciliation and automatic activation remain unfinished.
+
+- Added explicit local application callbacks for definition fencing, backend drain with old hooks/dependency ordering, and incarnation-aware runtime remapping. Unchanged ownership/private promises are preserved, replacements start with fresh identity state, and existing leases cannot be extended through missing quorum/admission. Distributed old-owner proof remains a mandatory unfinished provider; startup recovery and automatic activation remain disabled.
 
 - Added wire-6 resource-generation envelopes binding lease/state-sync/control traffic and voting heartbeats to the applied snapshot, membership and daemon instances before dispatch or RPC completion. Different generations retain configuration catch-up access without resource votes. Explicit install/admit APIs fence traffic around indexed-operation cancellation and durable matching applied state; live adapters and automatic activation remain unfinished.
 

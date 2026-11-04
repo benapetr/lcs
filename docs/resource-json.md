@@ -95,9 +95,12 @@ backend application yet; see [generation framing](dynamic-config-application.md#
 
 The explicit local backend adapter now drains affected resources with old hooks,
 waits for dependents and indexed workers, and remaps matching incarnations without
-changing their ownership or promises. It requires projection and distributed
-old-owner barrier providers, which are not implemented yet; automatic daemon
-application remains disabled. See [local backend transitions](dynamic-config-application.md#local-backend-drain-and-runtime-adapter).
+changing their ownership or promises. Its concrete asynchronous publisher writes
+the latest learned snapshot through the shared storage worker; file errors block
+application for retry without changing configuration authority. The distributed
+old-owner barrier and startup integration remain unfinished; automatic daemon
+application remains disabled. See [projection durability](dynamic-config-application.md#durable-projection-publisher)
+and [local backend transitions](dynamic-config-application.md#local-backend-drain-and-runtime-adapter).
 
 ## Inspecting preparation across members
 

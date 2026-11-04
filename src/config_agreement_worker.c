@@ -80,12 +80,15 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
                             const lcs_config_runtime_t *barrier_runtime,
                             int pipe_fd, pid_t parent)
 {
-    int keep[] = {agreement->store->directory_fd, agreement->store->lock_fd, pipe_fd};
-    qsort(keep, 3, sizeof(keep[0]), compare_fd);
+    int keep[] = {agreement->store->directory_fd, agreement->store->lock_fd, pipe_fd,
+        job && job->action == LCS_CONFIG_PROJECTION && job->projection ? job->projection->snapshots.directory_fd : -1,
+        job && job->action == LCS_CONFIG_PROJECTION && job->projection ? job->projection->snapshots.lock_fd : -1};
+    const size_t keep_count = sizeof(keep) / sizeof(keep[0]);
+    qsort(keep, keep_count, sizeof(keep[0]), compare_fd);
     unsigned first = 3;
-    for (size_t i = 0; i < 3; i++)
+    for (size_t i = 0; i < keep_count; i++)
     {
-        if (keep[i] < 3)
+        if (keep[i] < 3 || (unsigned)keep[i] < first)
             continue;
         if (first < (unsigned)keep[i])
             (void)close_range(first, (unsigned)keep[i] - 1, 0);
@@ -163,6 +166,23 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
     else if (job->action == LCS_CONFIG_CHECKPOINT)
         result.result = lcs_config_agreement_checkpoint(agreement, job->parent_digest,
             job->ballot, job->voters, job->value, result.error, sizeof(result.error));
+    else if (job->action == LCS_CONFIG_PROJECTION)
+    {
+        lcs_config_t *decoded = malloc(sizeof(*decoded));
+        uint64_t revision;
+        if (!decoded || lcs_resource_config_decode(job->value->document, job->value->length,
+            agreement->base, decoded, &revision, result.error, sizeof(result.error)) ||
+            decoded->resource_schema_version != LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION || revision != job->value->revision)
+        {
+            result.result = -1;
+            if (!*result.error)
+                snprintf(result.error, sizeof(result.error), "projection requires a learned dynamic configuration");
+        }
+        else
+            result.result = lcs_config_store_write(&job->projection->snapshots, job->projection->snapshot_name,
+                job->value->document, job->value->length, result.error, sizeof(result.error));
+        free(decoded);
+    }
     else if (job->action == LCS_CONFIG_APPLICATION_BEGIN)
         result.result = lcs_config_application_begin(application, agreement,
                                                       result.error, sizeof(result.error));
@@ -202,14 +222,22 @@ static int start(lcs_config_agreement_worker_t *worker,
 {
     if (worker->pid > 0)
         return 1;
+    bool projection_job = job && job->action == LCS_CONFIG_PROJECTION;
     bool application_job = job && (job->action == LCS_CONFIG_APPLICATION_BEGIN ||
                                    job->action == LCS_CONFIG_APPLICATION_FINISH);
     if (!candidate && !barrier_runtime && (agreement->poisoned || !job || application_job != (application != NULL) ||
         (application && (application->poisoned || application->store != agreement->store ||
          strcmp(application->member, agreement->member) ||
          strcmp(application->membership, agreement->membership))) ||
-        (!application_job && (job->action < LCS_CONFIG_PREPARE || (job->action > LCS_CONFIG_LEARN && job->action != LCS_CONFIG_CHECKPOINT) ||
+        (!application_job && (job->action < LCS_CONFIG_PREPARE || (job->action > LCS_CONFIG_LEARN && job->action != LCS_CONFIG_CHECKPOINT && !projection_job) ||
          (job->action != LCS_CONFIG_PREPARE && !job->value))) ||
+        (projection_job && (!job->projection || !job->projection->initialization_locked ||
+            job->projection->worker_pid > 0 || job->projection->snapshots.directory_fd < 0 ||
+            job->projection->state.directory_fd != agreement->store->directory_fd ||
+            job->projection->state.lock_fd != agreement->store->lock_fd || agreement->store->lock_fd < 0 ||
+            !memchr(job->projection->snapshot_name, 0, sizeof(job->projection->snapshot_name)) ||
+            !*job->projection->snapshot_name || !job->value->revision ||
+            !lcs_config_value_equal(job->value, &agreement->committed))) ||
         (job->action == LCS_CONFIG_APPLICATION_FINISH &&
          (!memchr(job->application_digest, 0, sizeof(job->application_digest)) ||
           !application->pending.document || strcmp(job->application_digest, application->pending.digest)))))
@@ -258,6 +286,16 @@ int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
                     char *err, size_t err_len)
 {
     return start(worker, agreement, NULL, job, NULL, NULL, false, NULL, err, err_len);
+}
+
+int lcs_config_agreement_worker_start_projection(lcs_config_agreement_worker_t *worker,
+                                                 lcs_config_agreement_t *agreement,
+                                                 lcs_config_bootstrap_t *bootstrap,
+                                                 char *err, size_t err_len)
+{
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_PROJECTION,
+        .value = &agreement->committed, .projection = bootstrap };
+    return start(worker, agreement, NULL, &job, NULL, NULL, false, NULL, err, err_len);
 }
 
 int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t *worker,
