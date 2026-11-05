@@ -216,9 +216,16 @@ durable distributed configuration protocol.
 - [ ] Connect recovery control to the distributed daemon manager and recover
   missing predecessor history from older catalogs; keep unsupported scopes blocked.
   Catalog revision numbers alone do not reconstruct backend cleanup proof.
-- [ ] Connect the local adapter/publisher and distributed old-owner provider to
-  live daemon startup/application. Restart cleanup and any lease-expiry/external
-  fencing path require explicit validated evidence; no default proof is permitted.
+- [x] Add the concrete recovery table adapter: prepare last-applied schema-2
+  definitions before listeners under pristine-state checks, establish an
+  unadmitted generation and global fences, and install only the controller's exact
+  verified cleanup/owner scope. Remap matching incarnation promises/policies,
+  normalize observed ownership after physical cleanup, reset replacements, and
+  preserve fences through generation-session cancellation and proof retries.
+- [ ] Connect recovery, the local adapter/publisher and distributed old-owner
+  provider to live daemon startup/application and generation/restart admission.
+  Restart cleanup and any lease-expiry/external fencing path require explicit
+  validated evidence; no default proof is permitted.
 - [ ] Define how read-only status/export reports configuration origin, committed
   revision, and pending operations, without treating file edits as commits.
   Legacy INI origin and prepared-member diagnostics are available through

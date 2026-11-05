@@ -760,9 +760,9 @@ The sequence is:
 `READY` means the latest learned catalog is installed, physically cleaned, and
 its completed receipt has retired; **recovery and backend/reactivation fences
 remain held**. The controller leaves `requires_recovery` set and never grants
-resource/configuration votes or starts backends. Projection publication, actual
-daemon-table restoration and ordinary generation/restart/lease admission remain
-separate integration work, as does missing-history transfer.
+resource/configuration votes or starts backends. Projection publication, calling
+the concrete table adapter from daemon startup, and ordinary generation/restart/
+lease admission remain separate integration work, as does missing-history transfer.
 
 Backend/hook failures retain their runner and masks for an explicit repair/retry.
 Failed or expired owner collections retain receipts and require a new collection
@@ -785,6 +785,66 @@ pending/applied revisions, injects cleanup/installation faults and session loss,
 checks fresh proof on retry, and exercises checkpoint wake-up, quorum-only nodes,
 failed fsync, writer/backend cancellation, offline members and unknown history.
 No wire layout, disk format, public command or release version changes.
+
+## Concrete recovery table installation
+
+`config_recovery_live.c` supplies the controller's mandatory definition-table
+installer. It remains an explicit adapter: the daemon's distributed-startup guard
+is still present until scheduler, projection and generation/restart admission are
+connected. It does not enable runtime mutation commands or reinterpret a partial
+revision-zero initialization as activated state.
+
+Call `lcs_config_recovery_live_prepare()` before listeners or ordinary work. It
+requires valid recovered authority and a nonzero applied schema-2 catalog, no
+peer/CLI/handshake sessions, no indexed operations or workers (including removed
+resource slots), and no existing ownership epochs or private lease promises.
+It decodes the exact last-applied definitions from durable state, never the INI
+resource table or a newer pending target. Static settings must still pass the
+ordinary resource-only candidate boundary.
+
+Preparation establishes global definition/remapping fences before cancellation,
+publishes the applied generation with resource admission disabled, initializes
+all resource/grant slots as unowned, and refreshes the ordinary restart waiting
+floor. It does not clean a backend or authorize voting. Occupied slots and saved
+promises cannot be silently erased to make preparation succeed. Preparation is a
+one-time operation; errors after fencing leave fences held.
+
+The install callback accepts only its controller's exact target and attempt in
+INSTALL, with a valid snapshot-bound cleanup runner and global recovery fences.
+Full members need the exact pending owner scope to be complete, or completed
+receipt retirement for an already-current startup table. Quorum-only nodes retain
+their metadata obligations without supplying backend-owner evidence. The adapter
+validates complete old/target definitions, static settings and every incarnation
+mapping before changing daemon tables. Pending workers/operations return pending;
+conflicting attempts, scope evidence or mappings fail closed.
+
+Generation cancellation runs against old indices before runtime tables are copied
+and remapped. A matching name, birth revision and backend retains the observed
+safety epoch, private grant (including an unexpired promise/deadline), failover
+count, home policy and disabled policy at its new sorted index. Physical cleanup
+means observed ownership is normalized to STOPPED/unowned with no active public
+lease, queued worker or activation attempt. A new incarnation/backend gets fresh
+unowned state and no old promise. Removed slots are cleared. Private promises are
+never serialized as resource gossip or converted into observed ownership.
+
+Closing generation sessions can invalidate a previously complete owner round.
+The controller therefore rechecks proof before FINISH and requires an explicit
+fresh collection before retrying installation/FINISH. The install callback is
+idempotent for the exact attempt, full table and generation digest; a retry does
+not close sessions again or reset preserved promises. It leaves recovery,
+definition/remapping fences, the application hold and generation admission in
+place. Ordinary state sync, restart waiting, quorum and final lease admission
+remain mandatory separate steps.
+
+The regression drives two recovery controllers with the concrete daemon-table
+adapter on one full member. It inserts a resource before existing sorted indices,
+changes another backend, preserves an unexpired private promise at the matching
+resource's new index after cancellation callbacks, resets new/replaced slots, and
+verifies fresh proof after generation-session invalidation. It also covers stale
+generation retries, wrong maps, workers in removed slots, occupied pre-listener
+state and a quorum-only concrete installation that performs no backend hooks.
+The transport cancellation is simulated in this harness; live daemon/lab startup
+is not claimed. No wire layout, public command or release version changes.
 
 ## Client outcomes
 
