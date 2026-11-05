@@ -67,6 +67,18 @@ configuration and treats the edited file as active immediately, so existing
 members reject it as a configuration mismatch. Reload and wait for the
 candidate to commit before restarting any daemon.
 
+## Hook execution
+
+The `pre_start`, `post_start`, `pre_stop` and `post_stop` programs must run in the
+foreground and wait for child commands to finish. Their process group is
+cancelled on timeout, cancellation or daemon exit. Stop hooks should be idempotent
+so cleanup can repeat safely. See the [hook environment](manual.md#vip-hooks).
+The explicit future dynamic startup path also supplies recovery context; it does
+not currently enable automatic distributed recovery. See
+[startup cleanup](dynamic-config-application.md#explicit-startup-backend-cleanup).
+
+## Full template
+
 ```ini
 # /etc/lcs/lcs.conf
 #

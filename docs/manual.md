@@ -127,6 +127,16 @@ Hook scripts are executed directly with `exec`, not through a shell. The followi
 
 `LCS_CLUSTER`, `LCS_NODE`, `LCS_RESOURCE`, `LCS_RESOURCE_TYPE`, `LCS_SYSTEMD_UNIT`, `LCS_VIP`, `LCS_ADDRESS`, `LCS_INTERFACE`, `LCS_EVENT`, `LCS_EPOCH`, `LCS_LEASE_ID`, `LCS_HOOK_TIMEOUT_MS`
 
+Hooks must be foreground programs that wait for their work to finish. A process
+group supervisor cancels the hook and its foreground child commands on timeout,
+cancellation or daemon exit. Hook workers do not keep daemon sockets/storage
+open. Stop hooks should be idempotent because cleanup may need to repeat them.
+
+The internal dynamic startup cleanup runner (not automatically enabled yet) also
+sets `LCS_RECOVERY=1` and `LCS_CONFIG_REVISION` to the last-applied revision.
+Recovery uses the saved old definition with epoch/lease ID zero, since ownership
+is unknown. See [startup cleanup](dynamic-config-application.md#explicit-startup-backend-cleanup).
+
 A hook must exit with status `0` to be considered successful. If `pre_start` fails or times out, activation is aborted and the lease is released. If `pre_stop` fails or times out, the failure is logged but the VIP is still removed. Hook execution runs asynchronously in the daemon event loop, so peer communication and lease renewal continue while a hook is running. If quorum is lost or the local lease expires during a hook, `lcsd` skips any remaining stop hooks and removes the VIP immediately.
 
 ---

@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added an explicit startup cleanup runner using recovered last-applied backend definitions and old hooks in dependency order, with bounded asynchronous workers, retry/cancellation and catalog-bound completion. Verified cleanup can recreate a pending stop scope under a new daemon instance; completed-history recovery and automatic startup/admission remain unfinished. Backend and supervised hook process groups now terminate with their daemon to prevent late orphan work.
+
 - Added exact all-full-member application confirmation before retiring old-owner stop receipts. A retained completion scope serves slow peers across subsequent transitions and is replaced only after every full member applies the next scope. Failed/expired collections retain receipts; restart/catch-up recovery and automatic application remain unfinished.
 
 - Connected explicit old-owner stop collection to wire-6 peer message 38 and local drain callbacks for one pinned transition. Added bounded pending responses, retry/deadline handling, session-change invalidation, cleanup-failure revocation and a final pre-install proof check. Receipt release/history, startup recovery and automatic application remain unfinished.

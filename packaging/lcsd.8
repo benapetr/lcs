@@ -200,7 +200,10 @@ node clears that block.
 .TP
 .BR pre_start ", " post_start ", " pre_stop ", " post_stop
 Optional absolute paths to hook programs executed around VIP activation and
-removal. Hooks receive environment variables such as
+removal. Hooks must run in the foreground and wait for their child commands.
+Their process group is cancelled on timeout, cancellation or daemon exit.
+Stop hooks should be idempotent so cleanup can be repeated safely.
+Hooks receive environment variables such as
 .BR LCS_CLUSTER ,
 .BR LCS_NODE ,
 .BR LCS_RESOURCE ,

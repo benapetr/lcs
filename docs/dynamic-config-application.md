@@ -1,7 +1,8 @@
 # Configuration application and recovery contract
 
 Status: contract with implemented local catalog and reconciliation sequencing;
-local backend callbacks are implemented, while distributed barriers, startup
+local backend callbacks, receipt retirement and explicit startup cleanup are
+implemented. Completed-history recovery, differing-generation catch-up, daemon
 integration and automatic activation remain unfinished. The running daemon
 still uses INI authority and supports wire 5–6. Wire-6 bootstrap metadata does
 not enable dynamic edits.
@@ -95,7 +96,7 @@ rules. The 64-KiB frame limit includes the prefix.
 
 These APIs are not invoked automatically yet. The daemon still refuses persisted
 distributed startup. The local runtime adapter below now implements backend/remap callbacks;
-receipt reconstruction across restarts, startup recovery and automatic activation
+completed receipt reconstruction, startup integration and automatic activation
 remain unfinished. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
@@ -235,7 +236,7 @@ Tests cover shared-writer exclusion, delayed publication, large pipe results,
 stale imports, failed file/directory sync, and cancellation. The internal
 reconciliation sequencer below now coordinates catalog writes and explicit
 backend barriers; the local adapter below now supplies backend/remap callbacks, while its
-receipt reconstruction across restarts and automatic daemon integration remain pending.
+completed receipt reconstruction and automatic daemon integration remain pending.
 
 ## Internal reconciliation sequencer
 
@@ -515,14 +516,74 @@ backend cleanup proof. A failure in a later transition does not erase a prior
 completed record. All instances and digests remain bound to the query/reply.
 
 These records are process-local proof. A restarted daemon cannot recreate them
-from an applied revision without backend startup recovery; it answers PENDING
-for an unknown scope. Receipt reconstruction across restarts and cleanup-scope
-reconciliation for differing old generations remain unfinished, and automatic
+from an applied revision alone; it answers PENDING for an unknown scope. The
+explicit startup cleanup runner below can now recreate a pending stop scope
+under a new instance after physical cleanup. Completed receipt reconstruction
+and differing-old-generation reconciliation remain unfinished, and automatic
 application remains disabled. Tests cover three sequential transitions with
 independently published durable catalog records, a delayed local application,
 lost completion replies, a fast member serving a slow peer while on its next
 transition, phase confusion, conflicting digests, session loss, timeout/retry,
 poisoned catalogs and refusal to infer proof after restart.
+
+## Explicit startup backend cleanup
+
+`config_startup.c` now supplies a concrete, explicitly invoked local cleanup
+runner. It requires recovered frozen authority, an intact activation barrier and
+a healthy applied/pending catalog. It does not enable the daemon's distributed
+startup path; normal startup still refuses persisted distributed history until
+the remaining recovery/admission manager is integrated.
+
+The runner copies and binds the complete last-applied snapshot and any pending
+value. It cleans **every** applied backend on this node because old ownership is
+unknown after a process restart. It does not use the edited INI definitions or
+replace old cleanup with the pending/newest target. Before FINISH, new definitions
+cannot start backends, so the retained applied snapshot covers possible active
+backends; after FINISH, the applied catalog already names the installed target.
+This relies on the application's existing no-activation-before-FINISH ordering.
+
+Cleanup runs dependents before dependencies, using each applied definition's old
+pre-stop hook, VIP deletion/systemd stop, and post-stop hook. It waits for each
+hook/backend worker to exit before proceeding. A pre-stop failure still attempts
+backend removal and post-stop, but prevents a successful recovery result. Failed
+backend removal, failed post-stop or timeout blocks for explicit repair/retry;
+it never turns into proof through elapsed time. Hooks must be idempotent,
+foreground commands because recovery can repeat them with ownership unknown.
+
+The runner uses the existing backend async workers; parent polling performs no
+filesystem I/O or blocking backend calls. Backend operations use at least the
+existing five-second bound (or the configured hook timeout if longer); hooks
+use the configured hook timeout. Cancellation retains worker identity and
+snapshot storage until reaping. A changed/poisoned catalog invalidates completion,
+cancels outstanding work and requires recovery rather than ordinary retry.
+Quorum-only nodes skip backend work. Empty applied tables need no backend work.
+
+Recovery hooks use the ordinary resource/type/address/unit/event environment,
+plus `LCS_RECOVERY=1` and `LCS_CONFIG_REVISION` naming the applied revision.
+`LCS_EPOCH` and `LCS_LEASE_ID` are zero: cleanup does not fabricate ownership or
+private voter promises. VIP, systemd and hook process groups are bound to their
+launching daemon. Hook programs execute under a group supervisor so the hook's
+foreground child commands are cancelled on daemon death as well as on timeout;
+workers do not retain daemon listeners or storage descriptors.
+
+Successful cleanup is checked against the same catalog and the new daemon
+instance. `lcs_config_startup_restore_pending()` can then recreate an exact
+pending stop scope and start a fresh instance-bound collection. It cannot reuse
+an old instance's replies, infer a completed receipt from an applied revision,
+or reconstruct discarded completion history. Completion leaves
+`requires_recovery` set and does not write journals/catalogs, install runtime
+ownership, admit a resource generation, or enable lease/configuration voting.
+The caller must keep activity fenced, perform ordinary lease/restart recovery,
+and integrate the authoritative runtime table before admission. Close the runner
+only after all its workers are reaped; its decoded snapshot is owned until close.
+
+Tests reopen durable history with conflicting INI definitions and a newer pending
+deletion, verify old backend/hook details and dependency order, and recreate only
+pending proof under a new instance. They cover service/VIP/hook failures, explicit
+repair/retry, timeouts, cancellation, poisoned catalogs, completion invalidation,
+quorum-only skips, refusal to invent completed history, and daemon death with
+backend/probe workers and hook child commands still running. These use real worker
+processes with dry-run backends; they do not constitute live daemon recovery.
 
 ## Client outcomes
 

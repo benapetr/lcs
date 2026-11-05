@@ -13,6 +13,7 @@
 #include "systemd_service.h"
 #include "util.h"
 #include "vip.h"
+#include "worker.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -354,6 +355,7 @@ static int resources_start_hook(int resource_idx, resource_hook_type_t type, uin
         return -1;
     }
 
+    pid_t parent = getpid();
     pid_t pid = fork();
     if (pid < 0)
     {
@@ -362,6 +364,7 @@ static int resources_start_hook(int resource_idx, resource_hook_type_t type, uin
     }
     if (pid == 0)
     {
+        lcs_worker_bind_parent(parent);
         (void)setpgid(0, 0);
         char epoch_buf[32];
         char lease_buf[32];
@@ -381,8 +384,8 @@ static int resources_start_hook(int resource_idx, resource_hook_type_t type, uin
         setenv("LCS_EPOCH", epoch_buf, 1);
         setenv("LCS_LEASE_ID", lease_buf, 1);
         setenv("LCS_HOOK_TIMEOUT_MS", timeout_buf, 1);
-        execl(path, path, (char *)NULL);
-        _exit(127);
+        (void)close_range(3, ~0u, 0);
+        lcs_worker_exec_hook(path);
     }
 
     (void)setpgid(pid, pid);

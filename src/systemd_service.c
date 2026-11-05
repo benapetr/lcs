@@ -4,6 +4,7 @@
 #include "systemd_service.h"
 
 #include "log.h"
+#include "worker.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -284,11 +285,13 @@ static int systemd_service_spawn_worker(const lcs_resource_config_t *res, system
 {
     if (!res || !pid)
         return -1;
+    pid_t parent = getpid();
     pid_t child = fork();
     if (child < 0)
         return -1;
     if (child == 0)
     {
+        lcs_worker_bind_parent(parent);
         (void)setpgid(0, 0);
         /* Do not keep daemon listeners or peer sockets alive if the parent
          * exits while this short-lived worker is waiting on systemd. */
