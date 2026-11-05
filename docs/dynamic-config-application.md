@@ -382,6 +382,54 @@ Tests cover shared-writer exclusion, delayed fsync, exact contents and permissio
 superseded completion, retry after directory fsync failure, symlink rejection,
 cancellation lifetime, and publication through the local application adapter.
 
+## Old-owner proof primitives
+
+`config_owner_barrier.c` provides an internal stop-proof collector and responder.
+It is not connected to peer dispatch, local drain callbacks or automatic
+application yet. There is no new peer frame type or protocol version in this
+step. The strict format-1 message codec is ready for a separate admitted
+configuration channel; a transport adapter must authenticate the configured
+source, require the appropriate wire capability, copy outgoing messages, and
+report every session/instance change before installation.
+
+A scope comes from the healthy durable applied/pending catalog: both complete
+value digests, old and target revisions, static membership, and the dependency
+closure that must drain. The digests bind resource identities, definitions and
+hooks; a matching resource name or revision alone is insufficient. Queries and
+replies add sender/target daemon instances and a strictly increasing round ID.
+The codec rejects truncated/extra bytes, invalid revisions, zero instances/IDs,
+invalid statuses and noncanonical digest fields.
+
+Every configured full member, including the requester, must explicitly confirm
+local stop. Unavailable full members remain required. Quorum-only members do not
+host backends and cannot contribute owner proof. A quorum decision, gossip,
+PENDING response, disconnection or elapsed timeout cannot substitute for stop.
+Timeout fails the round; explicit retries use a new ID and collect evidence again.
+A changed/lost full-member instance or contradictory current reply invalidates
+even a completed round. The caller must observe sessions and recheck the barrier
+immediately before installation.
+
+A local receipt may be sealed only after known restart cleanup and the complete
+local drain, including stop/post-stop hooks and outstanding workers, while old
+generation grants/reactivation remain fenced. The primitive does not discover or
+perform those backend actions. It pins one exact scope and instance; a query
+never creates a receipt or changes its scope. Missing receipts answer PENDING,
+conflicting scopes or known failure answer FAILED, and revocation is terminal.
+A receipt cannot be reused after a daemon restart or silently evicted to make
+room for another application. The eventual distributed provider must retain
+these guarantees until all consumers have finished, with an explicit release or
+history policy; that lifecycle is unfinished.
+
+These primitives deliberately block different old-generation scopes. Applying
+checkpoints across revision gaps needs additional cleanup-scope reconciliation;
+a higher revision alone does not prove that an intermediate backend was stopped.
+No expiry-only or external-fencing success path is implemented here. These
+limitations keep automatic application disabled. Tests cover durable scope
+extraction, two full members plus a quorum-only member, refusal of a mere
+majority among three full members, offline peers, stale/duplicate/contradictory
+replies, instance changes after completion, pinned/revoked receipts, fixed
+deadlines and malformed codecs.
+
 ## Client outcomes
 
 Every mutation carries an idempotent request ID and expected base revision/digest.

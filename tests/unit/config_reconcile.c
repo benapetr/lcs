@@ -2,6 +2,7 @@
 #include "config_reconcile.h"
 #include "peer.h"
 #include "config_live.h"
+#include "config_owner_barrier.h"
 #include "util.h"
 #include <assert.h>
 #include <errno.h>
@@ -757,6 +758,173 @@ static void test_live_managed_projection(bool quorum_only)
     lcs_config_value_clear(&first); cleanup();
 }
 
+
+static void owner_message_roundtrip(const lcs_config_owner_message_t *message)
+{
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE + 1]; size_t length = 0;
+    lcs_config_owner_message_t decoded = {0};
+    assert(!lcs_config_owner_encode(message, payload, sizeof(payload), &length));
+    assert(length == LCS_CONFIG_OWNER_MESSAGE_SIZE);
+    assert(!lcs_config_owner_decode(payload, length, &decoded));
+    assert(decoded.kind == message->kind && decoded.result == message->result && decoded.id == message->id);
+    assert(decoded.sender_instance == message->sender_instance && decoded.target_instance == message->target_instance);
+    assert(lcs_config_owner_scope_equal(&decoded.scope, &message->scope));
+    for (size_t i = 0; i < length; i++)
+        assert(lcs_config_owner_decode(payload, i, &decoded) < 0);
+    assert(lcs_config_owner_decode(payload, length + 1, &decoded) < 0);
+    assert(lcs_config_owner_encode(message, payload, length - 1, &length) < 0);
+    assert(lcs_config_owner_decode(NULL, LCS_CONFIG_OWNER_MESSAGE_SIZE, &decoded) < 0);
+}
+
+static void test_owner_barrier_proofs(void)
+{
+    setup(false);
+    lcs_config_owner_scope_t scope;
+    assert(lcs_config_owner_scope(&runtime.application, &scope, error, sizeof(error)) < 0);
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    assert(!lcs_config_application_finish(&runtime.application, first.digest, error, sizeof(error)));
+    lcs_config_value_t second = successor(&first, true); learn(&second);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    forbid_io = true;
+    assert(!lcs_config_owner_scope(&runtime.application, &scope, error, sizeof(error)));
+    assert(scope.old_revision == 1 && scope.target_revision == 2 && scope.drain == 1);
+    assert(!strcmp(scope.old_value, first.digest) && !strcmp(scope.target_value, second.digest));
+    runtime.application.poisoned = true;
+    assert(lcs_config_owner_scope(&runtime.application, &scope, error, sizeof(error)) < 0);
+    runtime.application.poisoned = false;
+
+    uint64_t instances[LCS_MAX_NODES] = {100, 101, 102};
+    lcs_config_owner_round_t rounds[2] = {0};
+    lcs_config_owner_receipt_t receipts[2] = {0};
+    for (size_t i = 0; i < 2; i++)
+    {
+        assert(!lcs_config_owner_begin(&rounds[i], runtime.base, &scope, i, instances, 1, 1000));
+        assert(rounds[i].required == 3 && !rounds[i].stopped);
+        assert(lcs_config_owner_begin(&rounds[i], runtime.base, &scope, i, instances, 2, 1001) < 0);
+    }
+    assert(!lcs_config_owner_local(&rounds[0], &receipts[0]) && !rounds[0].stopped);
+    lcs_config_owner_message_t query, reply;
+    assert(lcs_config_owner_query(&rounds[0], 2, 102, 1001, &query) == 1); /* Quorum only. */
+    assert(!lcs_config_owner_query(&rounds[0], 1, 101, 1001, &query));
+    owner_message_roundtrip(&query);
+    assert(!lcs_config_owner_answer(&receipts[1], 101, 100, &query, &reply));
+    assert(reply.result == LCS_CONFIG_OWNER_PENDING && !receipts[1].sealed);
+    assert(!lcs_config_owner_reply(&rounds[0], 1, 101, 1002, &reply));
+    assert(!rounds[0].stopped && !lcs_config_owner_poll(&rounds[0], 1003));
+    assert(!lcs_config_owner_receipt_seal(&receipts[1], &scope, 101));
+    assert(!lcs_config_owner_local(&rounds[1], &receipts[1]));
+    assert(!lcs_config_owner_answer(&receipts[1], 101, 100, &query, &reply));
+    assert(reply.result == LCS_CONFIG_OWNER_STOPPED);
+    owner_message_roundtrip(&reply);
+    lcs_config_owner_message_t stale = reply;
+    stale.id++;
+    assert(lcs_config_owner_reply(&rounds[0], 1, 101, 1004, &stale) == 1);
+    stale = reply; stale.target_instance++;
+    assert(lcs_config_owner_reply(&rounds[0], 1, 101, 1004, &stale) == 1);
+    assert(lcs_config_owner_reply(&rounds[0], 2, 101, 1004, &reply) == 1);
+    assert(lcs_config_owner_reply(&rounds[0], 1, 999, 1004, &reply) == 1);
+    assert(!lcs_config_owner_reply(&rounds[0], 1, 101, 1004, &reply));
+    assert(!lcs_config_owner_reply(&rounds[0], 1, 101, 1004, &reply)); /* Idempotent. */
+    assert(rounds[0].stopped == 2 && !lcs_config_owner_poll(&rounds[0], 1005));
+    assert(!lcs_config_owner_receipt_seal(&receipts[0], &scope, 100));
+    assert(!lcs_config_owner_local(&rounds[0], &receipts[0]));
+    assert(lcs_config_owner_poll(&rounds[0], 1006) == 1);
+    assert(lcs_config_owner_poll(&rounds[0], 99999) == 1); /* Completion, not expiry proof. */
+    assert(!lcs_config_owner_query(&rounds[1], 0, 100, 1006, &query));
+    assert(!lcs_config_owner_answer(&receipts[0], 100, 101, &query, &reply));
+    assert(!lcs_config_owner_reply(&rounds[1], 0, 100, 1007, &reply));
+    assert(lcs_config_owner_poll(&rounds[1], 1008) == 1);
+    assert(lcs_config_owner_observe(&rounds[0], 1, 0) < 0); /* Even a sealed round is invalidated. */
+    assert(lcs_config_owner_poll(&rounds[0], 1009) < 0);
+    assert(lcs_config_owner_begin(&rounds[0], runtime.base, &scope, 0, instances, 1, 1010) < 0);
+    assert(!lcs_config_owner_begin(&rounds[0], runtime.base, &scope, 0, instances, 2, 1010));
+    assert(!lcs_config_owner_query(&rounds[0], 1, 101, 1011, &query));
+    assert(!lcs_config_owner_answer(&receipts[1], 101, 100, &query, &reply));
+    assert(lcs_config_owner_reply(&rounds[0], 1, 102, 1012, &reply) == 1);
+    assert(lcs_config_owner_observe(&rounds[0], 1, 102) < 0); /* Restart cannot inherit proof. */
+
+    /* Contradictory current evidence blocks; neither a timeout nor majority repairs it. */
+    for (unsigned mode = 0; mode < 4; mode++)
+    {
+        assert(!lcs_config_owner_begin(&rounds[0], runtime.base, &scope, 0, instances, 3 + mode, 2000));
+        assert(!lcs_config_owner_local(&rounds[0], &receipts[0]));
+        assert(!lcs_config_owner_query(&rounds[0], 1, 101, 2001, &query));
+        assert(!lcs_config_owner_answer(&receipts[1], 101, 100, &query, &reply));
+        if (!mode) reply.scope.target_value[0] = reply.scope.target_value[0] == 'a' ? 'b' : 'a';
+        if (mode == 1) reply.scope.drain ^= 1;
+        if (mode == 2) reply.result = LCS_CONFIG_OWNER_FAILED;
+        if (mode == 3)
+        {
+            assert(!lcs_config_owner_reply(&rounds[0], 1, 101, 2002, &reply));
+            assert(lcs_config_owner_poll(&rounds[0], 2003) == 1);
+            reply.result = LCS_CONFIG_OWNER_PENDING;
+        }
+        assert(lcs_config_owner_reply(&rounds[0], 1, 101, 2004, &reply) < 0);
+        assert(lcs_config_owner_poll(&rounds[0], 2005) < 0);
+    }
+    lcs_config_owner_scope_t different = scope; different.drain ^= 1;
+    assert(lcs_config_owner_receipt_seal(&receipts[0], &different, 100) < 0);
+    assert(lcs_config_owner_receipt_seal(&receipts[0], &scope, 999) < 0);
+    query.scope = different;
+    assert(!lcs_config_owner_answer(&receipts[1], 101, 100, &query, &reply));
+    assert(reply.result == LCS_CONFIG_OWNER_FAILED);
+    query.scope = scope;
+    assert(lcs_config_owner_answer(&receipts[1], 102, 100, &query, &reply) < 0);
+    lcs_config_owner_receipt_revoke(&receipts[1]);
+    assert(lcs_config_owner_receipt_seal(&receipts[1], &scope, 101) < 0);
+    assert(!lcs_config_owner_answer(&receipts[1], 101, 100, &query, &reply));
+    assert(reply.result == LCS_CONFIG_OWNER_FAILED);
+    owner_message_roundtrip(&reply);
+
+    /* Strict codecs reject malformed fields/padding rather than normalizing them. */
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE + 1], original[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(&query, original, sizeof(original), &length));
+    const size_t bad_offsets[] = {0, 2, 3, 48, 48 + 64, 48 + 65, 48 + 130, 242};
+    for (size_t i = 0; i < sizeof(bad_offsets) / sizeof(bad_offsets[0]); i++)
+    {
+        memcpy(payload, original, length); payload[bad_offsets[i]] = 255;
+        assert(lcs_config_owner_decode(payload, length, &reply) < 0);
+    }
+    memcpy(payload, original, length); memset(payload + 4, 0, 8);
+    assert(lcs_config_owner_decode(payload, length, &reply) < 0);
+    memcpy(payload, original, length); payload[49] = 0;
+    assert(lcs_config_owner_decode(payload, length, &reply) < 0);
+
+    lcs_config_t *three_full = malloc(sizeof(*three_full)); assert(three_full); *three_full = *runtime.base;
+    three_full->nodes[2].role = LCS_NODE_FULL;
+    lcs_config_owner_scope_t three_scope = scope;
+    assert(!lcs_config_agreement_membership(three_full, three_scope.membership));
+    lcs_config_owner_round_t round = {0};
+    assert(lcs_config_owner_begin(&round, three_full, &scope, 0, instances, 1, 3000) < 0);
+    instances[2] = 0;
+    assert(!lcs_config_owner_begin(&round, three_full, &three_scope, 0, instances, 1, 3000));
+    assert(round.required == 7);
+    lcs_config_owner_receipt_t a = {0}, b = {0};
+    assert(!lcs_config_owner_receipt_seal(&a, &three_scope, 100));
+    assert(!lcs_config_owner_receipt_seal(&b, &three_scope, 101));
+    assert(!lcs_config_owner_local(&round, &a));
+    assert(!lcs_config_owner_query(&round, 1, 101, 3001, &query));
+    assert(!lcs_config_owner_answer(&b, 101, 100, &query, &reply));
+    assert(!lcs_config_owner_reply(&round, 1, 101, 3002, &reply));
+    assert(round.stopped == 3 && !lcs_config_owner_poll(&round, 3003)); /* Majority is insufficient. */
+    assert(lcs_config_owner_query(&round, 2, 0, 3004, &query) == 1);
+    assert(!lcs_config_owner_poll(&round, 12999));
+    assert(lcs_config_owner_query(&round, 1, 101, 13000, &query) < 0);
+    assert(lcs_config_owner_poll(&round, 13000) < 0);
+    assert(!lcs_config_owner_begin(&round, three_full, &three_scope, 0, instances, 2, 13001));
+    assert(!round.stopped && round.deadline_ms == 23001);
+    assert(!lcs_config_owner_query(&round, 2, 102, 13002, &query));
+    assert(round.expected_instance[2] == 102);
+    assert(lcs_config_owner_query(&round, 2, 103, 13003, &query) < 0);
+    assert(lcs_config_owner_begin(&round, three_full, &three_scope, 0, instances, 3, UINT64_MAX) < 0);
+    free(three_full);
+    round = (lcs_config_owner_round_t){0};
+    instances[2] = 102;
+    assert(lcs_config_owner_begin(&round, runtime.base, &scope, 2, instances, 1, 0) < 0);
+    lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
+}
+
 int main(void)
 {
     parent = getpid();
@@ -772,6 +940,7 @@ int main(void)
     test_projection_cancellation();
     test_live_managed_projection(false);
     test_live_managed_projection(true);
+    test_owner_barrier_proofs();
     puts("durable configuration reconciliation ordering and safety barriers unit tests passed");
     return 0;
 }

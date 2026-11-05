@@ -174,9 +174,16 @@ durable distributed configuration protocol.
 - [x] Publish the latest learned schema-2 snapshot to `resources.json` through the
   shared storage worker, with revision-bound completion, retryable projection file
   errors, and a concrete publisher for the explicit local adapter.
-- [ ] Implement the distributed generation-bound old-owner stop/expiry/fencing
-  provider; connect it and the local adapter/publisher to live daemon startup and
-  application. No default proof is permitted.
+- [x] Add internal old-owner proof primitives: exact catalog transition/drain
+  scopes, pinned local stop receipts, strict message codecs, and instance-bound
+  collection from every full member. No majority, disconnect or timer implies
+  stop; failed cleanup, contradictory replies and session changes invalidate proof.
+- [ ] Connect the old-owner proof collector to admitted peer transport and local
+  drain callbacks. Implement receipt retention/release across applications and
+  recovery/catch-up with differing old generations; keep unsupported scopes blocked.
+- [ ] Connect the local adapter/publisher and distributed old-owner provider to
+  live daemon startup/application. Restart cleanup and any lease-expiry/external
+  fencing path require explicit validated evidence; no default proof is permitted.
 - [ ] Define how read-only status/export reports configuration origin, committed
   revision, and pending operations, without treating file edits as commits.
   Legacy INI origin and prepared-member diagnostics are available through
