@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added an explicit nonblocking startup recovery controller using the shared catalog writer, asynchronous cleanup, exact all-full-member receipt barriers, fresh proof handoffs and a mandatory fenced table-installation callback. It handles differing pending revisions, checkpoint wake-up, repair retries and cancellation while keeping votes/leases fenced even when caught up. Automatic daemon startup/admission and missing-history transfer remain unfinished.
+
 - Added a single-use startup-cleanup handoff after durable catalog progress, preserving owner request IDs and peer-instance observations while rebuilding exact scopes and discarding stale rounds/replies. Added a two-member recovery regression with separate stores and differing pending/applied targets; missing-history transfer and automatic manager/admission remain gated.
 
 - Added an explicit recovery provider for differing old-generation owner scopes backed by physically cleaned retained snapshots. Exact digest/drain checks and send-time revalidation prevent fabricated or stale cleanup replies; APPLIED requires the exact current durable target. Missing-history recovery, differing-target coordination and automatic daemon admission remain gated.

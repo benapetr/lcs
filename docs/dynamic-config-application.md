@@ -720,6 +720,72 @@ The future distributed manager must drive those existing serialized operations
 and this handoff in order. Unknown predecessor tables and incompatible target
 histories remain blocked rather than inferred from revision numbers.
 
+## Explicit recovery controller
+
+`config_recovery.c` drives the recovery sequence once an existing durable barrier
+has been recovered. It is an internal, explicitly started controller; the daemon
+still refuses distributed startup until its concrete installation, generation and
+lease-admission paths are connected. It does not activate dynamic commands.
+
+Start it before ordinary backend/hook/probe/handoff workers are allowed to run,
+or after cancelling/draining them under the existing global fences.
+The controller takes the shared coordinator's application hold before starting
+work and retains it even in `READY`. Every process call advances the storage
+worker and owner exchange, using caller-supplied admitted peer instances and the
+existing configured wire-6 transport. Cleanup and storage use their asynchronous
+workers; no parent-side fsync, backend stop or hook wait is introduced.
+
+The sequence is:
+
+1. Preserve an existing durable pending target even when the learned checkpoint
+   is newer. If there is no pending target and application is behind, persist
+   BEGIN through the shared writer before cleanup captures its exact catalog.
+2. Clean all applied and saved historical definitions, including hooks, then bind
+   the first owner provider or hand off from the previous cleanup runner. Missing
+   or unanswerable scope history fails closed.
+3. Re-collect exact completed-scope application confirmation from every full
+   member before starting the pending stop scope. Quorum-only nodes skip physical
+   cleanup and owner evidence, but retain metadata/application obligations.
+4. Obtain exact pending stop proof, then invoke the mandatory nonblocking table
+   installation callback with an immutable target, plan and attempt ID. The
+   callback restores/remaps definitions and incarnation-aware private promises
+   while keeping backends, leases and votes fenced; it cannot admit resources.
+   Already-current startup also requires this callback to restore its tables.
+5. Recheck owner proof before installation and again before starting FINISH.
+   Persist the exact target through the shared writer, then run fresh cleanup and
+   renew proof with preserved request IDs. Finish the saved pending revision before
+   staging the latest learned value. A newer checkpoint can wake a `READY`
+   controller without releasing its hold or enabling votes.
+
+`READY` means the latest learned catalog is installed, physically cleaned, and
+its completed receipt has retired; **recovery and backend/reactivation fences
+remain held**. The controller leaves `requires_recovery` set and never grants
+resource/configuration votes or starts backends. Projection publication, actual
+daemon-table restoration and ordinary generation/restart/lease admission remain
+separate integration work, as does missing-history transfer.
+
+Backend/hook failures retain their runner and masks for an explicit repair/retry.
+Failed or expired owner collections retain receipts and require a new collection
+attempt. Installation retries preserve their immutable target; if proof was lost,
+they wait for a fresh complete collection before invoking the callback again.
+Neither an absent full member nor elapsed time supplies proof. Uncertain writes,
+missing history, lost authority, or an unexpected catalog change are terminal:
+stop owner replies, retain fences and require disk recovery. Callback and cleanup
+failure details remain in the controller diagnostic.
+
+Shutdown stops the owner provider, cancels both cleanup runners and the shared
+writer, then continues polling until all child processes are reaped. Snapshots,
+the writer lock and application hold cannot be disposed of early. Closing after
+shutdown releases only that controller hold on an already-closing coordinator;
+it never performs admission.
+
+The regression harness uses two independent durable stores and actual shared
+writer children with parent fsync forbidden. It automatically recovers differing
+pending/applied revisions, injects cleanup/installation faults and session loss,
+checks fresh proof on retry, and exercises checkpoint wake-up, quorum-only nodes,
+failed fsync, writer/backend cancellation, offline members and unknown history.
+No wire layout, disk format, public command or release version changes.
+
 ## Client outcomes
 
 Every mutation carries an idempotent request ID and expected base revision/digest.

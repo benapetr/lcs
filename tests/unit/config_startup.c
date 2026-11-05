@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_startup.h"
+#include "config_recovery.h"
 #include "vip.h"
 #include "systemd_service.h"
 #include "util.h"
@@ -19,9 +20,14 @@ static lcs_config_store_t store;
 static lcs_config_runtime_t runtime;
 static char directory[96], hook[128], trace[128], error[256];
 static pid_t parent;
-static bool forbid_io;
+static bool forbid_io, fail_writer_sync;
 int __real_fsync(int fd);
-int __wrap_fsync(int fd) { assert(!forbid_io || getpid() != parent); return __real_fsync(fd); }
+int __wrap_fsync(int fd)
+{
+    assert(!forbid_io || getpid() != parent);
+    if (fail_writer_sync && getpid() != parent) { errno = EIO; return -1; }
+    return __real_fsync(fd);
+}
 
 static lcs_config_value_t successor(unsigned action)
 {
@@ -752,6 +758,276 @@ static void test_differing_target_recovery(void)
     cleanup(startup[0]); free(startup[0]);
 }
 
+typedef struct
+{
+    lcs_config_recovery_t *manager;
+    uint64_t revisions[16];
+    size_t count;
+    unsigned deferred;
+    bool fail;
+} recovery_install_t;
+
+static int recovery_install(void *context, const lcs_config_reconcile_view_t *view, char *err, size_t err_len)
+{
+    recovery_install_t *installation = context;
+    lcs_config_recovery_t *manager = installation->manager;
+    assert(view && view->value && view->value->document && view->attempt && view->target && view->old_config && view->plan);
+    assert(manager->coordinator->application_owner == manager && !lcs_config_coordinator_can_vote(manager->coordinator));
+    assert(manager->coordinator->runtime->requires_recovery);
+    assert(lcs_config_startup_verified(manager->cleanup, manager->coordinator->runtime, manager->network->instance));
+    if (!manager->quorum_only && !manager->current_install)
+        assert(lcs_config_owner_poll(&manager->network->round, lcs_now_ms()) == 1);
+    if (installation->fail) { snprintf(err, err_len, "injected table installation failure"); return -1; }
+    if (installation->deferred) { installation->deferred--; return 0; }
+    assert(installation->count < 16);
+    installation->revisions[installation->count++] = view->value->revision;
+    return 1;
+}
+
+static void manager_tick(recovery_bus_t *bus, lcs_config_recovery_t managers[2])
+{
+    uint64_t instances[LCS_MAX_NODES] = {900, 901, 0};
+    bus->now = lcs_now_ms();
+    for (size_t i = 0; i < 2; i++)
+    {
+        bus->from = i;
+        int result = lcs_config_recovery_process(&managers[i], instances, bus->now, recovery_send, bus);
+        assert(result >= 0 || managers[i].phase == LCS_CONFIG_RECOVERY_BLOCKED);
+        assert(!lcs_config_coordinator_can_vote(managers[i].coordinator));
+    }
+    for (size_t i = 0; i < bus->count; i++)
+        assert(!lcs_config_owner_network_receive(&bus->nodes[bus->messages[i].to], bus->messages[i].from,
+            instances[bus->messages[i].from], bus->messages[i].payload, bus->messages[i].length, bus->now));
+    bus->count = 0;
+}
+
+static void stop_manager(lcs_config_recovery_t *manager)
+{
+    assert(lcs_config_recovery_close(manager) < 0);
+    lcs_config_recovery_stop(manager);
+    for (unsigned i = 0; manager->phase != LCS_CONFIG_RECOVERY_STOPPED && i < 5000; i++)
+    { assert(!lcs_config_recovery_process(manager, NULL, lcs_now_ms(), NULL, NULL)); usleep(1000); }
+    assert(manager->phase == LCS_CONFIG_RECOVERY_STOPPED);
+    assert(!lcs_config_recovery_close(manager));
+}
+
+static void test_recovery_manager_skew_and_repairs(void)
+{
+    setup(true, false);
+    lcs_config_runtime_t peer = {0}; lcs_config_store_t peer_store;
+    char path[] = "/tmp/lcs-config-recovery-peer.XXXXXX"; recover_peer(&peer, &peer_store, path);
+    recovery_bus_t bus = {0};
+    lcs_config_coordinator_t coordinators[2]; lcs_config_readiness_t readiness[2] = {0};
+    lcs_config_recovery_t managers[2] = {{0}};
+    recovery_install_t installed[2] = {{.manager = &managers[0], .deferred = 2}, {.manager = &managers[1], .deferred = 2}};
+    lcs_config_runtime_t *runtimes[] = {&runtime, &peer};
+    for (size_t i = 0; i < 2; i++)
+    {
+        lcs_config_coordinator_init(&coordinators[i], runtimes[i], &readiness[i]);
+        assert(!lcs_config_coordinator_recover(&coordinators[i]));
+        assert(!lcs_config_owner_network_init(&bus.nodes[i], runtimes[i]->base, &runtimes[i]->application, i, 900 + i));
+        assert(lcs_config_recovery_start(&managers[i], &coordinators[i], &bus.nodes[i], NULL, &installed[i]) < 0);
+        assert(!lcs_config_recovery_start(&managers[i], &coordinators[i], &bus.nodes[i], recovery_install, &installed[i]));
+        assert(lcs_config_recovery_start(&managers[i], &coordinators[i], &bus.nodes[i], recovery_install, &installed[i]) < 0);
+    }
+    setenv("LCS_VIP_FAIL_DEL", "1", 1);
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        manager_tick(&bus, managers);
+        if (managers[0].phase == LCS_CONFIG_RECOVERY_BLOCKED && managers[1].phase == LCS_CONFIG_RECOVERY_BLOCKED) break;
+        assert(i < 4999); usleep(1000);
+    }
+    for (size_t i = 0; i < 2; i++)
+    {
+        assert(managers[i].blocked_phase == LCS_CONFIG_RECOVERY_CLEANUP && !installed[i].count);
+        assert(!coordinators[i].completed_applications && runtimes[i]->requires_recovery);
+    }
+    unsetenv("LCS_VIP_FAIL_DEL");
+    for (size_t i = 0; i < 2; i++) assert(!lcs_config_recovery_retry(&managers[i], lcs_now_ms()));
+    bool failed_install = false, interrupted_install = false;
+    for (unsigned n = 0; n < 10000; n++)
+    {
+        if (!failed_install && managers[1].phase == LCS_CONFIG_RECOVERY_INSTALL) installed[1].fail = true;
+        if (failed_install && !interrupted_install && managers[1].phase == LCS_CONFIG_RECOVERY_INSTALL)
+        {
+            lcs_config_owner_network_disconnect(&bus.nodes[1], 0);
+            interrupted_install = true;
+        }
+        manager_tick(&bus, managers);
+        for (size_t i = 0; i < 2; i++)
+            if (managers[i].phase == LCS_CONFIG_RECOVERY_BLOCKED)
+            {
+                if (installed[i].fail)
+                {
+                    assert(managers[i].blocked_phase == LCS_CONFIG_RECOVERY_INSTALL);
+                    installed[i].fail = false; failed_install = true;
+                }
+                /* Retry only after physical evidence is repaired. This does not
+                 * waive failed collections or count elapsed time as cleanup. */
+                if (managers[1 - i].cleanup && lcs_config_startup_verified(managers[1 - i].cleanup,
+                    runtimes[1 - i], bus.nodes[1 - i].instance))
+                    (void)lcs_config_recovery_retry(&managers[i], bus.now);
+            }
+        if (managers[0].phase == LCS_CONFIG_RECOVERY_READY && managers[1].phase == LCS_CONFIG_RECOVERY_READY) break;
+        if (n == 9999)
+            fprintf(stderr, "manager states %u/%u errors %s / %s\n", managers[0].phase, managers[1].phase,
+                managers[0].error, managers[1].error);
+        assert(n < 9999); usleep(1000);
+    }
+    assert(failed_install && interrupted_install && installed[0].count == 1 && installed[0].revisions[0] == 3);
+    assert(installed[1].count == 2 && installed[1].revisions[0] == 2 && installed[1].revisions[1] == 3);
+    for (size_t i = 0; i < 2; i++)
+    {
+        assert(runtimes[i]->application.applied.revision == 3 && !runtimes[i]->application.pending.document);
+        assert(runtimes[i]->requires_recovery && coordinators[i].application_owner == &managers[i]);
+        assert(bus.nodes[i].retired && bus.nodes[i].retired_scope.target_revision == 3);
+        stop_manager(&managers[i]);
+    }
+    lcs_config_runtime_close(&peer); forbid_io = false;
+    const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json", "lock"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) assert(!unlinkat(peer_store.directory_fd, names[i], 0));
+    lcs_config_store_close(&peer_store); assert(!rmdir(path));
+    lcs_config_startup_t empty = {0}; cleanup(&empty);
+}
+
+static int no_owner_send(void *context, size_t node, const void *payload, size_t length)
+{
+    (void)context; (void)node; (void)payload; (void)length;
+    assert(!"quorum-only recovery cannot send owner evidence"); return -1;
+}
+
+static void test_quorum_recovery_manager_and_cancellation(void)
+{
+    setup(false, true);
+    lcs_config_coordinator_t coordinator; lcs_config_readiness_t readiness = {0};
+    lcs_config_coordinator_init(&coordinator, &runtime, &readiness);
+    assert(!lcs_config_coordinator_recover(&coordinator));
+    lcs_config_owner_network_t network;
+    assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, 2, 902));
+    lcs_config_recovery_t manager = {0}; recovery_install_t installed = {.manager = &manager};
+    assert(!lcs_config_recovery_start(&manager, &coordinator, &network, recovery_install, &installed));
+    uint64_t instances[LCS_MAX_NODES] = {0, 0, 902};
+    for (unsigned i = 0; manager.phase != LCS_CONFIG_RECOVERY_READY && i < 5000; i++)
+    { assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) >= 0); usleep(1000); }
+    assert(manager.phase == LCS_CONFIG_RECOVERY_READY && installed.count == 1 && installed.revisions[0] == 2);
+    assert(access(trace, F_OK) < 0 && errno == ENOENT && !network.receipt.sealed && !lcs_config_coordinator_can_vote(&coordinator));
+    /* A learned checkpoint wakes a READY controller without granting a vote. */
+    lcs_config_t *cfg = malloc(sizeof(*cfg)); assert(cfg); uint64_t revision;
+    assert(!lcs_resource_config_decode(runtime.application.applied.document, runtime.application.applied.length,
+        runtime.base, cfg, &revision, error, sizeof(error)));
+    char *document; size_t length;
+    assert(!lcs_resource_config_encode(cfg, 4, &document, &length, error, sizeof(error)));
+    lcs_config_value_t value = {0};
+    assert(!lcs_config_value_init(&value, runtime.base, "manager-checkpoint-4", document, length, error, sizeof(error)));
+    lcs_config_agreement_job_t job = {.action = LCS_CONFIG_CHECKPOINT, .ballot = 128, .voters = 5, .value = &value};
+    strcpy(job.parent_digest, runtime.agreement.committed.digest);
+    assert(!lcs_config_coordinator_start_checkpoint(&coordinator, &job, error, sizeof(error)));
+    free(document); document = NULL;
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) >= 0);
+        if (manager.phase == LCS_CONFIG_RECOVERY_READY && runtime.application.applied.revision == 4) break;
+        assert(i < 4999); usleep(1000);
+    }
+    assert(installed.count == 2 && installed.revisions[1] == 4 && runtime.requires_recovery);
+    assert(access(trace, F_OK) < 0 && errno == ENOENT && !lcs_config_coordinator_can_vote(&coordinator));
+    /* Force another pending write, then cancel while the forked writer exists. */
+    assert(!lcs_resource_config_encode(cfg, 5, &document, &length, error, sizeof(error)));
+    lcs_config_value_clear(&value);
+    assert(!lcs_config_value_init(&value, runtime.base, "manager-checkpoint-5", document, length, error, sizeof(error)));
+    job.ballot = 160; job.value = &value; strcpy(job.parent_digest, runtime.agreement.committed.digest);
+    assert(!lcs_config_coordinator_start_checkpoint(&coordinator, &job, error, sizeof(error)));
+    free(document); document = NULL;
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) >= 0);
+        if (manager.phase == LCS_CONFIG_RECOVERY_BEGIN && coordinator.storage.pid > 0) break;
+        assert(i < 4999); usleep(1000);
+    }
+    assert(coordinator.storage.pid > 0 && runtime.application.applied.revision == 4);
+    stop_manager(&manager);
+    assert(runtime.requires_recovery && coordinator.closing && !coordinator.application_owner);
+    free(document); free(cfg); lcs_config_value_clear(&value);
+    lcs_config_startup_t empty = {0}; cleanup(&empty);
+}
+
+static void test_recovery_manager_storage_failure_and_worker_stop(void)
+{
+    for (unsigned fault = 0; fault < 2; fault++)
+    {
+        setup(true, fault == 0);
+        lcs_config_coordinator_t coordinator; lcs_config_readiness_t readiness = {0};
+        lcs_config_coordinator_init(&coordinator, &runtime, &readiness);
+        assert(!lcs_config_coordinator_recover(&coordinator));
+        lcs_config_owner_network_t network;
+        size_t self = fault ? 0 : 2; uint64_t instance = 900 + self;
+        assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, self, instance));
+        lcs_config_recovery_t manager = {0}; recovery_install_t installed = {.manager = &manager};
+        assert(!lcs_config_recovery_start(&manager, &coordinator, &network, recovery_install, &installed));
+        uint64_t instances[LCS_MAX_NODES] = {0}; instances[self] = instance;
+        if (fault) setenv("LCS_VIP_OP_DELAY_MS", "60000", 1);
+        else fail_writer_sync = true;
+        for (unsigned i = 0; i < 5000; i++)
+        {
+            int result = lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL);
+            if (!fault && manager.phase == LCS_CONFIG_RECOVERY_FAILED) break;
+            if (fault && manager.next_cleanup && manager.next_cleanup->phase == LCS_CONFIG_STARTUP_BACKEND && manager.next_cleanup->pid > 0) break;
+            assert(result >= 0 && i < 4999); usleep(1000);
+        }
+        if (!fault)
+        {
+            assert(coordinator.failed && manager.phase == LCS_CONFIG_RECOVERY_FAILED && network.closing);
+            assert(lcs_config_recovery_retry(&manager, lcs_now_ms()) < 0 && runtime.requires_recovery);
+        }
+        else assert(manager.next_cleanup->pid > 0 && !installed.count && !coordinator.completed_applications);
+        stop_manager(&manager);
+        fail_writer_sync = false; unsetenv("LCS_VIP_OP_DELAY_MS");
+        lcs_config_startup_t empty = {0}; cleanup(&empty);
+    }
+}
+
+static void test_recovery_manager_missing_evidence(void)
+{
+    for (unsigned missing = 0; missing < 2; missing++)
+    {
+        setup(true, false);
+        lcs_config_value_t saved[2] = {0};
+        if (missing)
+        {
+            saved[0] = runtime.application.history[0]; saved[1] = runtime.application.history[1];
+            memset(runtime.application.history, 0, sizeof(runtime.application.history));
+        }
+        lcs_config_coordinator_t coordinator; lcs_config_readiness_t readiness = {0};
+        lcs_config_coordinator_init(&coordinator, &runtime, &readiness);
+        assert(!lcs_config_coordinator_recover(&coordinator));
+        lcs_config_owner_network_t network;
+        assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, 0, 900));
+        lcs_config_recovery_t manager = {0}; recovery_install_t installed = {.manager = &manager};
+        assert(!lcs_config_recovery_start(&manager, &coordinator, &network, recovery_install, &installed));
+        uint64_t instances[LCS_MAX_NODES] = {900, 0, 0};
+        for (unsigned i = 0; i < 5000; i++)
+        {
+            int result = lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL);
+            if (missing && manager.phase == LCS_CONFIG_RECOVERY_FAILED) break;
+            if (!missing && network.release.active) break;
+            assert(result >= 0 && i < 4999); usleep(1000);
+        }
+        if (!missing)
+        {
+            assert(lcs_config_recovery_process(&manager, instances, network.release.deadline_ms, no_owner_send, NULL) < 0);
+            assert(manager.phase == LCS_CONFIG_RECOVERY_BLOCKED && manager.blocked_phase == LCS_CONFIG_RECOVERY_RETIRE);
+            assert(network.receipt.sealed && network.receipt.scope.target_revision == 2 && network.retired_scope.target_revision == 1);
+        }
+        else assert(manager.phase == LCS_CONFIG_RECOVERY_FAILED && network.closing);
+        assert(!installed.count && !coordinator.completed_applications && runtime.requires_recovery);
+        assert(runtime.application.applied.revision == 2 && runtime.application.pending.revision == 3);
+        assert(!lcs_config_coordinator_can_vote(&coordinator)); stop_manager(&manager);
+        if (missing)
+        { runtime.application.history[0] = saved[0]; runtime.application.history[1] = saved[1]; }
+        lcs_config_startup_t empty = {0}; cleanup(&empty);
+    }
+}
+
 int main(void)
 {
     parent = getpid();
@@ -759,6 +1035,8 @@ int main(void)
     test_quorum_only_and_completed_history(); test_workers_die_with_parent();
     test_completed_history_cleanup_and_legacy(); test_differing_history_scopes();
     test_differing_target_recovery();
+    test_recovery_manager_skew_and_repairs(); test_quorum_recovery_manager_and_cancellation();
+    test_recovery_manager_storage_failure_and_worker_stop(); test_recovery_manager_missing_evidence();
     puts("authoritative startup cleanup, pending receipt recovery and worker lifetime unit tests passed");
     return 0;
 }

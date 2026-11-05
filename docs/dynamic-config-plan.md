@@ -207,7 +207,13 @@ durable distributed configuration protocol.
   scopes. Exercise two full members with differing pending/applied targets through
   pending completion and fresh all-member retirement, without skipping the saved
   pending revision or admitting leases.
-- [ ] Automate differing-target recovery in the distributed manager and recover
+- [x] Add an explicitly started nonblocking recovery controller that sequences
+  cleanup, receipt retirement, shared-worker BEGIN/FINISH, exact pending owner
+  collection, mandatory fenced table installation, and fresh cleanup handoffs.
+  Resume differing pending/applied targets and new checkpoints while retaining the
+  application/voting hold through caught-up readiness. Exercise repairs, session
+  loss, uncertain storage, cancellation, quorum-only operation and missing evidence.
+- [ ] Connect recovery control to the distributed daemon manager and recover
   missing predecessor history from older catalogs; keep unsupported scopes blocked.
   Catalog revision numbers alone do not reconstruct backend cleanup proof.
 - [ ] Connect the local adapter/publisher and distributed old-owner provider to
