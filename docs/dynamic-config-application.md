@@ -671,11 +671,54 @@ instance, membership, attempt and deadline checks still apply on both ends.
 Quorum-only nodes cannot register this provider or supply owner evidence.
 Nonzero format-1 catalogs without predecessor history cannot register either.
 
-This serves bounded known-history queries; it does not coordinate transitions
-whose target generations differ, fetch absent predecessor tables, bypass the
-previous receipt's all-member retirement, admit lease traffic, or enable automatic
-daemon startup. Those manager/recovery steps remain unchecked in the plan. There
-is no peer message layout, protocol version, catalog format or CLI change.
+This serves bounded known-history queries. Automatic recovery coordination and
+missing predecessor transfer remain gated; no peer message layout, protocol
+version, catalog format or CLI change is needed for this provider.
+
+## Recovery handoff after catalog progress
+
+A cleanup runner is valid for one exact applied/pending/history catalog. BEGIN
+and FINISH therefore invalidate its provider. They do not let the daemon discard
+its owner network and restart request numbering: delayed replies from the same
+daemon instance must never match a newly reused attempt ID.
+
+`lcs_config_startup_refresh_owner_history()` is the explicit handoff after catalog
+progress while **all recovery/backend/reactivation fences remain held**. The
+caller creates a new cleanup runner and retains the old borrowed runner. The new
+runner must physically clean its current and retained historical tables, including
+all hooks, and complete without error. Each runner can bind an owner provider only
+once; a failed receipt cannot be cleared with its earlier cleanup result. Any old
+cleanup worker must also be reaped before replacement.
+
+The handoff preserves the daemon's request serial and peer-instance observations,
+but drops old rounds, buffered replies and collected remote evidence. It rebuilds
+exact local completed scopes from the new catalog and starts fresh all-full-member
+confirmation on subsequent processing. A peer collection that received FAILED
+while the old provider was invalid retains its receipt and requires an explicit
+network retry after repair; later replies cannot silently revive the failed round.
+Prior pinned/completed scopes must still
+be answerable by the reconstructed receipt, preceding completion record, or exact
+history provider; otherwise replacement fails without modifying the network.
+Unknown/missing history, lost scope evidence, exhausted request IDs and a closing
+network cannot be bypassed. The old runner may be closed only after a successful
+handoff (or after stopping the owner network).
+
+For example, node1 may have `C` applied with `D` pending while node2 has `B`
+applied with `C` pending, although both have learned `D`. Node2 first retires its
+`A -> B` receipt using node1's saved completion record. It then obtains exact
+`B -> C` stop proof and finishes its existing pending `C`. After fresh cleanup and
+the handoff, both members re-collect application confirmation for `B -> C`.
+Only then do they proceed to `C -> D`; node2 persists that next pending intent
+through the ordinary catalog writer. Catalog progress requires another cleanup
+and proof handoff, never reuse of old-instance or old-attempt remote evidence.
+The two-node regression uses separate durable stores and actual backend/hook
+cleanup with dry-run backends, and verifies convergence through both targets.
+
+This API does not perform BEGIN/FINISH writes, install/remap resources, clear
+recovery fences, grant resource/configuration votes, or enable automatic startup.
+The future distributed manager must drive those existing serialized operations
+and this handoff in order. Unknown predecessor tables and incompatible target
+histories remain blocked rather than inferred from revision numbers.
 
 ## Client outcomes
 

@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added a single-use startup-cleanup handoff after durable catalog progress, preserving owner request IDs and peer-instance observations while rebuilding exact scopes and discarding stale rounds/replies. Added a two-member recovery regression with separate stores and differing pending/applied targets; missing-history transfer and automatic manager/admission remain gated.
+
 - Added an explicit recovery provider for differing old-generation owner scopes backed by physically cleaned retained snapshots. Exact digest/drain checks and send-time revalidation prevent fabricated or stale cleanup replies; APPLIED requires the exact current durable target. Missing-history recovery, differing-target coordination and automatic daemon admission remain gated.
 
 - Added application catalog format 2 with two complete predecessor snapshots retained atomically by FINISH. Startup cleanup now covers historical backends/hooks and can restore exact completed scopes and the preceding completion record under a new instance before fresh all-member confirmation. Format-1 catalogs remain readable without invented history; missing-history/differing-generation catch-up and automatic startup/admission remain gated.

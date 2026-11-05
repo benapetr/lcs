@@ -201,10 +201,15 @@ durable distributed configuration protocol.
   pending. Recompute drain masks, confirm APPLIED only for the exact current
   applied target, and revalidate buffered replies before sending. Keep recovery
   fences held; this explicit provider does not perform admission or change receipts.
-- [ ] Coordinate catch-up/application and receipt retirement across differing
-  target generations, and recover missing predecessor history from older catalogs;
-  keep unsupported scopes blocked. Catalog revision numbers alone do not
-  reconstruct backend cleanup proof.
+- [x] Add an explicit recovery handoff across durable catalog progress: require
+  fresh single-use cleanup, retain the old provider until replacement, preserve
+  daemon attempt serials/instances, and reconstruct only still-answerable exact
+  scopes. Exercise two full members with differing pending/applied targets through
+  pending completion and fresh all-member retirement, without skipping the saved
+  pending revision or admitting leases.
+- [ ] Automate differing-target recovery in the distributed manager and recover
+  missing predecessor history from older catalogs; keep unsupported scopes blocked.
+  Catalog revision numbers alone do not reconstruct backend cleanup proof.
 - [ ] Connect the local adapter/publisher and distributed old-owner provider to
   live daemon startup/application. Restart cleanup and any lease-expiry/external
   fencing path require explicit validated evidence; no default proof is permitted.

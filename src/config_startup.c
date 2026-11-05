@@ -383,11 +383,45 @@ int lcs_config_startup_bind_owner_history(lcs_config_startup_t *startup,
                                            lcs_config_owner_network_t *network)
 {
     if (!startup || !network || !lcs_config_startup_verified(startup, startup->runtime, network->instance) ||
-        startup->quorum_only || (startup->applied.revision && !startup->history[0].document) ||
+        startup->quorum_only || startup->owner_bound || (startup->applied.revision && !startup->history[0].document) ||
         network->closing || network->receipt.failed || network->recovery ||
         network->base != startup->runtime->base || network->application != &startup->runtime->application ||
         network->self != (size_t)lcs_config_self_index(startup->config)) return -1;
     network->recovery = answer_history; network->recovery_context = startup;
+    startup->owner_bound = true;
+    return 0;
+}
+
+static bool retained_scope(lcs_config_startup_t *startup, const lcs_config_owner_network_t *next,
+                               const lcs_config_owner_scope_t *scope, bool applied)
+{
+    if ((next->retired && lcs_config_owner_scope_equal(scope, &next->retired_scope)) ||
+        (next->receipt.sealed && (!applied || next->applied) && lcs_config_owner_scope_equal(scope, &next->receipt.scope)))
+        return true;
+    lcs_config_owner_message_t query = {.kind = applied ? LCS_CONFIG_OWNER_APPLIED_QUERY : LCS_CONFIG_OWNER_QUERY,
+        .target_instance = next->instance, .scope = *scope};
+    return answer_history(startup, &query) == 1;
+}
+
+int lcs_config_startup_refresh_owner_history(lcs_config_startup_t *startup,
+                                              lcs_config_owner_network_t *network)
+{
+    if (!startup || !network || !lcs_config_startup_verified(startup, startup->runtime, network->instance) ||
+        startup->quorum_only || startup->owner_bound || network->closing || network->serial == UINT64_MAX ||
+        network->base != startup->runtime->base || network->application != &startup->runtime->application ||
+        network->self != (size_t)lcs_config_self_index(startup->config)) return -1;
+    if (network->recovery && (network->recovery != answer_history || !network->recovery_context ||
+        network->recovery_context == startup || ((lcs_config_startup_t *)network->recovery_context)->pid > 0)) return -1;
+    lcs_config_owner_network_t next;
+    if (lcs_config_owner_network_init(&next, network->base, network->application, network->self, network->instance))
+        return -1;
+    next.serial = network->serial;
+    memcpy(next.instances, network->instances, sizeof(next.instances));
+    if ((startup->applied.revision && lcs_config_startup_restore_completed(startup, &next)) ||
+        (network->receipt.sealed && !retained_scope(startup, &next, &network->receipt.scope, network->applied)) ||
+        (network->retired && !retained_scope(startup, &next, &network->retired_scope, true)) ||
+        lcs_config_startup_bind_owner_history(startup, &next)) return -1;
+    *network = next;
     return 0;
 }
 

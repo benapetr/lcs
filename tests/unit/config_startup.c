@@ -43,7 +43,7 @@ static lcs_config_value_t successor(unsigned action)
     lcs_config_value_t value = {0};
     assert(!lcs_config_value_init(&value, runtime.base, request, document, length, error, sizeof(error)));
     assert(!lcs_config_agreement_learn(&runtime.agreement, runtime.agreement.committed.digest,
-        (revision + 1) * 32, 3, &value, error, sizeof(error)));
+        (revision + 1) * 32, 5, &value, error, sizeof(error)));
     free(document); free(configs);
     return value;
 }
@@ -558,12 +558,207 @@ static void test_differing_history_scopes(void)
     cleanup(&startup);
 }
 
+typedef struct
+{
+    lcs_config_owner_network_t nodes[2];
+    size_t from, count;
+    struct { size_t from, to, length; unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; } messages[64];
+    uint64_t now;
+} recovery_bus_t;
+
+static int recovery_send(void *context, size_t node, const void *payload, size_t length)
+{
+    recovery_bus_t *bus = context;
+    assert(node < 2 && node != bus->from && bus->count < 64 && length == LCS_CONFIG_OWNER_MESSAGE_SIZE);
+    bus->messages[bus->count].from = bus->from; bus->messages[bus->count].to = node;
+    bus->messages[bus->count].length = length;
+    memcpy(bus->messages[bus->count++].payload, payload, length);
+    return 0;
+}
+
+static void recovery_pump(recovery_bus_t *bus, unsigned steps)
+{
+    uint64_t instances[LCS_MAX_NODES] = {900, 901, 0};
+    for (unsigned n = 0; n < steps; n++)
+    {
+        for (size_t i = 0; i < 2; i++)
+        {
+            bus->from = i;
+            lcs_config_owner_network_process(&bus->nodes[i], instances, ++bus->now, recovery_send, bus);
+        }
+        for (size_t i = 0; i < bus->count; i++)
+            assert(!lcs_config_owner_network_receive(&bus->nodes[bus->messages[i].to], bus->messages[i].from,
+                instances[bus->messages[i].from], bus->messages[i].payload, bus->messages[i].length, bus->now));
+        bus->count = 0;
+    }
+}
+
+static void recover_peer(lcs_config_runtime_t *peer, lcs_config_store_t *peer_store, char *path)
+{
+    forbid_io = false;
+    assert(mkdtemp(path)); assert(!lcs_config_store_open(peer_store, path, error, sizeof(error)));
+    lcs_config_t *cfg = malloc(sizeof(*cfg)), *frozen = malloc(sizeof(*frozen)); assert(cfg && frozen);
+    *cfg = *runtime.base; strcpy(cfg->self_name, "node1");
+    assert(!lcs_config_finalize(cfg, error, sizeof(error)));
+    assert(!lcs_config_activation_open(&peer->activation, peer_store, cfg, frozen, true, error, sizeof(error)));
+    peer->base = frozen;
+    assert(!lcs_config_activation_resume(&peer->activation, &peer->agreement, &peer->application, error, sizeof(error)));
+    lcs_config_barrier_round_t round;
+    assert(!lcs_config_barrier_begin(&round, &peer->activation, &peer->agreement, &peer->application, error, sizeof(error)));
+    for (size_t i = 0; i < 3; i++) assert(!lcs_config_barrier_ready(&round, i, round.membership, round.baseline, error, sizeof(error)));
+    assert(!lcs_config_barrier_seal(&round, error, sizeof(error)));
+    assert(!lcs_config_barrier_open(&peer->barrier, &peer->activation, &peer->agreement, &peer->application, &round, error, sizeof(error)));
+    const lcs_config_value_t *values[] = {&runtime.application.history[0], &runtime.application.applied, &runtime.application.pending};
+    for (size_t i = 0; i < 3; i++)
+    {
+        assert(values[i]->revision == i + 1);
+        assert(!lcs_config_agreement_learn(&peer->agreement, peer->agreement.committed.digest,
+            (i + 1) * 32, 5, values[i], error, sizeof(error)));
+        if (i < 2) assert(!lcs_config_application_begin(&peer->application, &peer->agreement, error, sizeof(error)));
+        if (!i) assert(!lcs_config_application_finish(&peer->application, values[i]->digest, error, sizeof(error)));
+    }
+    lcs_config_runtime_close(peer);
+    assert(!lcs_config_runtime_open(peer, peer_store, cfg, error, sizeof(error)));
+    assert(peer->requires_recovery && peer->agreement.committed.revision == 3);
+    assert(peer->application.applied.revision == 1 && peer->application.pending.revision == 2);
+    free(cfg); forbid_io = true;
+}
+
+static void refresh_recovery(lcs_config_startup_t **startup, lcs_config_runtime_t *node,
+                                lcs_config_owner_network_t *network)
+{
+    /* Recovery and backend/reactivation fences remain held across the handoff.
+     * Retain the old borrowed runner until the new provider replaces it. */
+    uint64_t serial = network->serial;
+    lcs_config_startup_t *next = calloc(1, sizeof(*next)); assert(next);
+    assert(!lcs_config_startup_begin(next, node, network->instance, error, sizeof(error)));
+    lcs_config_owner_network_t saved = *network;
+    assert(lcs_config_startup_refresh_owner_history(next, network) < 0);
+    assert(!memcmp(&saved, network, sizeof(saved)));
+    finish(next, LCS_CONFIG_STARTUP_DONE);
+    if (network->receipt.sealed)
+    {
+        network->receipt.scope.drain ^= 1;
+        lcs_config_owner_network_t invalid = *network;
+        assert(lcs_config_startup_refresh_owner_history(next, network) < 0);
+        assert(!memcmp(&invalid, network, sizeof(invalid)));
+        *network = saved;
+    }
+    if (network->retired)
+    {
+        network->retired_scope.target_value[0] = network->retired_scope.target_value[0] == 'a' ? 'b' : 'a';
+        lcs_config_owner_network_t invalid = *network;
+        assert(lcs_config_startup_refresh_owner_history(next, network) < 0);
+        assert(!memcmp(&invalid, network, sizeof(invalid)));
+        *network = saved;
+    }
+    network->serial = UINT64_MAX;
+    assert(lcs_config_startup_refresh_owner_history(next, network) < 0 && network->serial == UINT64_MAX);
+    *network = saved;
+    pid_t old_pid = (*startup)->pid; (*startup)->pid = 1;
+    assert(lcs_config_startup_refresh_owner_history(next, network) < 0);
+    assert(!memcmp(&saved, network, sizeof(saved)));
+    (*startup)->pid = old_pid;
+
+    assert(!lcs_config_startup_refresh_owner_history(next, network));
+    assert(network->serial == serial && !network->pending_replies && !network->round.active && !network->release.active);
+    assert(network->instances[network->self] == network->instance);
+    saved = *network;
+    assert(lcs_config_startup_refresh_owner_history(next, network) < 0); /* Cannot reuse old cleanup proof. */
+    assert(!memcmp(&saved, network, sizeof(saved)));
+    lcs_config_startup_stop(*startup); assert(!lcs_config_startup_close(*startup)); free(*startup);
+    *startup = next;
+}
+
+static void test_differing_target_recovery(void)
+{
+    setup(true, false);
+    lcs_config_runtime_t peer = {0}; lcs_config_store_t peer_store;
+    char path[] = "/tmp/lcs-config-recovery-peer.XXXXXX";
+    recover_peer(&peer, &peer_store, path);
+    recovery_bus_t bus = {.now = lcs_now_ms()};
+    lcs_config_startup_t *startup[2] = {calloc(1, sizeof(*startup[0])), calloc(1, sizeof(*startup[1]))};
+    assert(startup[0] && startup[1]);
+    lcs_config_runtime_t *runtimes[] = {&runtime, &peer};
+    for (size_t i = 0; i < 2; i++)
+    {
+        assert(!lcs_config_startup_begin(startup[i], runtimes[i], 900 + i, error, sizeof(error)));
+        finish(startup[i], LCS_CONFIG_STARTUP_DONE);
+        assert(!lcs_config_owner_network_init(&bus.nodes[i], runtimes[i]->base, &runtimes[i]->application, i, 900 + i));
+        assert(!lcs_config_startup_restore_completed(startup[i], &bus.nodes[i]));
+        assert(!lcs_config_startup_bind_owner_history(startup[i], &bus.nodes[i]));
+    }
+    /* Node0 is at applied 2/pending 3; node1 must finish its durable pending 2,
+     * even though it has already learned revision 3. */
+    recovery_pump(&bus, 300);
+    assert(bus.nodes[0].receipt.sealed && bus.nodes[0].receipt.scope.target_revision == 2);
+    assert(bus.nodes[1].retired && !bus.nodes[1].receipt.sealed);
+    assert(lcs_config_startup_restore_pending(startup[0], &bus.nodes[0], bus.now) == 1);
+    assert(!lcs_config_startup_restore_pending(startup[1], &bus.nodes[1], bus.now));
+    recovery_pump(&bus, 300);
+    assert(lcs_config_owner_poll(&bus.nodes[1].round, bus.now) == 1);
+    uint64_t old_serial = bus.nodes[1].serial;
+    lcs_config_owner_message_t stale = {.kind = LCS_CONFIG_OWNER_APPLIED_REPLY, .result = LCS_CONFIG_OWNER_STOPPED,
+        .sender_instance = 900, .target_instance = 901, .id = old_serial, .scope = bus.nodes[1].receipt.scope};
+    forbid_io = false;
+    assert(!lcs_config_application_finish(&peer.application, peer.application.pending.digest, error, sizeof(error)));
+    forbid_io = true;
+    recovery_pump(&bus, 300);
+    assert(bus.nodes[1].receipt.failed); /* Old provider cannot survive FINISH. */
+    assert(bus.nodes[0].release.failed && bus.nodes[0].receipt.sealed);
+    refresh_recovery(&startup[1], &peer, &bus.nodes[1]);
+    assert(!lcs_config_owner_network_retry(&bus.nodes[0], bus.now));
+    uint64_t instances[LCS_MAX_NODES] = {900, 901, 0}; bus.from = 1;
+    lcs_config_owner_network_process(&bus.nodes[1], instances, ++bus.now, recovery_send, &bus);
+    assert(bus.nodes[1].release.id > old_serial && bus.nodes[1].release.stopped == 2);
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(&stale, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(&bus.nodes[1], 0, 900, payload, length, bus.now));
+    assert(bus.nodes[1].release.stopped == 2 && !bus.nodes[1].release.failed);
+    recovery_pump(&bus, 300);
+    for (size_t i = 0; i < 2; i++)
+        assert(bus.nodes[i].retired && bus.nodes[i].retired_scope.target_revision == 2 && !bus.nodes[i].receipt.sealed);
+
+    /* Both nodes can now advance to revision 3, after retaining/finishing 2. */
+    forbid_io = false;
+    assert(!lcs_config_application_begin(&peer.application, &peer.agreement, error, sizeof(error)));
+    forbid_io = true;
+    refresh_recovery(&startup[1], &peer, &bus.nodes[1]);
+    recovery_pump(&bus, 300);
+    for (size_t i = 0; i < 2; i++) assert(!lcs_config_startup_restore_pending(startup[i], &bus.nodes[i], bus.now));
+    recovery_pump(&bus, 300);
+    for (size_t i = 0; i < 2; i++)
+    {
+        assert(lcs_config_owner_poll(&bus.nodes[i].round, bus.now) == 1);
+        forbid_io = false;
+        assert(!lcs_config_application_finish(&runtimes[i]->application, runtimes[i]->application.pending.digest, error, sizeof(error)));
+        forbid_io = true;
+        refresh_recovery(&startup[i], runtimes[i], &bus.nodes[i]);
+    }
+    recovery_pump(&bus, 300);
+    for (size_t i = 0; i < 2; i++)
+    {
+        assert(bus.nodes[i].retired && bus.nodes[i].retired_scope.target_revision == 3 && !bus.nodes[i].receipt.sealed);
+        assert(runtimes[i]->application.applied.revision == 3 && !runtimes[i]->application.pending.document);
+        assert(runtimes[i]->requires_recovery); /* No implicit lease admission. */
+        lcs_config_owner_network_stop(&bus.nodes[i]);
+    }
+    lcs_config_startup_stop(startup[1]); assert(!lcs_config_startup_close(startup[1]));
+    free(startup[1]);
+    lcs_config_runtime_close(&peer); forbid_io = false;
+    const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json", "lock"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) assert(!unlinkat(peer_store.directory_fd, names[i], 0));
+    lcs_config_store_close(&peer_store); assert(!rmdir(path));
+    cleanup(startup[0]); free(startup[0]);
+}
+
 int main(void)
 {
     parent = getpid();
     test_applied_cleanup_and_pending_receipt(); test_failures_and_retry(); test_timeout_cancellation_and_binding();
     test_quorum_only_and_completed_history(); test_workers_die_with_parent();
     test_completed_history_cleanup_and_legacy(); test_differing_history_scopes();
+    test_differing_target_recovery();
     puts("authoritative startup cleanup, pending receipt recovery and worker lifetime unit tests passed");
     return 0;
 }

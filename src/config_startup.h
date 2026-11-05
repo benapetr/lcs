@@ -28,7 +28,7 @@ typedef struct
     size_t index, snapshot;
     pid_t pid;
     lcs_config_startup_phase_t phase;
-    bool service_worker, hook_worker, killed, closing, invalid, pre_failed, quorum_only;
+    bool service_worker, hook_worker, killed, closing, invalid, pre_failed, quorum_only, owner_bound;
     char error[256];
 } lcs_config_startup_t;
 
@@ -68,6 +68,16 @@ int lcs_config_startup_restore_pending(lcs_config_startup_t *startup,
  * register. No persistence, receipt replacement, or admission occurs. */
 int lcs_config_startup_bind_owner_history(lcs_config_startup_t *startup,
                                            lcs_config_owner_network_t *network);
+/* After durable catalog progress while ALL recovery/reactivation fences remain
+ * held, run fresh physical cleanup, then replace the stale recovery provider and
+ * reconstruct its exact completed scopes. A cleanup runner is bound only once;
+ * retain the old runner until this handoff succeeds. Preserve the daemon's
+ * attempt serial and admitted instances; discard old rounds and queued replies.
+ * Every previously pinned/completed scope must remain exactly reconstructible.
+ * No I/O, FINISH, admission, or missing-history fallback occurs. The new startup
+ * runner is borrowed on success; the network is unchanged on failure. */
+int lcs_config_startup_refresh_owner_history(lcs_config_startup_t *startup,
+                                              lcs_config_owner_network_t *network);
 /* Terminal: request cancellation but retain pid/snapshots until process reaps.
  * close returns -1 while a worker exists or before DONE/STOPPED/RECOVERY/BLOCKED. */
 void lcs_config_startup_stop(lcs_config_startup_t *startup);
