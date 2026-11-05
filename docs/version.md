@@ -125,14 +125,20 @@ The format-1 body is exactly 243 bytes: u16 format, u8 kind, u8 result,
 u64 sender instance, target instance, round ID, old revision and target revision,
 u32 dependency-drain mask, and three canonical 65-byte membership/old-value/
 target-value digests. Kind 1 is QUERY with result zero; kind 2 is REPLY with
-STOPPED (1), PENDING (2), or FAILED (3). Both directions use fresh outer sequences.
+STOPPED (1), PENDING (2), or FAILED (3). Kind 3 is APPLIED_QUERY with result zero;
+kind 4 is APPLIED_REPLY with APPLIED (1), PENDING (2), or FAILED (3). Stop replies
+cannot satisfy application collection or vice versa. Both phases use distinct,
+strictly increasing round IDs and fresh outer sequences.
 Established full-member admission and negotiated wire 6 are mandatory. This raw
 configuration channel remains available across resource-generation differences;
 it is not an indexed resource envelope. INI-only nodes answer PENDING without
 creating configuration history. Explicit collection still requires local cleanup
 and every full member's stop proof; no query authorizes cleanup or activation.
-Receipt lifecycle and automatic application remain unfinished. This addition is
-within unreleased wire 6 and does not change released HELLO or the CLI protocol.
+Stop receipts retire only after every full member confirms the exact applied
+scope. A retained completion scope answers slow consumers until every member
+applies the next transition. Startup/catch-up recovery and automatic application
+remain unfinished. These additions stay within unreleased wire 6 and do not
+change released HELLO or the CLI protocol.
 
 Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.
 When releasing it for the first time, replace that label in `src/protocol.c` and

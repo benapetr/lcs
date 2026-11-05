@@ -117,8 +117,8 @@ with socket.socket() as listener:
                 status = receive_type(sock, 33)
                 assert len(status) == 255 and status[2:4] == bytes((6, 3))
                 # Stop-proof queries cannot create cleanup receipts on an INI-only node.
-                def owner_query(txid, sender=INSTANCE):
-                    return (struct.pack("!HBBQQQQQI", 1, 1, 0, sender, local_instance, txid, 0, 1, 1) +
+                def owner_query(txid, sender=INSTANCE, kind=1):
+                    return (struct.pack("!HBBQQQQQI", 1, kind, 0, sender, local_instance, txid, 0, 1, 1) +
                             membership + baseline + b"c" * 64 + b"\0")
                 for txid in (1, 2):
                     send(sock, 38, 63000 + txid, owner_query(txid))
@@ -126,6 +126,15 @@ with socket.socket() as listener:
                     assert len(stopped) == 243 and stopped[2:4] == bytes((2, 2))
                     assert struct.unpack("!QQQ", stopped[4:28]) == (local_instance, INSTANCE, txid)
                     assert stopped[28:] == owner_query(txid)[28:]
+                # Completion collection is separate from stop proof and also nonmutating.
+                send(sock, 38, 63005, owner_query(5, kind=3))
+                applied = receive_type(sock, 38)
+                assert applied[2:4] == bytes((4, 2)) and applied[28:] == owner_query(5, kind=3)[28:]
+                unsolicited_applied = (struct.pack("!HBBQQQQQI", 1, 4, 1, INSTANCE, local_instance, 999, 0, 1, 1) +
+                                       membership + baseline + b"c" * 64 + b"\0")
+                send(sock, 38, 63006, unsolicited_applied)
+                send(sock, 38, 63007, owner_query(6, kind=3))
+                assert receive_type(sock, 38)[2:4] == bytes((4, 2))
                 # Dynamic resource envelopes cannot grant votes or alter INI authority.
                 envelope = (struct.pack("!HHQQQ", 1, 26, INSTANCE, local_instance, 1) +
                             membership + baseline + b"\1")

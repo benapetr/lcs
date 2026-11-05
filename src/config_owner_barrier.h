@@ -8,7 +8,8 @@
 #define LCS_CONFIG_OWNER_MESSAGE_SIZE 243u
 #define LCS_CONFIG_OWNER_TIMEOUT_MS 10000u
 
-enum { LCS_CONFIG_OWNER_QUERY = 1, LCS_CONFIG_OWNER_REPLY = 2 };
+enum { LCS_CONFIG_OWNER_QUERY = 1, LCS_CONFIG_OWNER_REPLY = 2,
+       LCS_CONFIG_OWNER_APPLIED_QUERY = 3, LCS_CONFIG_OWNER_APPLIED_REPLY = 4 };
 enum { LCS_CONFIG_OWNER_STOPPED = 1, LCS_CONFIG_OWNER_PENDING = 2, LCS_CONFIG_OWNER_FAILED = 3 };
 
 typedef struct
@@ -56,10 +57,11 @@ int lcs_config_owner_decode(const void *payload, size_t length, lcs_config_owner
  * Proof primitive used by the explicit peer network adapter; automatic
  * application is not enabled. Seal ONLY after local cleanup including hooks/workers succeeds,
  * restart cleanup is known, and old-generation grants/reactivation are fenced.
- * These guarantees must outlive every consumer of this receipt. Pin one scope
- * per fresh object; no automatic eviction, restart reuse, or timeout release.
- * A later cleanup failure permanently revokes the receipt. Receipt retention/
- * release across applications and startup fencing still require integration. */
+ * These guarantees must outlive every consumer of this receipt. The primitive
+ * never releases a pinned scope. The network adapter retires it only after all
+ * full members confirm exact durable application and retains completion history.
+ * There is no restart reuse or timeout release. A later cleanup failure revokes
+ * the current receipt; startup reconstruction still requires integration. */
 int lcs_config_owner_receipt_seal(lcs_config_owner_receipt_t *receipt,
                                     const lcs_config_owner_scope_t *scope, uint64_t instance);
 void lcs_config_owner_receipt_revoke(lcs_config_owner_receipt_t *receipt);

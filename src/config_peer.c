@@ -71,7 +71,7 @@ int config_peer_owner_prepare(void)
     if (network->instance && network->instance == g_state.instance_id && network->base == base &&
         network->application == application && !strcmp(network->membership, membership))
         return network->closing ? -1 : 0;
-    if (network->instance && (network->round.active || network->receipt.sealed || network->receipt.failed || network->closing))
+    if (network->instance && (network->round.active || network->receipt.sealed || network->receipt.failed || network->retired || network->closing))
     {
         lcs_config_owner_network_revoke(network);
         return -1;

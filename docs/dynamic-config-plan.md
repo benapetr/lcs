@@ -182,9 +182,13 @@ durable distributed configuration protocol.
   and explicit local drain callbacks for one pinned transition, with bounded
   responses/retries, instance teardown invalidation, cleanup-failure revocation
   and a final pre-install barrier recheck. Legacy queries remain nonmutating.
-- [ ] Implement receipt retention/release across applications and recovery/catch-up
-  with differing old generations; keep unsupported scopes blocked. A pinned
-  receipt may not be cleared to make another transition proceed.
+- [x] Retire stop receipts only after instance-bound confirmation of exact durable
+  application from every full member. Retain the preceding completion scope for
+  slow consumers; replace it only after every full member applies the next scope.
+  Support consecutive transitions without unbounded history or timer eviction.
+- [ ] Recover receipts/application across daemon restart and reconcile catch-up
+  with differing old generations; keep unsupported scopes blocked. Catalog
+  revision numbers alone do not reconstruct backend cleanup proof.
 - [ ] Connect the local adapter/publisher and distributed old-owner provider to
   live daemon startup/application. Restart cleanup and any lease-expiry/external
   fencing path require explicit validated evidence; no default proof is permitted.

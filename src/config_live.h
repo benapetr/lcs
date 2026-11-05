@@ -46,7 +46,8 @@ int lcs_config_live_init_with_projection(lcs_config_live_t *live, int epoll_fd,
 /* Concrete all-full-member stop exchange, still explicit and startup-gated.
  * Network must borrow this exact runtime's base/catalog, and its transport must
  * process admission/session changes before reconciliation. Local backend state
- * must already be recovered. Receipts stay pinned; another scope blocks. */
+ * must already be recovered. Receipts remain pinned until all full members
+ * confirm exact durable application; restart/catch-up recovery remains gated. */
 int lcs_config_live_init_with_owner_network(lcs_config_live_t *live, int epoll_fd,
                                              lcs_config_coordinator_t *coordinator,
                                              lcs_config_bootstrap_t *bootstrap,

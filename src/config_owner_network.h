@@ -10,11 +10,13 @@ typedef struct
     const lcs_config_t *base;
     const lcs_config_application_t *application;
     size_t self;
-    uint64_t instance, serial, next_query_ms;
+    uint64_t instance, serial, next_query_ms, next_release_query_ms;
     uint64_t instances[LCS_MAX_NODES];
     char membership[LCS_CONFIG_DIGEST_SIZE];
     lcs_config_owner_receipt_t receipt;
-    lcs_config_owner_round_t round;
+    lcs_config_owner_round_t round, release;
+    lcs_config_owner_scope_t retired_scope;
+    bool applied, retired;
     lcs_config_owner_message_t replies[LCS_MAX_NODES];
     uint32_t pending_replies;
     bool closing;
@@ -26,14 +28,15 @@ typedef struct
 int lcs_config_owner_network_init(lcs_config_owner_network_t *network, const lcs_config_t *base,
                                    const lcs_config_application_t *application, size_t self, uint64_t instance);
 /* Explicit entry after local drain/fencing; scope must match this local catalog.
- * One pinned scope only. Another scope is blocked until a future distributed
- * receipt-release/history protocol exists; never clear receipts to advance. */
+ * The previous scope stays pinned until every full member acknowledges exact
+ * durable application. Retain its completion tombstone across the next scope;
+ * differing old generations and restart history still require recovery support. */
 int lcs_config_owner_network_start(lcs_config_owner_network_t *network,
                                     const lcs_config_owner_scope_t *scope, uint64_t now_ms);
 /* Reconciliation owner callback, ONLY after local drain. The concrete live
  * initializer supplies the corresponding revoke callback and install recheck. */
 int lcs_config_owner_network_step(void *context, const lcs_config_reconcile_view_t *view, char *err, size_t err_len);
-/* Explicit retry of a failed collection, preserving the stop receipt and scope.
+/* Explicit retry of a failed stop/application collection, preserving receipts.
  * Failed local cleanup is terminal and cannot be repaired by a network retry. */
 int lcs_config_owner_network_retry(lcs_config_owner_network_t *network, uint64_t now_ms);
 void lcs_config_owner_network_revoke(void *context);

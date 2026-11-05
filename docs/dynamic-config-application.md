@@ -95,7 +95,7 @@ rules. The 64-KiB frame limit includes the prefix.
 
 These APIs are not invoked automatically yet. The daemon still refuses persisted
 distributed startup. The local runtime adapter below now implements backend/remap callbacks;
-distributed receipt lifecycle, startup recovery and automatic activation
+receipt reconstruction across restarts, startup recovery and automatic activation
 remain unfinished. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
@@ -235,7 +235,7 @@ Tests cover shared-writer exclusion, delayed publication, large pipe results,
 stale imports, failed file/directory sync, and cancellation. The internal
 reconciliation sequencer below now coordinates catalog writes and explicit
 backend barriers; the local adapter below now supplies backend/remap callbacks, while its
-distributed receipt lifecycle and automatic daemon integration remain pending.
+receipt reconstruction across restarts and automatic daemon integration remain pending.
 
 ## Internal reconciliation sequencer
 
@@ -343,7 +343,8 @@ definition fences only after local voting readiness and quorum are established.
 
 The running daemon still lacks automatic owner-provider integration, the startup
 reconstruction/cleanup adapter and automatic activation wiring. The explicit
-network provider below supports a single pinned transition.
+network provider below supports sequential transitions with all-member receipt
+retirement and a retained completion scope.
 This live adapter assumes the last-applied backend/ownership state was recovered;
 ownerless runtime entries alone do not establish that old backends are absent.
 Tests exercise local callbacks with controlled backend/provider doubles, including
@@ -387,7 +388,8 @@ cancellation lifetime, and publication through the local application adapter.
 
 `config_owner_barrier.c` provides an internal stop-proof collector and responder.
 The explicit network adapter described below now connects it to admitted peer
-transport and local drain callbacks for one pinned transition. Automatic
+transport and local drain callbacks. Exact all-full-member application confirmation
+now retires receipts across sequential transitions. Automatic
 application remains disabled. Transport authenticates the configured source,
 requires wire 6, copies outgoing messages, and reports session/instance changes
 before installation.
@@ -416,10 +418,9 @@ perform those backend actions. It pins one exact scope and instance; a query
 never creates a receipt or changes its scope. Missing receipts answer PENDING,
 conflicting scopes or known failure answer FAILED, and revocation is terminal.
 A receipt cannot be reused after a daemon restart or silently evicted to make
-room for another application. The network provider retains one pinned scope and
-blocks a different transition. Retention/release until all consumers have finished
-still needs an explicit distributed release or history policy; that lifecycle is
-unfinished.
+room for another application. The network provider retains the current scope until
+every full member confirms exact durable application, then retains its completion
+record for slow consumers as described below. Restart reconstruction is unfinished.
 
 These primitives deliberately block different old-generation scopes. Applying
 checkpoints across revision gaps needs additional cleanup-scope reconciliation;
@@ -463,20 +464,65 @@ Transport/session processing must precede reconciliation so the final check sees
 current admission. Normal installation closes indexed sessions only after this
 check; other collectors may need to retry after those intentional reconnects.
 
-Only one scope is supported per network object. The provider never clears a
-pinned receipt to admit a newer pending target, including a checkpoint arriving
-during application. It blocks instead. Receipt retention/release across later
-transitions, differing-old-generation recovery and startup cleanup remain
-unfinished. Creating a fresh network object to evade that restriction would break
-the receipt lifetime contract and is not a supported upgrade or recovery action.
-The daemon does not automatically initialize or run the local application adapter.
+A new scope waits while the previous receipt is pinned, including when a newer
+checkpoint becomes pending during application. The all-full-member retirement
+exchange below permits the next scope after the previous application is confirmed.
+Differing-old-generation recovery and startup cleanup remain unfinished. Creating
+a fresh network object to discard required receipts is not a supported recovery
+action. The daemon does not automatically initialize or run the local adapter.
 
 Tests exercise three full-member transport participants, delayed local drains,
 PENDING responses, bounded output backpressure, fixed deadlines, instance changes,
-explicit retry, failed-response delivery, refusal of a later scope, and final
+explicit retry, failed-response delivery, refusal of a later scope before retirement, and final
 installation checks after disconnect/cleanup failure. Socket integration tests
 verify the actual frame dispatch, INI-only PENDING replies, wire-5 rejection,
 wrong-instance rejection, and absence of initialized distributed records.
+
+## Receipt retirement across transitions
+
+The same wire-6 frame now carries APPLIED_QUERY (kind 3) and APPLIED_REPLY
+(kind 4). Their scope is identical to the stop phase: exact old/target value
+digests and revisions, membership and drain mask. Result 1 means APPLIED in a
+kind-4 reply. Each phase has a distinct monotonic round ID. STOPPED responses
+cannot count as APPLIED evidence, and unsolicited/mismatched replies cannot
+initialize or release a receipt.
+
+A member begins retirement only after its healthy durable application catalog
+records the exact target digest and revision as applied. A pending marker,
+backend callback, stop acknowledgement or larger revision is insufficient. It
+can then acknowledge its own application and collect exact confirmation from
+every configured full member. Quorum-only members do not host the old backends
+and are excluded from this cleanup lifetime barrier. The complete configured
+full-member set remains required across outages. Failed/conflicting evidence,
+session changes or the fixed deadline leave the receipt pinned; explicit retries
+use a new round ID and collect again. Failed cleanup or poisoned application
+state cannot be repaired with a network retry.
+
+Once all confirmations arrive, the provider retires the active stop receipt and
+retains its exact scope as a completion record. A slow peer may still be collecting
+APPLIED confirmations for that scope. The retained record answers its query even
+while the fast member's catalog is pending the next transition. Queries for a
+future transition receive PENDING while the current receipt is pinned; they do
+not displace it or count as application confirmation.
+
+The next scope must begin at that exact completed target. Its completion record
+replaces the preceding record only after every full member confirms application
+of the next scope. Each such member had to retire the preceding scope before
+sealing its next stop receipt, so no surviving collector still needs the older
+record. This ordering bounds memory to one active receipt plus one preceding
+completion record, without timer eviction or treating revision order alone as
+backend cleanup proof. A failure in a later transition does not erase a prior
+completed record. All instances and digests remain bound to the query/reply.
+
+These records are process-local proof. A restarted daemon cannot recreate them
+from an applied revision without backend startup recovery; it answers PENDING
+for an unknown scope. Receipt reconstruction across restarts and cleanup-scope
+reconciliation for differing old generations remain unfinished, and automatic
+application remains disabled. Tests cover three sequential transitions with
+independently published durable catalog records, a delayed local application,
+lost completion replies, a fast member serving a slow peer while on its next
+transition, phase confusion, conflicting digests, session loss, timeout/retry,
+poisoned catalogs and refusal to infer proof after restart.
 
 ## Client outcomes
 

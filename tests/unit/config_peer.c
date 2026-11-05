@@ -457,6 +457,13 @@ static void test_owner_transport_admission(void)
     owner_backpressure = false; config_peer_process(-1);
     assert(owners_queued == 1 && last_owner.result == LCS_CONFIG_OWNER_PENDING);
     assert(last_owner.sender_instance == 100 && last_owner.target_instance == 200);
+    query.kind = LCS_CONFIG_OWNER_APPLIED_QUERY;
+    assert(!lcs_config_owner_encode(&query, payload, sizeof(payload), &length));
+    assert(!config_peer_receive_owner(-1, 1, payload, length));
+    assert(last_owner.kind == LCS_CONFIG_OWNER_APPLIED_REPLY && last_owner.result == LCS_CONFIG_OWNER_PENDING);
+    assert(!g_state.config_owners.receipt.sealed && !g_state.config_owners.release.active);
+    query.kind = LCS_CONFIG_OWNER_QUERY;
+    assert(!lcs_config_owner_encode(&query, payload, sizeof(payload), &length));
     assert(config_peer_receive_owner(-1, 2, payload, length) < 0); /* Quorum only. */
     g_state.peers[1].protocol_version = 5;
     assert(config_peer_receive_owner(-1, 1, payload, length) < 0);

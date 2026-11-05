@@ -60,8 +60,9 @@ invalid:
 static bool message_valid(const lcs_config_owner_message_t *message)
 {
     return message && message->sender_instance && message->target_instance && message->id && scope_valid(&message->scope) &&
-        ((message->kind == LCS_CONFIG_OWNER_QUERY && !message->result) ||
-         (message->kind == LCS_CONFIG_OWNER_REPLY && message->result >= LCS_CONFIG_OWNER_STOPPED &&
+        (((message->kind == LCS_CONFIG_OWNER_QUERY || message->kind == LCS_CONFIG_OWNER_APPLIED_QUERY) && !message->result) ||
+         ((message->kind == LCS_CONFIG_OWNER_REPLY || message->kind == LCS_CONFIG_OWNER_APPLIED_REPLY) &&
+          message->result >= LCS_CONFIG_OWNER_STOPPED &&
           message->result <= LCS_CONFIG_OWNER_FAILED));
 }
 

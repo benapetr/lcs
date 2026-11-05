@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added exact all-full-member application confirmation before retiring old-owner stop receipts. A retained completion scope serves slow peers across subsequent transitions and is replaced only after every full member applies the next scope. Failed/expired collections retain receipts; restart/catch-up recovery and automatic application remain unfinished.
+
 - Connected explicit old-owner stop collection to wire-6 peer message 38 and local drain callbacks for one pinned transition. Added bounded pending responses, retry/deadline handling, session-change invalidation, cleanup-failure revocation and a final pre-install proof check. Receipt release/history, startup recovery and automatic application remain unfinished.
 
 - Added internal old-owner stop-proof primitives with exact catalog/drain scopes, pinned instance-bound receipts, strict message codecs and all-full-member collection. Missing peers, failed cleanup, conflicting evidence and timeouts cannot become success. Peer transport, receipt lifecycle, startup recovery and automatic application remain unfinished.

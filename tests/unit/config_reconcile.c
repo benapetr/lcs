@@ -932,6 +932,7 @@ typedef struct
     struct { size_t source, target, length; unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; } frames[128];
     size_t head, tail, source;
     bool backpressure;
+    uint32_t drop_applied_replies;
 } owner_bus_t;
 
 static int owner_send(void *context, size_t node, const void *payload, size_t length)
@@ -939,6 +940,9 @@ static int owner_send(void *context, size_t node, const void *payload, size_t le
     owner_bus_t *bus = context;
     if (bus->backpressure)
         return 1;
+    if (((const unsigned char *)payload)[2] == LCS_CONFIG_OWNER_APPLIED_REPLY &&
+        (bus->drop_applied_replies & (UINT32_C(1) << node)))
+        return 0; /* Simulate a copied response lost before delivery. */
     assert(node != bus->source && node < 3 && bus->tail < 128 && length == LCS_CONFIG_OWNER_MESSAGE_SIZE);
     bus->frames[bus->tail].source = bus->source; bus->frames[bus->tail].target = node;
     bus->frames[bus->tail].length = length; memcpy(bus->frames[bus->tail++].payload, payload, length);
@@ -1099,6 +1103,186 @@ static void test_live_owner_network_recheck(void)
     }
 }
 
+
+static void copy_owner_catalog(lcs_config_application_t *copy)
+{
+    *copy = runtime.application;
+    memset(&copy->applied, 0, sizeof(copy->applied)); memset(&copy->pending, 0, sizeof(copy->pending));
+    assert(!lcs_config_value_copy(&copy->applied, &runtime.application.applied));
+    assert(!lcs_config_value_copy(&copy->pending, &runtime.application.pending));
+}
+
+/* Import an actual durable application record independently for each member. */
+static void publish_owner_catalog(lcs_config_application_t *copy)
+{
+    char *document; size_t length;
+    assert(!lcs_config_application_export(&runtime.application, &document, &length, error, sizeof(error)));
+    assert(!lcs_config_application_import(copy, &runtime.agreement, document, length, error, sizeof(error)));
+    free(document);
+}
+
+static void test_owner_receipt_retirement(void)
+{
+    all_full_fixture = true; setup(false); all_full_fixture = false;
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    lcs_config_owner_scope_t scopes[3];
+    assert(!lcs_config_owner_scope(&runtime.application, &scopes[0], error, sizeof(error)));
+    lcs_config_application_t catalogs[3];
+    owner_bus_t bus = {0}; uint64_t instances[LCS_MAX_NODES] = {100, 101, 102}, now = 1000;
+    for (size_t i = 0; i < 3; i++)
+    {
+        copy_owner_catalog(&catalogs[i]);
+        assert(!lcs_config_owner_network_init(&bus.nodes[i], runtime.base, &catalogs[i], i, instances[i]));
+        assert(!lcs_config_owner_network_start(&bus.nodes[i], &scopes[0], now));
+    }
+    owner_exchange(&bus, instances, ++now);
+    assert(!lcs_config_application_finish(&runtime.application, first.digest, error, sizeof(error)));
+    publish_owner_catalog(&catalogs[0]); publish_owner_catalog(&catalogs[1]);
+    owner_exchange(&bus, instances, now += 300);
+    for (size_t i = 0; i < 2; i++)
+        assert(bus.nodes[i].applied && bus.nodes[i].release.active && bus.nodes[i].release.stopped == 3 && !bus.nodes[i].retired);
+    assert(!bus.nodes[2].applied && !bus.nodes[2].release.active); /* STOPPED is not APPLIED. */
+
+    lcs_config_owner_message_t codec = { .kind = LCS_CONFIG_OWNER_APPLIED_QUERY, .sender_instance = 100,
+        .target_instance = 101, .id = 55, .scope = scopes[0] };
+    owner_message_roundtrip(&codec);
+    codec.kind = LCS_CONFIG_OWNER_APPLIED_REPLY; codec.result = LCS_CONFIG_OWNER_STOPPED;
+    owner_message_roundtrip(&codec);
+    unsigned char bad[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t bad_length;
+    codec.kind = LCS_CONFIG_OWNER_APPLIED_QUERY;
+    assert(lcs_config_owner_encode(&codec, bad, sizeof(bad), &bad_length) < 0);
+    codec.kind = 5; codec.result = 0;
+    assert(lcs_config_owner_encode(&codec, bad, sizeof(bad), &bad_length) < 0);
+
+    /* Stop replies with a release ID cannot count as application confirmation. */
+    lcs_config_owner_message_t query, reply;
+    assert(!lcs_config_owner_query(&bus.nodes[0].release, 2, 102, ++now, &query));
+    reply = query; reply.kind = LCS_CONFIG_OWNER_REPLY; reply.result = LCS_CONFIG_OWNER_STOPPED;
+    reply.sender_instance = 102; reply.target_instance = 100;
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(&reply, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(&bus.nodes[0], 2, 102, payload, length, ++now));
+    assert(bus.nodes[0].release.stopped == 3);
+    reply.kind = LCS_CONFIG_OWNER_APPLIED_REPLY;
+    reply.scope.target_value[0] = reply.scope.target_value[0] == 'a' ? 'b' : 'a';
+    assert(!lcs_config_owner_encode(&reply, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(&bus.nodes[0], 2, 102, payload, length, ++now));
+    assert(bus.nodes[0].release.failed && bus.nodes[0].receipt.sealed && !bus.nodes[0].retired);
+    assert(!lcs_config_owner_network_retry(&bus.nodes[0], ++now));
+    lcs_config_owner_network_disconnect(&bus.nodes[1], 0);
+    assert(bus.nodes[1].release.failed && bus.nodes[1].receipt.sealed);
+    assert(!lcs_config_owner_network_retry(&bus.nodes[1], ++now));
+    owner_exchange(&bus, instances, now += 300);
+
+    bus.drop_applied_replies = 4;
+    publish_owner_catalog(&catalogs[2]);
+    owner_exchange(&bus, instances, now += 300);
+    assert(bus.nodes[0].retired && bus.nodes[1].retired && !bus.nodes[2].retired);
+    assert(!bus.nodes[0].receipt.sealed && bus.nodes[2].receipt.sealed && bus.nodes[2].applied);
+    /* Expiry preserves the receipt; only explicit retry starts another round. */
+    now = bus.nodes[2].release.deadline_ms;
+    bus.source = 2;
+    lcs_config_owner_network_process(&bus.nodes[2], instances, now, owner_send, &bus);
+    assert(bus.nodes[2].release.failed && bus.nodes[2].receipt.sealed && !bus.nodes[2].retired);
+    assert(!lcs_config_owner_network_retry(&bus.nodes[2], ++now));
+
+    lcs_config_value_t second = successor(&first, true); learn(&second);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    assert(!lcs_config_owner_scope(&runtime.application, &scopes[1], error, sizeof(error)));
+    for (size_t i = 0; i < 2; i++)
+    {
+        publish_owner_catalog(&catalogs[i]);
+        assert(!lcs_config_owner_network_start(&bus.nodes[i], &scopes[1], now));
+    }
+    owner_exchange(&bus, instances, now += 300);
+    assert(bus.nodes[0].round.stopped == 3 && bus.nodes[2].receipt.scope.target_revision == 1);
+    assert(lcs_config_owner_scope_equal(&bus.nodes[0].retired_scope, &scopes[0]));
+    /* A restarted daemon cannot reconstruct a stop/completion receipt from a
+     * revision number or a catalog marker without backend startup recovery. */
+    lcs_config_owner_network_t restarted;
+    assert(!lcs_config_owner_network_init(&restarted, runtime.base, &catalogs[0], 0, 900));
+    query = (lcs_config_owner_message_t){ .kind = LCS_CONFIG_OWNER_APPLIED_QUERY, .sender_instance = 102,
+        .target_instance = 900, .id = 1, .scope = scopes[0] };
+    assert(!lcs_config_owner_encode(&query, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(&restarted, 2, 102, payload, length, now));
+    assert(restarted.replies[2].result == LCS_CONFIG_OWNER_PENDING && !restarted.receipt.sealed);
+    lcs_config_owner_network_stop(&restarted);
+    /* A fast peer answers a slow peer's exact completion query from its tombstone,
+     * even though its live catalog is already pending the next transition. */
+    bus.drop_applied_replies = 0;
+    owner_exchange(&bus, instances, now += 300);
+    assert(bus.nodes[2].retired && !bus.nodes[2].receipt.sealed);
+    publish_owner_catalog(&catalogs[2]);
+    assert(!lcs_config_owner_network_start(&bus.nodes[2], &scopes[1], now));
+    owner_exchange(&bus, instances, now += 300);
+    for (size_t i = 0; i < 3; i++)
+        assert(bus.nodes[i].round.sealed && lcs_config_owner_scope_equal(&bus.nodes[i].retired_scope, &scopes[0]));
+
+    assert(!lcs_config_application_finish(&runtime.application, second.digest, error, sizeof(error)));
+    for (size_t i = 0; i < 3; i++) publish_owner_catalog(&catalogs[i]);
+    bus.drop_applied_replies = 4;
+    owner_exchange(&bus, instances, now += 300);
+    assert(lcs_config_owner_scope_equal(&bus.nodes[0].retired_scope, &scopes[1]));
+    assert(lcs_config_owner_scope_equal(&bus.nodes[2].retired_scope, &scopes[0]));
+    assert(bus.nodes[2].receipt.sealed && bus.nodes[2].applied);
+
+    lcs_config_value_t third = successor(&second, false); learn(&third);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    assert(!lcs_config_owner_scope(&runtime.application, &scopes[2], error, sizeof(error)));
+    for (size_t i = 0; i < 2; i++)
+    {
+        publish_owner_catalog(&catalogs[i]);
+        assert(!lcs_config_owner_network_start(&bus.nodes[i], &scopes[2], now));
+    }
+    owner_exchange(&bus, instances, now += 300);
+    assert(bus.nodes[0].round.stopped == 3 && bus.nodes[2].receipt.scope.target_revision == 2);
+    bus.drop_applied_replies = 0;
+    owner_exchange(&bus, instances, now += 300);
+    assert(bus.nodes[2].retired && !bus.nodes[2].receipt.sealed);
+    publish_owner_catalog(&catalogs[2]);
+    assert(!lcs_config_owner_network_start(&bus.nodes[2], &scopes[2], now));
+    owner_exchange(&bus, instances, now += 300);
+    assert(!lcs_config_application_finish(&runtime.application, third.digest, error, sizeof(error)));
+    for (size_t i = 0; i < 3; i++) publish_owner_catalog(&catalogs[i]);
+    owner_exchange(&bus, instances, now += 300);
+    for (size_t i = 0; i < 3; i++)
+    {
+        assert(bus.nodes[i].retired && lcs_config_owner_scope_equal(&bus.nodes[i].retired_scope, &scopes[2]));
+        assert(!bus.nodes[i].receipt.sealed && !bus.nodes[i].round.active && !bus.nodes[i].release.active);
+        lcs_config_owner_network_stop(&bus.nodes[i]); lcs_config_application_close(&catalogs[i]);
+    }
+    lcs_config_value_clear(&first); lcs_config_value_clear(&second); lcs_config_value_clear(&third); cleanup();
+}
+
+
+static void test_owner_release_poisoned_catalog(void)
+{
+    setup(false);
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    lcs_config_owner_scope_t scope;
+    assert(!lcs_config_owner_scope(&runtime.application, &scope, error, sizeof(error)));
+    lcs_config_application_t catalog; copy_owner_catalog(&catalog);
+    owner_bus_t bus = {0}; uint64_t instances[LCS_MAX_NODES] = {100, 101, 0};
+    assert(!lcs_config_owner_network_init(&bus.nodes[0], runtime.base, &catalog, 0, 100));
+    assert(!lcs_config_owner_network_start(&bus.nodes[0], &scope, 1000));
+    assert(!lcs_config_application_finish(&runtime.application, first.digest, error, sizeof(error)));
+    publish_owner_catalog(&catalog);
+    lcs_config_owner_message_t query = { .kind = LCS_CONFIG_OWNER_APPLIED_QUERY, .sender_instance = 101,
+        .target_instance = 100, .id = 99, .scope = scope };
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(&query, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(&bus.nodes[0], 1, 101, payload, length, 1001));
+    assert(bus.nodes[0].replies[1].result == LCS_CONFIG_OWNER_STOPPED && bus.nodes[0].applied);
+    catalog.poisoned = true; bus.backpressure = true;
+    lcs_config_owner_network_process(&bus.nodes[0], instances, 1002, owner_send, &bus);
+    assert(bus.nodes[0].replies[1].result == LCS_CONFIG_OWNER_FAILED && bus.nodes[0].receipt.failed);
+    assert(!bus.nodes[0].retired && lcs_config_owner_network_retry(&bus.nodes[0], 1003) < 0);
+    lcs_config_owner_network_stop(&bus.nodes[0]); lcs_config_application_close(&catalog);
+    lcs_config_value_clear(&first); cleanup();
+}
+
 int main(void)
 {
     parent = getpid();
@@ -1117,6 +1301,8 @@ int main(void)
     test_owner_barrier_proofs();
     test_owner_network_exchange();
     test_live_owner_network_recheck();
+    test_owner_receipt_retirement();
+    test_owner_release_poisoned_catalog();
     puts("durable configuration reconciliation ordering and safety barriers unit tests passed");
     return 0;
 }
