@@ -2,8 +2,9 @@
 
 Status: contract with implemented local catalog and reconciliation sequencing;
 local backend callbacks, receipt retirement and explicit startup cleanup are
-implemented. Completed-history recovery, differing-generation catch-up, daemon
-integration and automatic activation remain unfinished. The running daemon
+implemented, including completed scopes backed by retained predecessor history.
+Differing-generation/missing-history catch-up, daemon integration and automatic
+activation remain unfinished. The running daemon
 still uses INI authority and supports wire 5–6. Wire-6 bootstrap metadata does
 not enable dynamic edits.
 See [the agreement core](dynamic-config-agreement.md) and
@@ -96,7 +97,7 @@ rules. The 64-KiB frame limit includes the prefix.
 
 These APIs are not invoked automatically yet. The daemon still refuses persisted
 distributed startup. The local runtime adapter below now implements backend/remap callbacks;
-completed receipt reconstruction, startup integration and automatic activation
+missing-history catch-up, startup integration and automatic activation
 remain unfinished. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
@@ -196,8 +197,8 @@ primitives are available through the same background storage worker used for
 agreement. It uses the same exclusively locked state directory as agreement and
 a node/membership-bound,
 checksummed `application.json` record. The record contains canonical complete
-last-applied and optional pending configuration values, including incarnations,
-backend properties and hooks. It does not contain lease ownership or epochs.
+last-applied and optional pending configuration values, plus the two preceding
+complete applied snapshots, including incarnations, backend properties and hooks. It does not contain lease ownership or epochs.
 
 A missing catalog may only be initialized with explicit authorization while the
 agreement is still at revision-zero bootstrap. It cannot be recreated from a
@@ -216,8 +217,9 @@ revision are rejected. Policy/group placement reconciliation and actual
 stop/start execution remain responsibilities of the future daemon coordinator.
 
 Finish requires the exact pending digest and the caller's completed cleanup and
-old-owner barrier. It persists pending as applied and removes the old snapshot in
-one atomic record replacement. Finish itself does not stop a backend or prove
+old-owner barrier. In one atomic record replacement it promotes pending to
+applied, shifts old applied into history slot 0 and old slot 0 into slot 1,
+and drops only the snapshot outside that bounded window. Finish itself does not stop a backend or prove
 that cleanup occurred. Failed persistence poisons the handle; reopen from disk
 before further work. A directory-sync failure after rename is uncertain, so
 recovery may observe either old/pending or completed state. Missing, corrupt,
@@ -229,14 +231,15 @@ The shared worker serializes agreement and application writes. It persists begin
 or finish in the child and transfers a bounded, checksummed catalog back to the
 parent. Parent import performs no filesystem I/O and accepts only the unchanged
 catalog, staging the latest learned decision without dropping old definitions,
-or completion of the exact pending application. Replays that erase cleanup
-obligations or regress the applied revision are rejected. Cancellation or an
+or completion of the exact pending application with the exact predecessor-history
+rotation. Replays that erase cleanup/history obligations or regress the applied
+revision are rejected. Cancellation or an
 uncertain worker result poisons both handles until disk recovery after child exit.
 Tests cover shared-writer exclusion, delayed publication, large pipe results,
 stale imports, failed file/directory sync, and cancellation. The internal
 reconciliation sequencer below now coordinates catalog writes and explicit
 backend barriers; the local adapter below now supplies backend/remap callbacks, while its
-completed receipt reconstruction and automatic daemon integration remain pending.
+missing-history catch-up and automatic daemon integration remain pending.
 
 ## Internal reconciliation sequencer
 
@@ -517,10 +520,10 @@ completed record. All instances and digests remain bound to the query/reply.
 
 These records are process-local proof. A restarted daemon cannot recreate them
 from an applied revision alone; it answers PENDING for an unknown scope. The
-explicit startup cleanup runner below can now recreate a pending stop scope
-under a new instance after physical cleanup. Completed receipt reconstruction
-and differing-old-generation reconciliation remain unfinished, and automatic
-application remains disabled. Tests cover three sequential transitions with
+startup cleanup runner below can recreate pending and completed scopes under a
+new instance only after physical cleanup of the retained snapshots. Missing
+predecessor history and differing-old-generation reconciliation remain unfinished;
+automatic application remains disabled. Tests cover three sequential transitions with
 independently published durable catalog records, a delayed local application,
 lost completion replies, a fast member serving a slow peer while on its next
 transition, phase confusion, conflicting digests, session loss, timeout/retry,
@@ -534,9 +537,12 @@ a healthy applied/pending catalog. It does not enable the daemon's distributed
 startup path; normal startup still refuses persisted distributed history until
 the remaining recovery/admission manager is integrated.
 
-The runner copies and binds the complete last-applied snapshot and any pending
-value. It cleans **every** applied backend on this node because old ownership is
-unknown after a process restart. It does not use the edited INI definitions or
+The runner copies and binds the complete last-applied snapshot, its two retained
+predecessors and any pending value. It cleans **every** backend in the applied
+and retained historical snapshots on this node because ownership is unknown
+after a process restart. It processes the current table first, then each older
+table, with dependents first within each table. Even an empty current table can
+have historical backends that require cleanup. It does not use the edited INI definitions or
 replace old cleanup with the pending/newest target. Before FINISH, new definitions
 cannot start backends, so the retained applied snapshot covers possible active
 backends; after FINISH, the applied catalog already names the installed target.
@@ -567,10 +573,13 @@ foreground child commands are cancelled on daemon death as well as on timeout;
 workers do not retain daemon listeners or storage descriptors.
 
 Successful cleanup is checked against the same catalog and the new daemon
-instance. `lcs_config_startup_restore_pending()` can then recreate an exact
-pending stop scope and start a fresh instance-bound collection. It cannot reuse
-an old instance's replies, infer a completed receipt from an applied revision,
-or reconstruct discarded completion history. Completion leaves
+instance. When predecessor history is available,
+`lcs_config_startup_restore_completed()` restores the latest completed scope and
+its preceding completion record from exact saved snapshot pairs. It restores
+only local proof under the new instance, never old replies or an all-member
+certificate. Fresh all-full-member application confirmation must retire that
+scope before `lcs_config_startup_restore_pending()` can recreate a pending stop
+scope. Applied revision numbers alone and discarded history are insufficient. Completion leaves
 `requires_recovery` set and does not write journals/catalogs, install runtime
 ownership, admit a resource generation, or enable lease/configuration voting.
 The caller must keep activity fenced, perform ordinary lease/restart recovery,
@@ -578,12 +587,64 @@ and integrate the authoritative runtime table before admission. Close the runner
 only after all its workers are reaped; its decoded snapshot is owned until close.
 
 Tests reopen durable history with conflicting INI definitions and a newer pending
-deletion, verify old backend/hook details and dependency order, and recreate only
-pending proof under a new instance. They cover service/VIP/hook failures, explicit
+deletion, verify current/historical backend and hook details and dependency order,
+and recreate exact pending/completed proof under a new instance. They cover service/VIP/hook failures, explicit
 repair/retry, timeouts, cancellation, poisoned catalogs, completion invalidation,
-quorum-only skips, refusal to invent completed history, and daemon death with
+quorum-only skips, refusal to invent missing predecessor history, and daemon death with
 backend/probe workers and hook child commands still running. These use real worker
 processes with dry-run backends; they do not constitute live daemon recovery.
+
+## Durable completed predecessor history
+
+Application catalog record format 2 adds a fixed two-element `history` array,
+newest predecessor first; unused entries are `null`. Each entry is a complete
+canonical value with its request ID, digest, revision/incarnations, backend
+properties and hooks. At applied `C` with history `[B, A]`, the saved local
+transitions are `A -> B` and `B -> C`; they need not be consecutive consensus
+revision numbers. The optional pending value is still retained separately.
+
+FINISH writes the applied value, empty pending value and rotated history in the
+same fsync/rename/directory-fsync operation. There is no window where the new
+applied marker exists without its saved predecessors. A failed or interrupted
+write retains the existing uncertainty/recovery requirement. BEGIN and unchanged
+worker results must preserve history exactly; FINISH import must match the exact
+old applied/pending/history values. Stale, cleared or fabricated history cannot
+cross the local worker handoff. Disk recovery validates canonical digests, strict
+keys/checksum, contiguous history slots, increasing revisions and identity-aware
+backend lineage. The history is local application evidence, not peer consensus
+or lease ownership evidence.
+
+Why two predecessors: a fast member may finish `B -> C` while a slow member is
+still collecting application confirmation for `A -> B`. On restart the saved
+`A`, `B`, and `C` definitions permit cleanup and reconstruction of both exact
+local completion scopes. Startup cleanup must finish every saved table before
+reconstructing either scope. Stop hooks can repeat, so retained hook programs
+must remain usable and idempotent while these records reference them. A failure
+in a historical backend/hook blocks proof even if the current table was cleaned.
+
+`lcs_config_startup_restore_completed()` then restores local APPLIED proof for
+`B -> C` and the preceding completion record for `A -> B`, bound to the **new**
+daemon instance. A slow member's exact older query can be answered. Other members
+must discard old-instance replies and re-collect from admitted sessions; local
+reconstruction does not restore a global certificate. A pending `C -> D` waits
+until fresh full-member confirmation retires `B -> C`, then uses a new stop round.
+No table remapping, lease admission or configuration vote is enabled by this step.
+
+Record format 1 is still readable but has no recoverable completed predecessor
+history. When its applied revision is nonzero, ordinary BEGIN/export preserves
+format 1 until a real FINISH establishes a known predecessor; that FINISH writes
+format 2 with one saved predecessor. Unknown older entries are never fabricated.
+Startup cleanup may verify the available current backends, but cannot acknowledge
+unknown completed scopes or bypass missing history to start another pending
+scope. Such recovery, and catch-up with different old-generation scopes, remain
+unsupported/gated. Released legacy INI configurations have no distributed catalog
+and retain their existing upgrade path.
+
+The history is bounded: four possible full values (applied, pending and two
+predecessors), each within the existing 512-KiB resource-document cap. The catalog
+limit is 4 MiB plus 32 KiB to accommodate JSON string escaping and metadata.
+The shared writer still limits parent pipe processing to 64 KiB per poll. No new
+library, peer frame/layout/version or CLI protocol is needed for this disk format.
 
 ## Client outcomes
 

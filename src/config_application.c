@@ -75,15 +75,26 @@ static int decode_value(json_t *object, const lcs_config_t *base,
     return 0;
 }
 
+static int validate_pair(const lcs_config_application_t *application, char *err, size_t err_len);
+
 int lcs_config_application_export(const lcs_config_application_t *application,
                                     char **document, size_t *length,
                                     char *err, size_t err_len)
 {
     if (application->poisoned || !application->applied.document)
         return fail(err, err_len, "application recovery required before export");
-    json_t *root = json_pack("{s:i,s:s,s:s,s:o,s:o}", "record_version", 1,
+    /* Preserve readable version-1 catalogs with unknown predecessor history
+     * until an actual FINISH establishes it; never invent missing ancestry. */
+    int version = application->applied.revision && !application->history[0].document ? 1 : 2;
+    if ((!application->history[0].document && application->history[1].document) ||
+        validate_pair(application, err, err_len))
+        return -1;
+    json_t *root = json_pack("{s:i,s:s,s:s,s:o,s:o}", "record_version", version,
         "member", application->member, "membership", application->membership,
         "applied", encode_value(&application->applied), "pending", encode_value(&application->pending));
+    if (root && version == 2 && json_object_set_new(root, "history", json_pack("[o,o]",
+        encode_value(&application->history[0]), encode_value(&application->history[1]))))
+    { json_decref(root); root = NULL; }
     char hash[65], *text = NULL;
     if (root && !checksum(root, hash) &&
         !json_object_set_new(root, "checksum", json_string(hash)))
@@ -101,11 +112,12 @@ int lcs_config_application_export(const lcs_config_application_t *application,
 
 static int persist(lcs_config_application_t *application,
                      const lcs_config_value_t *applied, const lcs_config_value_t *pending,
-                     char *err, size_t err_len)
+                     const lcs_config_value_t history[LCS_CONFIG_APPLICATION_HISTORY], char *err, size_t err_len)
 {
     lcs_config_application_t next = *application;
     next.applied = *applied;
     next.pending = *pending;
+    memcpy(next.history, history, sizeof(next.history));
     char *text = NULL;
     size_t length;
     int result = lcs_config_application_export(&next, &text, &length, err, err_len);
@@ -121,6 +133,7 @@ void lcs_config_application_close(lcs_config_application_t *application)
 {
     lcs_config_value_clear(&application->applied);
     lcs_config_value_clear(&application->pending);
+    for (size_t i = 0; i < LCS_CONFIG_APPLICATION_HISTORY; i++) lcs_config_value_clear(&application->history[i]);
     memset(application, 0, sizeof(*application));
 }
 
@@ -197,7 +210,7 @@ static int plan_values(const lcs_config_t *base, const lcs_config_value_t *appli
     return 0;
 }
 
-static int validate_pair(lcs_config_application_t *application, char *err, size_t err_len)
+static int validate_pair(const lcs_config_application_t *application, char *err, size_t err_len)
 {
     lcs_config_t *configs = malloc(2 * sizeof(*configs));
     if (!configs)
@@ -215,6 +228,21 @@ static int validate_pair(lcs_config_application_t *application, char *err, size_
         result = plan_values(application->base, &application->applied, &application->pending,
                                &configs[0], &configs[1], &plan, err, err_len);
     }
+    for (size_t i = 0; !result && i < LCS_CONFIG_APPLICATION_HISTORY; i++)
+    {
+        if (!application->history[i].document)
+        {
+            if (i == 0 && application->history[1].document)
+                result = fail(err, err_len, "noncontiguous application history");
+            break;
+        }
+        lcs_config_application_plan_t plan;
+        const lcs_config_value_t *target = i ? &application->history[i - 1] : &application->applied;
+        result = plan_values(application->base, &application->history[i], target, &configs[0], &configs[1], &plan, err, err_len);
+        if (!result && (application->history[i].revision ? configs[0].resource_schema_version != LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION :
+            configs[0].resource_schema_version != LCS_RESOURCE_SCHEMA_VERSION || strcmp(application->history[i].request_id, "bootstrap")))
+            result = fail(err, err_len, "history must describe bootstrap or dynamic authority");
+    }
     free(configs);
     return result;
 }
@@ -230,7 +258,8 @@ static int decode_catalog(lcs_config_application_t *application,
     snprintf(next.member, sizeof(next.member), "%s", agreement->member);
     snprintf(next.membership, sizeof(next.membership), "%s", agreement->membership);
     int result;
-    static const char *const keys[] = {"record_version", "member", "membership", "applied", "pending", "checksum", NULL};
+    static const char *const keys_v1[] = {"record_version", "member", "membership", "applied", "pending", "checksum", NULL};
+    static const char *const keys_v2[] = {"record_version", "member", "membership", "applied", "pending", "history", "checksum", NULL};
     json_error_t error;
     json_t *root = json_loadb(text, length, JSON_REJECT_DUPLICATES, &error);
     const char *stored = json_string_value(json_object_get(root, "checksum"));
@@ -238,7 +267,8 @@ static int decode_catalog(lcs_config_application_t *application,
     const char *member = json_string_value(json_object_get(root, "member"));
     const char *membership = json_string_value(json_object_get(root, "membership"));
     json_t *format = json_object_get(root, "record_version");
-    bool valid = exact_keys(root, keys) && json_is_integer(format) && json_integer_value(format) == 1 &&
+    json_int_t version = json_is_integer(format) ? json_integer_value(format) : 0;
+    bool valid = (version == 1 || version == 2) && exact_keys(root, version == 1 ? keys_v1 : keys_v2) &&
         stored && strlen(stored) == 64 && json_string_length(json_object_get(root, "checksum")) == 64 &&
         member && strlen(member) == json_string_length(json_object_get(root, "member")) && !strcmp(member, next.member) &&
         membership && json_string_length(json_object_get(root, "membership")) == 64 && !strcmp(membership, next.membership);
@@ -252,6 +282,17 @@ static int decode_catalog(lcs_config_application_t *application,
     json_t *pending = json_object_get(root, "pending");
     if (!result && !json_is_null(pending))
         result = decode_value(pending, next.base, &next.pending, err, err_len);
+    if (!result && version == 2)
+    {
+        json_t *history = json_object_get(root, "history");
+        if (!json_is_array(history) || json_array_size(history) != LCS_CONFIG_APPLICATION_HISTORY)
+            result = fail(err, err_len, "invalid completed application history");
+        for (size_t i = 0; !result && i < LCS_CONFIG_APPLICATION_HISTORY; i++)
+            if (!json_is_null(json_array_get(history, i)))
+                result = decode_value(json_array_get(history, i), next.base, &next.history[i], err, err_len);
+        if (!result && next.applied.revision && !next.history[0].document)
+            result = fail(err, err_len, "completed application history is missing");
+    }
     if (!result)
         result = validate_pair(&next, err, err_len);
     json_decref(root);
@@ -294,7 +335,7 @@ int lcs_config_application_open(lcs_config_application_t *application,
         else if (lcs_config_value_copy(&next.applied, &agreement->committed))
             result = fail(err, err_len, "out of memory initializing application catalog");
         else
-            result = persist(&next, &next.applied, &next.pending, err, err_len);
+            result = persist(&next, &next.applied, &next.pending, next.history, err, err_len);
         if (result)
             lcs_config_application_close(&next);
         else
@@ -314,6 +355,10 @@ int lcs_config_application_import(lcs_config_application_t *application,
     lcs_config_application_t next = {0};
     if (decode_catalog(&next, agreement, document, length, err, err_len))
         return -1;
+    bool same_history = true;
+    for (size_t i = 0; i < LCS_CONFIG_APPLICATION_HISTORY; i++)
+        same_history = same_history && ((!next.history[i].document && !application->history[i].document) ||
+            lcs_config_value_equal(&next.history[i], &application->history[i]));
     bool same_applied = lcs_config_value_equal(&next.applied, &application->applied);
     bool same_pending = (!next.pending.document && !application->pending.document) ||
         (next.pending.document && application->pending.document &&
@@ -321,11 +366,14 @@ int lcs_config_application_import(lcs_config_application_t *application,
     /* Only an unchanged result, staging the exact latest decision, or finishing
      * the exact pending application may cross a local worker boundary. An old
      * cleanup obligation cannot be dropped/replaced by a newer worker replay. */
-    bool staging = same_applied && !application->pending.document && next.pending.document &&
+    bool staging = same_history && same_applied && !application->pending.document && next.pending.document &&
         lcs_config_value_equal(&next.pending, &agreement->committed);
     bool finishing = application->pending.document && !next.pending.document &&
-        lcs_config_value_equal(&next.applied, &application->pending);
-    if (!(same_applied && same_pending) && !staging && !finishing)
+        lcs_config_value_equal(&next.applied, &application->pending) &&
+        lcs_config_value_equal(&next.history[0], &application->applied) &&
+        ((!next.history[1].document && !application->history[0].document) ||
+            lcs_config_value_equal(&next.history[1], &application->history[0]));
+    if (!(same_applied && same_pending && same_history) && !staging && !finishing)
     {
         lcs_config_application_close(&next);
         return fail(err, err_len, "stale or conflicting application worker result");
@@ -353,7 +401,7 @@ int lcs_config_application_begin(lcs_config_application_t *application,
     proposed.pending = pending;
     int result = validate_pair(&proposed, err, err_len);
     if (!result)
-        result = persist(application, &application->applied, &pending, err, err_len);
+        result = persist(application, &application->applied, &pending, application->history, err, err_len);
     if (!result)
         application->pending = pending;
     else
@@ -369,10 +417,13 @@ int lcs_config_application_finish(lcs_config_application_t *application,
     if (!digest || !application->pending.document || strcmp(digest, application->pending.digest))
         return fail(err, err_len, "finish requires exact pending configuration digest");
     lcs_config_value_t empty = {0};
-    int result = persist(application, &application->pending, &empty, err, err_len);
+    lcs_config_value_t history[LCS_CONFIG_APPLICATION_HISTORY] = {application->applied, application->history[0]};
+    int result = persist(application, &application->pending, &empty, history, err, err_len);
     if (!result)
     {
-        lcs_config_value_clear(&application->applied);
+        lcs_config_value_clear(&application->history[1]);
+        application->history[1] = application->history[0];
+        application->history[0] = application->applied;
         application->applied = application->pending;
         memset(&application->pending, 0, sizeof(application->pending));
     }

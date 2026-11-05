@@ -16,10 +16,32 @@ static uint32_t all_resources(size_t count)
     return count == 32 ? UINT32_MAX : (UINT32_C(1) << count) - 1;
 }
 
+static const lcs_config_t *cleanup_config(const lcs_config_startup_t *startup)
+{
+    return startup->snapshot ? &startup->history_configs[startup->snapshot - 1] : startup->config;
+}
+
+static uint32_t *cleanup_completed(lcs_config_startup_t *startup)
+{
+    return startup->snapshot ? &startup->history_completed[startup->snapshot - 1] : &startup->completed;
+}
+
+static void clear_snapshots(lcs_config_startup_t *startup)
+{
+    free(startup->config); free(startup->history_configs);
+    lcs_config_value_clear(&startup->applied); lcs_config_value_clear(&startup->pending);
+    for (size_t i = 0; i < LCS_CONFIG_APPLICATION_HISTORY; i++) lcs_config_value_clear(&startup->history[i]);
+}
+
 static bool bound(const lcs_config_startup_t *startup)
 {
     const lcs_config_runtime_t *runtime = startup->runtime;
-    return runtime && runtime->requires_recovery && runtime->base &&
+    if (!runtime) return false;
+    for (size_t i = 0; i < LCS_CONFIG_APPLICATION_HISTORY; i++)
+        if ((startup->history[i].document || runtime->application.history[i].document) &&
+            !lcs_config_value_equal(&startup->history[i], &runtime->application.history[i]))
+            return false;
+    return runtime->requires_recovery && runtime->base &&
         lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) &&
         lcs_config_value_equal(&startup->applied, &runtime->application.applied) &&
         ((!startup->pending.document && !runtime->application.pending.document) ||
@@ -37,7 +59,8 @@ int lcs_config_startup_begin(lcs_config_startup_t *startup, const lcs_config_run
                                uint64_t instance, char *err, size_t err_len)
 {
     if (!startup || startup->config || startup->pid > 0 || !runtime || !runtime->base || !instance ||
-        !runtime->requires_recovery || !runtime->application.applied.document || !lcs_config_barrier_valid(&runtime->barrier,
+        !runtime->requires_recovery || !runtime->application.applied.document ||
+        (!runtime->application.history[0].document && runtime->application.history[1].document) || !lcs_config_barrier_valid(&runtime->barrier,
             &runtime->activation, &runtime->agreement, &runtime->application))
         goto invalid;
     lcs_config_startup_t next = { .runtime = runtime, .instance = instance, .phase = LCS_CONFIG_STARTUP_NEXT };
@@ -48,17 +71,28 @@ int lcs_config_startup_begin(lcs_config_startup_t *startup, const lcs_config_run
         lcs_resource_config_decode(next.applied.document, next.applied.length, runtime->base,
             next.config, &revision, err, err_len) || revision != next.applied.revision)
     {
-        free(next.config); lcs_config_value_clear(&next.applied); lcs_config_value_clear(&next.pending);
+        clear_snapshots(&next);
         goto invalid;
     }
+    if (runtime->application.history[0].document)
+    {
+        next.history_configs = calloc(LCS_CONFIG_APPLICATION_HISTORY, sizeof(*next.history_configs));
+        if (!next.history_configs) { clear_snapshots(&next); goto invalid; }
+    }
+    for (size_t i = 0; i < LCS_CONFIG_APPLICATION_HISTORY; i++)
+        if (runtime->application.history[i].document &&
+            (lcs_config_value_copy(&next.history[i], &runtime->application.history[i]) ||
+             lcs_resource_config_decode(next.history[i].document, next.history[i].length, runtime->base,
+                &next.history_configs[i], &revision, err, err_len) || revision != next.history[i].revision))
+        { clear_snapshots(&next); goto invalid; }
     int self = lcs_config_self_index(next.config);
     if (self < 0)
     {
-        free(next.config); lcs_config_value_clear(&next.applied); lcs_config_value_clear(&next.pending);
+        clear_snapshots(&next);
         goto invalid;
     }
     next.quorum_only = next.config->nodes[self].role == LCS_NODE_QUORUM_ONLY;
-    if (next.quorum_only || !next.config->resource_count)
+    if (next.quorum_only || (!next.config->resource_count && !next.history[0].document))
         next.phase = LCS_CONFIG_STARTUP_DONE;
     *startup = next;
     return 0;
@@ -70,7 +104,7 @@ invalid:
 
 static int start_hook(lcs_config_startup_t *startup, const char *path, const char *event)
 {
-    const lcs_config_t *cfg = startup->config;
+    const lcs_config_t *cfg = cleanup_config(startup);
     const lcs_resource_config_t *resource = &cfg->resources[startup->index];
     pid_t parent = getpid(), child = fork();
     if (child < 0)
@@ -81,7 +115,7 @@ static int start_hook(lcs_config_startup_t *startup, const char *path, const cha
         (void)setpgid(0, 0);
         (void)close_range(3, ~0u, 0);
         char revision[32], timeout[32];
-        snprintf(revision, sizeof(revision), "%llu", (unsigned long long)startup->applied.revision);
+        snprintf(revision, sizeof(revision), "%llu", (unsigned long long)(startup->snapshot ? startup->history[startup->snapshot - 1].revision : startup->applied.revision));
         snprintf(timeout, sizeof(timeout), "%u", cfg->hook_timeout_ms);
         setenv("LCS_CLUSTER", cfg->cluster_name, 1);
         setenv("LCS_NODE", cfg->self_name, 1);
@@ -166,7 +200,7 @@ int lcs_config_startup_process(lcs_config_startup_t *startup, uint64_t now_ms)
         {
             if (startup->pre_failed)
                 return fail(startup, "startup pre-stop hook failed; backend removed but cleanup requires repair");
-            startup->completed |= UINT32_C(1) << startup->index;
+            *cleanup_completed(startup) |= UINT32_C(1) << startup->index;
         }
         return 0;
     }
@@ -177,18 +211,24 @@ int lcs_config_startup_process(lcs_config_startup_t *startup, uint64_t now_ms)
     if (startup->phase == LCS_CONFIG_STARTUP_BLOCKED || startup->phase == LCS_CONFIG_STARTUP_RECOVERY ||
         startup->phase == LCS_CONFIG_STARTUP_STOPPED)
         return -1;
+    const lcs_config_t *cfg = cleanup_config(startup);
+    uint32_t completed = *cleanup_completed(startup);
     if (startup->phase == LCS_CONFIG_STARTUP_NEXT)
     {
-        if (startup->completed == all_resources(startup->config->resource_count))
-        { startup->phase = LCS_CONFIG_STARTUP_DONE; return 1; }
-        for (size_t i = 0; i < startup->config->resource_count; i++)
+        if (completed == all_resources(cfg->resource_count))
         {
-            if (startup->completed & (UINT32_C(1) << i)) continue;
+            if (startup->snapshot < LCS_CONFIG_APPLICATION_HISTORY && startup->history[startup->snapshot].document)
+            { startup->snapshot++; return 0; }
+            startup->phase = LCS_CONFIG_STARTUP_DONE; return 1;
+        }
+        for (size_t i = 0; i < cfg->resource_count; i++)
+        {
+            if (completed & (UINT32_C(1) << i)) continue;
             bool dependent = false;
-            for (size_t j = 0; j < startup->config->resource_count; j++)
-                if (!(startup->completed & (UINT32_C(1) << j)))
-                    for (size_t d = 0; d < startup->config->resources[j].depends_on_count; d++)
-                        if (startup->config->resources[j].depends_on_idx[d] == (int)i) dependent = true;
+            for (size_t j = 0; j < cfg->resource_count; j++)
+                if (!(completed & (UINT32_C(1) << j)))
+                    for (size_t d = 0; d < cfg->resources[j].depends_on_count; d++)
+                        if (cfg->resources[j].depends_on_idx[d] == (int)i) dependent = true;
             if (dependent) continue;
             startup->index = i; startup->pre_failed = false; startup->phase = LCS_CONFIG_STARTUP_PRE_STOP;
             return 0;
@@ -196,13 +236,13 @@ int lcs_config_startup_process(lcs_config_startup_t *startup, uint64_t now_ms)
         startup->invalid = true;
         goto terminal;
     }
-    const lcs_resource_config_t *resource = &startup->config->resources[startup->index];
-    uint64_t timeout = startup->config->hook_timeout_ms;
+    const lcs_resource_config_t *resource = &cfg->resources[startup->index];
+    uint64_t timeout = cfg->hook_timeout_ms;
     if (startup->phase == LCS_CONFIG_STARTUP_BACKEND)
     {
         startup->service_worker = resource->type == LCS_RESOURCE_SERVICE;
         int result = startup->service_worker ? lcs_systemd_service_stop_async(resource, &startup->pid) :
-            resource->type == LCS_RESOURCE_VIP ? lcs_vip_operation_async(startup->config, resource, LCS_VIP_WORKER_DEL, &startup->pid) : -1;
+            resource->type == LCS_RESOURCE_VIP ? lcs_vip_operation_async(cfg, resource, LCS_VIP_WORKER_DEL, &startup->pid) : -1;
         if (result)
             return fail(startup, "cannot start startup backend cleanup worker");
         if (timeout < 5000u) timeout = 5000u;
@@ -215,7 +255,7 @@ int lcs_config_startup_process(lcs_config_startup_t *startup, uint64_t now_ms)
         {
             if (pre) startup->phase = LCS_CONFIG_STARTUP_BACKEND;
             else if (startup->pre_failed) return fail(startup, "startup pre-stop hook failed; backend removed but cleanup requires repair");
-            else { startup->completed |= UINT32_C(1) << startup->index; startup->phase = LCS_CONFIG_STARTUP_NEXT; }
+            else { *cleanup_completed(startup) |= UINT32_C(1) << startup->index; startup->phase = LCS_CONFIG_STARTUP_NEXT; }
             return 0;
         }
         if (start_hook(startup, path, pre ? "pre-stop" : "post-stop"))
@@ -245,9 +285,44 @@ int lcs_config_startup_retry(lcs_config_startup_t *startup)
 bool lcs_config_startup_verified(const lcs_config_startup_t *startup,
                                    const lcs_config_runtime_t *runtime, uint64_t instance)
 {
-    return startup && startup->config && startup->runtime == runtime && startup->instance == instance && !startup->closing &&
-        !startup->invalid && startup->pid <= 0 && startup->phase == LCS_CONFIG_STARTUP_DONE && bound(startup) &&
-        (startup->quorum_only || startup->completed == all_resources(startup->config->resource_count));
+    if (!startup || !startup->config || startup->runtime != runtime || startup->instance != instance || startup->closing ||
+        startup->invalid || startup->pid > 0 || startup->phase != LCS_CONFIG_STARTUP_DONE || !bound(startup))
+        return false;
+    if (startup->quorum_only) return true;
+    if (startup->completed != all_resources(startup->config->resource_count)) return false;
+    for (size_t i = 0; i < LCS_CONFIG_APPLICATION_HISTORY; i++)
+        if (startup->history[i].document && startup->history_completed[i] != all_resources(startup->history_configs[i].resource_count))
+            return false;
+    return true;
+}
+
+static int completed_scope(lcs_config_startup_t *startup, size_t offset, lcs_config_owner_scope_t *scope)
+{
+    lcs_config_application_t pair = startup->runtime->application;
+    pair.applied = startup->history[offset];
+    pair.pending = offset ? startup->history[offset - 1] : startup->applied;
+    return lcs_config_owner_scope(&pair, scope, startup->error, sizeof(startup->error));
+}
+
+int lcs_config_startup_restore_completed(lcs_config_startup_t *startup,
+                                         lcs_config_owner_network_t *network)
+{
+    if (!startup || !network || !lcs_config_startup_verified(startup, startup->runtime, network->instance) || startup->quorum_only ||
+        network->application != &startup->runtime->application || network->base != startup->runtime->base ||
+        network->self != (size_t)lcs_config_self_index(startup->config) || network->closing || network->receipt.sealed ||
+        network->receipt.failed || network->round.active || network->release.active || network->retired || !startup->history[0].document)
+        return -1;
+    lcs_config_owner_scope_t scope, older;
+    if (completed_scope(startup, 0, &scope) || (startup->history[1].document && completed_scope(startup, 1, &older)))
+        return -1;
+    lcs_config_owner_receipt_t receipt = {0};
+    if (lcs_config_owner_receipt_seal(&receipt, &scope, network->instance)) return -1;
+    network->receipt = receipt;
+    network->applied = true;
+    if (startup->history[1].document)
+    { network->retired_scope = older; network->retired = true; }
+    network->pending_replies = 0;
+    return 0;
 }
 
 int lcs_config_startup_restore_pending(lcs_config_startup_t *startup,
@@ -258,6 +333,13 @@ int lcs_config_startup_restore_pending(lcs_config_startup_t *startup,
         network->self != (size_t)lcs_config_self_index(startup->config) ||
         !startup->pending.document)
         return -1;
+    if (startup->history[0].document)
+    {
+        lcs_config_owner_scope_t latest;
+        if (completed_scope(startup, 0, &latest)) return -1;
+        if (!network->retired || !lcs_config_owner_scope_equal(&network->retired_scope, &latest)) return 1;
+    }
+    else if (startup->applied.revision) return -1; /* Version-1 history is unknown. */
     lcs_config_owner_scope_t scope;
     if (lcs_config_owner_scope(network->application, &scope, startup->error, sizeof(startup->error)))
         return -1;
@@ -278,7 +360,7 @@ int lcs_config_startup_close(lcs_config_startup_t *startup)
         startup->phase != LCS_CONFIG_STARTUP_STOPPED && startup->phase != LCS_CONFIG_STARTUP_BLOCKED &&
         startup->phase != LCS_CONFIG_STARTUP_RECOVERY))
         return -1;
-    free(startup->config); lcs_config_value_clear(&startup->applied); lcs_config_value_clear(&startup->pending);
+    clear_snapshots(startup);
     memset(startup, 0, sizeof(*startup));
     return 0;
 }

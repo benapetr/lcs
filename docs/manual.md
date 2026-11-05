@@ -134,8 +134,9 @@ open. Stop hooks should be idempotent because cleanup may need to repeat them.
 
 The internal dynamic startup cleanup runner (not automatically enabled yet) also
 sets `LCS_RECOVERY=1` and `LCS_CONFIG_REVISION` to the last-applied revision.
-Recovery uses the saved old definition with epoch/lease ID zero, since ownership
-is unknown. See [startup cleanup](dynamic-config-application.md#explicit-startup-backend-cleanup).
+Recovery uses saved applied and retained predecessor definitions with epoch/lease
+ID zero, since ownership is unknown. Retained stop-hook programs must remain
+usable and idempotent while recovery records reference them. See [startup cleanup](dynamic-config-application.md#explicit-startup-backend-cleanup).
 
 A hook must exit with status `0` to be considered successful. If `pre_start` fails or times out, activation is aborted and the lease is released. If `pre_stop` fails or times out, the failure is logged but the VIP is still removed. Hook execution runs asynchronously in the daemon event loop, so peer communication and lease renewal continue while a hook is running. If quorum is lost or the local lease expires during a hook, `lcsd` skips any remaining stop hooks and removes the VIP immediately.
 

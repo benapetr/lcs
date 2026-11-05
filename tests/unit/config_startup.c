@@ -154,6 +154,30 @@ static void cleanup(lcs_config_startup_t *startup)
     for (size_t i = 0; i < sizeof(env) / sizeof(env[0]); i++) unsetenv(env[i]);
 }
 
+static lcs_config_owner_message_t owner_query;
+static int capture_owner(void *context, size_t node, const void *payload, size_t length)
+{
+    (void)context; assert(node == 1);
+    assert(!lcs_config_owner_decode(payload, length, &owner_query));
+    return 0;
+}
+
+static void confirm_completed(lcs_config_owner_network_t *network)
+{
+    uint64_t instances[LCS_MAX_NODES] = {900, 901, 0};
+    uint64_t now = lcs_now_ms();
+    lcs_config_owner_network_process(network, instances, now, capture_owner, NULL);
+    assert(owner_query.kind == LCS_CONFIG_OWNER_APPLIED_QUERY);
+    lcs_config_owner_message_t reply = owner_query;
+    reply.kind = LCS_CONFIG_OWNER_APPLIED_REPLY; reply.result = LCS_CONFIG_OWNER_STOPPED;
+    reply.sender_instance = 901; reply.target_instance = 900;
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(&reply, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(network, 1, 901, payload, length, now));
+    lcs_config_owner_network_process(network, instances, now, capture_owner, NULL);
+    assert(network->retired && !network->receipt.sealed);
+}
+
 static void test_applied_cleanup_and_pending_receipt(void)
 {
     setup(true, false);
@@ -174,10 +198,33 @@ static void test_applied_cleanup_and_pending_receipt(void)
     assert(runtime.requires_recovery && runtime.agreement.promised == promised);
     assert(runtime.application.applied.revision == 2 && runtime.application.pending.revision == 3);
     FILE *events = fopen(trace, "r"); assert(events); char line[512];
-    const char *expected[] = {"b_child|pre-stop|2|1|0|0|192.0.2.20/32|\n", "b_child|post-stop|2|1|0|0|192.0.2.20/32|\n",
-        "a_parent|pre-stop|2|1|0|0||applied.service\n", "a_parent|post-stop|2|1|0|0||applied.service\n"};
-    for (size_t i = 0; i < 4; i++) { assert(fgets(line, sizeof(line), events)); assert(!strcmp(line, expected[i])); }
+    for (int revision = 2; revision >= 0; revision--)
+    {
+        const char *names[] = {"b_child", "b_child", "a_parent", "a_parent"};
+        const char *event[] = {"pre-stop", "post-stop", "pre-stop", "post-stop"};
+        for (size_t i = 0; i < 4; i++)
+        {
+            char expected[512];
+            snprintf(expected, sizeof(expected), "%s|%s|%d|1|0|0|%s|%s\n", names[i], event[i], revision,
+                i < 2 ? (revision == 2 ? "192.0.2.20/32" : "192.0.2.10/32") : "",
+                i >= 2 ? (revision == 2 ? "applied.service" : "baseline.service") : "");
+            assert(fgets(line, sizeof(line), events) && !strcmp(line, expected));
+        }
+    }
     assert(!fgets(line, sizeof(line), events)); fclose(events);
+    assert(lcs_config_startup_restore_pending(&startup, &network, lcs_now_ms()) == 1);
+    assert(!lcs_config_startup_restore_completed(&startup, &network));
+    assert(network.applied && network.receipt.scope.old_revision == 1 && network.receipt.scope.target_revision == 2);
+    assert(network.retired && network.retired_scope.old_revision == 0 && network.retired_scope.target_revision == 1);
+    lcs_config_owner_message_t slow = { .kind = LCS_CONFIG_OWNER_APPLIED_QUERY, .sender_instance = 901,
+        .target_instance = 900, .id = 77, .scope = network.retired_scope };
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(&slow, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(&network, 1, 901, payload, length, lcs_now_ms()));
+    assert(network.replies[1].kind == LCS_CONFIG_OWNER_APPLIED_REPLY && network.replies[1].result == LCS_CONFIG_OWNER_STOPPED);
+    assert(lcs_config_startup_restore_pending(&startup, &network, lcs_now_ms()) == 1);
+    confirm_completed(&network);
+    assert(network.retired_scope.old_revision == 1 && network.retired_scope.target_revision == 2);
     assert(!lcs_config_startup_restore_pending(&startup, &network, lcs_now_ms()));
     assert(network.receipt.sealed && network.receipt.instance == 900 && network.round.stopped == 1);
     assert(network.receipt.scope.old_revision == 2 && network.receipt.scope.target_revision == 3);
@@ -250,6 +297,13 @@ static void test_quorum_only_and_completed_history(void)
         lcs_config_owner_network_t network;
         assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, q ? 2 : 0, 900));
         assert(lcs_config_startup_restore_pending(&startup, &network, lcs_now_ms()) < 0 && !network.receipt.sealed && !network.retired);
+        if (q) assert(lcs_config_startup_restore_completed(&startup, &network) < 0);
+        else
+        {
+            assert(!lcs_config_startup_restore_completed(&startup, &network));
+            assert(network.applied && network.receipt.scope.target_revision == 2);
+            confirm_completed(&network);
+        }
         lcs_config_owner_network_stop(&network); cleanup(&startup);
     }
 }
@@ -333,11 +387,73 @@ static void test_workers_die_with_parent(void)
     cleanup(&startup);
 }
 
+
+static void test_completed_history_cleanup_and_legacy(void)
+{
+    setup(false, false); lcs_config_startup_t startup = {0};
+    assert(!lcs_config_startup_begin(&startup, &runtime, 900, error, sizeof(error)));
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        assert(lcs_config_startup_process(&startup, lcs_now_ms()) >= 0);
+        if (startup.snapshot == 1 && startup.phase == LCS_CONFIG_STARTUP_BACKEND && startup.pid <= 0) break;
+        assert(i < 4999); usleep(1000);
+    }
+    assert(startup.completed == 3 && startup.history_completed[0] == 0);
+    setenv("LCS_VIP_FAIL_DEL", "1", 1); finish(&startup, LCS_CONFIG_STARTUP_BLOCKED);
+    assert(!lcs_config_startup_verified(&startup, &runtime, 900));
+    lcs_config_owner_network_t network;
+    assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, 0, 900));
+    assert(lcs_config_startup_restore_completed(&startup, &network) < 0 && !network.receipt.sealed);
+    unsetenv("LCS_VIP_FAIL_DEL"); assert(!lcs_config_startup_retry(&startup)); finish(&startup, LCS_CONFIG_STARTUP_DONE);
+    char digest[65]; strcpy(digest, runtime.application.history[0].digest);
+    runtime.application.history[0].digest[0] = digest[0] == 'a' ? 'b' : 'a';
+    assert(!lcs_config_startup_verified(&startup, &runtime, 900));
+    assert(lcs_config_startup_restore_completed(&startup, &network) < 0);
+    strcpy(runtime.application.history[0].digest, digest);
+    assert(!lcs_config_startup_restore_completed(&startup, &network));
+    lcs_config_owner_network_stop(&network); cleanup(&startup);
+
+    /* FINISH can leave no current resources; predecessors still need cleanup. */
+    setup(true, false); memset(&startup, 0, sizeof(startup));
+    forbid_io = false;
+    assert(!lcs_config_application_finish(&runtime.application, runtime.application.pending.digest, error, sizeof(error)));
+    forbid_io = true;
+    assert(!lcs_config_startup_begin(&startup, &runtime, 900, error, sizeof(error)));
+    assert(!startup.config->resource_count && startup.phase != LCS_CONFIG_STARTUP_DONE);
+    finish(&startup, LCS_CONFIG_STARTUP_DONE);
+    assert(startup.history_completed[0] == 3 && startup.history_completed[1] == 3);
+    assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, 0, 900));
+    assert(!lcs_config_startup_restore_completed(&startup, &network));
+    assert(network.receipt.scope.old_revision == 2 && network.receipt.scope.target_revision == 3);
+    lcs_config_owner_network_stop(&network); cleanup(&startup);
+
+    /* Old record format is readable but missing history must not become proof. */
+    setup(true, false); memset(&startup, 0, sizeof(startup));
+    lcs_config_application_t legacy = runtime.application;
+    memset(legacy.history, 0, sizeof(legacy.history));
+    char *record; size_t length;
+    assert(!lcs_config_application_export(&legacy, &record, &length, error, sizeof(error)));
+    lcs_config_t *cfg = malloc(sizeof(*cfg)); assert(cfg); *cfg = *runtime.base;
+    forbid_io = false;
+    assert(!lcs_config_store_write(&store, "application.json", record, length, error, sizeof(error)));
+    lcs_config_runtime_close(&runtime);
+    assert(!lcs_config_runtime_open(&runtime, &store, cfg, error, sizeof(error)));
+    forbid_io = true; free(cfg); free(record);
+    assert(!runtime.application.history[0].document && runtime.application.applied.revision == 2);
+    assert(!lcs_config_startup_begin(&startup, &runtime, 900, error, sizeof(error))); finish(&startup, LCS_CONFIG_STARTUP_DONE);
+    assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, 0, 900));
+    assert(lcs_config_startup_restore_completed(&startup, &network) < 0);
+    assert(lcs_config_startup_restore_pending(&startup, &network, lcs_now_ms()) < 0);
+    assert(!network.receipt.sealed && !network.retired);
+    lcs_config_owner_network_stop(&network); cleanup(&startup);
+}
+
 int main(void)
 {
     parent = getpid();
     test_applied_cleanup_and_pending_receipt(); test_failures_and_retry(); test_timeout_cancellation_and_binding();
     test_quorum_only_and_completed_history(); test_workers_die_with_parent();
+    test_completed_history_cleanup_and_legacy();
     puts("authoritative startup cleanup, pending receipt recovery and worker lifetime unit tests passed");
     return 0;
 }

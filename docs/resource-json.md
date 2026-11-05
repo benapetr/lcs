@@ -106,11 +106,12 @@ now bind explicit full-member stop receipts to exact transitions and daemon
 instances. The [explicit network adapter](dynamic-config-application.md#explicit-owner-network-adapter)
 connects transport and local drain. Exact all-full-member application confirmation
 now retires stop receipts while retaining completion evidence for slow peers;
-completed-history/catch-up recovery and automatic application remain unfinished.
+missing-history/catch-up recovery and automatic application remain unfinished.
 The [explicit startup cleanup runner](dynamic-config-application.md#explicit-startup-backend-cleanup)
-uses recovered applied definitions and old hooks, including during a pending
-replacement/deletion, and can recreate pending stop proof after verified cleanup.
-It does not enable automatic daemon recovery or lease voting.
+uses the applied and two preceding complete snapshots with old hooks. After
+verified cleanup it can restore exact completed/pending scopes under a new daemon
+instance, retaining evidence for slow peers. It does not enable automatic daemon
+recovery or lease voting. See [catalog history and compatibility](dynamic-config-application.md#durable-completed-predecessor-history).
 
 ## Inspecting preparation across members
 

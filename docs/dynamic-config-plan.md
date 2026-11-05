@@ -191,9 +191,14 @@ durable distributed configuration protocol.
   retained cancellation/reaping and snapshot-bound completion. Recreate a pending
   stop scope only after verified cleanup under the new daemon instance. Bind
   backend/hook process groups to daemon lifetime to prevent late orphan work.
-- [ ] Recover completed receipt/application history across daemon restart and
-  reconcile catch-up with differing old generations; keep unsupported scopes
-  blocked. Catalog revision numbers alone do not reconstruct backend cleanup proof.
+- [x] Persist the two preceding complete applied snapshots atomically with
+  FINISH, validate/import their exact lineage, and clean retained historical
+  backends on restart. Restore the latest completed owner scope and preceding
+  completion record only after snapshot-bound physical cleanup, then collect
+  fresh all-full-member application confirmation before a pending scope proceeds.
+- [ ] Reconcile catch-up with differing old generations and recover missing
+  predecessor history from older catalogs; keep unsupported scopes blocked.
+  Catalog revision numbers alone do not reconstruct backend cleanup proof.
 - [ ] Connect the local adapter/publisher and distributed old-owner provider to
   live daemon startup/application. Restart cleanup and any lease-expiry/external
   fencing path require explicit validated evidence; no default proof is permitted.

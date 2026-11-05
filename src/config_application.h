@@ -5,7 +5,8 @@
 
 #include "config_agreement.h"
 
-#define LCS_CONFIG_APPLICATION_MAX (LCS_RESOURCE_DOCUMENT_MAX * 4u + 16384u)
+#define LCS_CONFIG_APPLICATION_HISTORY 2u
+#define LCS_CONFIG_APPLICATION_MAX (LCS_RESOURCE_DOCUMENT_MAX * 8u + 32768u)
 
 /* Local application catalog, not a consensus/ownership authority. All writes
  * are synchronous and must run outside the daemon lease event loop. The live
@@ -19,6 +20,7 @@ typedef struct
     char membership[LCS_CONFIG_DIGEST_SIZE];
     lcs_config_value_t applied;
     lcs_config_value_t pending;
+    lcs_config_value_t history[LCS_CONFIG_APPLICATION_HISTORY]; /* Newest predecessor first. */
     bool poisoned;
 } lcs_config_application_t;
 
@@ -51,12 +53,14 @@ int lcs_config_application_begin(lcs_config_application_t *application,
                                   const lcs_config_agreement_t *agreement,
                                   char *err, size_t err_len);
 /* Caller must have completed local cleanup, stopped workers, remapped state
- * and satisfied the old-owner/lease barrier. This records that fact; it does not
+ * and satisfied the old-owner/lease barrier. Retain the two preceding complete
+ * applied snapshots atomically with FINISH for restart cleanup/completion proof.
+ * This records that fact; it does not
  * perform or authorize backend operations. The exact pending digest is required. */
 int lcs_config_application_finish(lcs_config_application_t *application,
                                    const char *digest, char *err, size_t err_len);
 /* Decode catalog-owned snapshots for cleanup/reconciliation; old definitions
- * and hooks are retained in applied until finish is durably recorded. */
+ * and hooks remain in applied until FINISH, then in bounded predecessor history. */
 int lcs_config_application_plan(const lcs_config_application_t *application,
                                  lcs_config_t *old_config, lcs_config_t *target,
                                  lcs_config_application_plan_t *plan,

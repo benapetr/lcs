@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <jansson.h>
+#include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -946,10 +947,12 @@ static void test_application_background_durability(void)
     fail_sync = 0;
     assert(await_worker(&worker, state, &result) == -1);
     assert(application.applied.revision == 1 && application.pending.revision == 2);
+    assert(application.history[0].document && !application.history[0].revision && !application.history[1].document);
     reopen(0);
     lcs_config_application_close(&application);
     assert(lcs_config_application_open(&application, state, false, error, sizeof(error)) == 0);
     assert(application.applied.revision == 2 && !application.pending.document);
+    assert(application.history[0].revision == 1 && application.history[1].document && !application.history[1].revision);
     active.resources[0].priority++;
     active.resources[0].priority_set = true;
     selected = configuration_value(&active, 3, "large-policy-change");
@@ -959,7 +962,7 @@ static void test_application_background_durability(void)
     assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
     assert(await_worker(&worker, state, &result) == 1 && result == 0);
     assert(lcs_config_application_export(&application, &pending, &pending_length, error, sizeof(error)) == 0);
-    assert(pending_length > 65536); /* Two large snapshots exceed the poll budget. */
+    assert(pending_length > 65536); /* Retained snapshots exceed the poll budget. */
     free(pending);
     /* Cancellation never makes a possibly persisted result safe to reuse. */
     job.action = LCS_CONFIG_APPLICATION_FINISH;
@@ -1036,6 +1039,103 @@ static void test_daemon_configuration_recovery(void)
     cleanup();
 }
 
+
+static char *catalog_with_checksum(json_t *root)
+{
+    json_object_del(root, "checksum");
+    char *canonical = json_dumps(root, JSON_SORT_KEYS | JSON_COMPACT | JSON_ENSURE_ASCII); assert(canonical);
+    unsigned char digest[SHA256_DIGEST_LENGTH]; char hash[65];
+    assert(SHA256((const unsigned char *)canonical, strlen(canonical), digest)); free(canonical);
+    for (size_t i = 0; i < sizeof(digest); i++) snprintf(hash + i * 2, 3, "%02x", digest[i]);
+    assert(!json_object_set_new(root, "checksum", json_string(hash)));
+    char *record = json_dumps(root, JSON_SORT_KEYS | JSON_INDENT(2) | JSON_ENSURE_ASCII); assert(record);
+    return record;
+}
+
+static void test_completed_application_history(void)
+{
+    initialize(); lcs_config_application_t application = {0};
+    assert(!lcs_config_application_open(&application, &voters[0].state, true, error, sizeof(error)));
+    static lcs_config_t active, candidate, next;
+    active = baseline;
+    char *replay = NULL; size_t replay_length = 0;
+    for (uint64_t revision = 1; revision <= 4; revision++)
+    {
+        candidate = active;
+        if (revision == 2) strcpy(candidate.resources[0].address, "192.0.2.9/24");
+        if (revision == 3) candidate.resource_count = 0;
+        if (revision == 4) { candidate.resources[0] = baseline.resources[0]; candidate.resource_count = 1; }
+        assert(!lcs_resource_config_assign_identities(&active, revision - 1, &candidate, &next, error, sizeof(error)));
+        char request[32]; snprintf(request, sizeof(request), "history-%llu", (unsigned long long)revision);
+        lcs_config_value_t value = configuration_value(&next, revision, request);
+        choose_identity_value(&value, revision * 32); active = next;
+        assert(!lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)));
+        assert(!lcs_config_application_finish(&application, value.digest, error, sizeof(error)));
+        assert(application.history[0].revision == revision - 1);
+        assert(revision == 1 ? !application.history[1].document : application.history[1].revision == revision - 2);
+        lcs_config_application_close(&application);
+        assert(!lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)));
+        assert(application.history[0].revision == revision - 1 && application.applied.revision == revision);
+        if (revision == 2) assert(!lcs_config_application_export(&application, &replay, &replay_length, error, sizeof(error)));
+        lcs_config_value_clear(&value);
+    }
+    assert(application.history[0].revision == 3 && application.history[1].revision == 2);
+    assert(lcs_config_application_import(&application, &voters[0].state, replay, replay_length, error, sizeof(error)) < 0);
+    free(replay);
+    char *record; size_t length;
+    assert(!lcs_config_application_export(&application, &record, &length, error, sizeof(error)));
+    json_error_t parse_error; json_t *root = json_loadb(record, length, 0, &parse_error); assert(root);
+    assert(json_integer_value(json_object_get(root, "record_version")) == 2);
+    for (unsigned variant = 0; variant < 8; variant++)
+    {
+        json_t *bad = json_deep_copy(root), *history = json_object_get(bad, "history"); assert(bad);
+        if (variant == 0) assert(!json_array_remove(history, 1));
+        if (variant == 1) assert(!json_array_set_new(history, 0, json_null()));
+        if (variant == 2) assert(!json_array_set(history, 1, json_array_get(history, 0)));
+        if (variant == 3)
+        {
+            json_t *a = json_incref(json_array_get(history, 0)), *b = json_incref(json_array_get(history, 1));
+            assert(!json_array_set_new(history, 0, b)); assert(!json_array_set_new(history, 1, a));
+        }
+        if (variant == 4) assert(!json_array_set(history, 0, json_object_get(bad, "applied")));
+        if (variant == 5) assert(!json_object_set_new(json_array_get(history, 0), "digest", json_string("wrong")));
+        if (variant == 6) assert(!json_object_set_new(bad, "record_version", json_integer(3)));
+        if (variant == 7) assert(!json_object_set_new(json_array_get(history, 0), "extra", json_true()));
+        char *changed = catalog_with_checksum(bad);
+        assert(!lcs_config_store_write(&voters[0].store, "application.json", changed, strlen(changed), error, sizeof(error)));
+        lcs_config_application_t reopened = {0};
+        assert(lcs_config_application_open(&reopened, &voters[0].state, false, error, sizeof(error)) < 0);
+        assert(!reopened.applied.document && !reopened.history[0].document);
+        free(changed); json_decref(bad);
+    }
+    assert(!lcs_config_store_write(&voters[0].store, "application.json", record, length, error, sizeof(error)));
+    /* Read old format 1 conservatively. Worker import may not erase known history. */
+    json_object_del(root, "history"); assert(!json_object_set_new(root, "record_version", json_integer(1)));
+    char *legacy = catalog_with_checksum(root);
+    assert(lcs_config_application_import(&application, &voters[0].state, legacy, strlen(legacy), error, sizeof(error)) < 0);
+    assert(application.history[0].revision == 3);
+    assert(!lcs_config_store_write(&voters[0].store, "application.json", legacy, strlen(legacy), error, sizeof(error)));
+    lcs_config_application_close(&application);
+    assert(!lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)));
+    assert(application.applied.revision == 4 && !application.history[0].document);
+    free(record); record = NULL;
+    assert(!lcs_config_application_export(&application, &record, &length, error, sizeof(error)));
+    json_t *exported = json_loadb(record, length, 0, &parse_error); assert(exported);
+    assert(json_integer_value(json_object_get(exported, "record_version")) == 1 && !json_object_get(exported, "history"));
+    json_decref(exported); free(record);
+    assert(!lcs_resource_config_assign_identities(&active, 4, &active, &next, error, sizeof(error)));
+    lcs_config_value_t fifth = configuration_value(&next, 5, "history-5"); choose_identity_value(&fifth, 160);
+    assert(!lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)));
+    assert(!application.history[0].document);
+    assert(!lcs_config_application_finish(&application, fifth.digest, error, sizeof(error)));
+    lcs_config_application_close(&application);
+    assert(!lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)));
+    assert(application.applied.revision == 5 && application.history[0].revision == 4 && !application.history[1].document);
+    lcs_config_value_clear(&fifth); free(legacy); json_decref(root);
+    lcs_config_application_close(&application);
+    assert(!unlinkat(voters[0].store.directory_fd, "application.json", 0)); cleanup();
+}
+
 int main(void)
 {
     test_recovery_of_chosen_value();
@@ -1049,6 +1149,7 @@ int main(void)
     test_32_member_masks();
     test_incarnation_agreement();
     test_application_catalog();
+    test_completed_application_history();
     test_application_background_durability();
     test_daemon_configuration_recovery();
     puts("durable configuration agreement unit tests passed");

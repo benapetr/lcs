@@ -1108,6 +1108,9 @@ static void copy_owner_catalog(lcs_config_application_t *copy)
 {
     *copy = runtime.application;
     memset(&copy->applied, 0, sizeof(copy->applied)); memset(&copy->pending, 0, sizeof(copy->pending));
+    memset(copy->history, 0, sizeof(copy->history));
+    for (size_t i = 0; i < LCS_CONFIG_APPLICATION_HISTORY; i++)
+        assert(!lcs_config_value_copy(&copy->history[i], &runtime.application.history[i]));
     assert(!lcs_config_value_copy(&copy->applied, &runtime.application.applied));
     assert(!lcs_config_value_copy(&copy->pending, &runtime.application.pending));
 }

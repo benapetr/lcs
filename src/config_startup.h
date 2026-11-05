@@ -20,11 +20,12 @@ typedef enum
 typedef struct
 {
     const lcs_config_runtime_t *runtime;
-    lcs_config_t *config; /* Owned last-applied definitions, never INI/pending. */
-    lcs_config_value_t applied, pending;
+    lcs_config_t *config; /* Owned current applied definitions, never INI/pending. */
+    lcs_config_t *history_configs;
+    lcs_config_value_t applied, pending, history[LCS_CONFIG_APPLICATION_HISTORY];
     uint64_t instance, deadline_ms;
-    uint32_t completed;
-    size_t index;
+    uint32_t completed, history_completed[LCS_CONFIG_APPLICATION_HISTORY];
+    size_t index, snapshot;
     pid_t pid;
     lcs_config_startup_phase_t phase;
     bool service_worker, hook_worker, killed, closing, invalid, pre_failed, quorum_only;
@@ -38,8 +39,9 @@ typedef struct
  * journal/catalog writes, generation admission or automatic daemon wiring here. */
 int lcs_config_startup_begin(lcs_config_startup_t *startup, const lcs_config_runtime_t *runtime,
                                uint64_t instance, char *err, size_t err_len);
-/* Nonblocking cleanup of ALL last-applied backends, dependents first. Uses old
- * pre/post-stop hooks and existing VIP/systemd workers. Pre-stop failure still
+/* Nonblocking cleanup of ALL applied and saved predecessor backends, newest
+ * snapshot first and dependents first within each snapshot. Uses old pre/post-
+ * stop hooks and existing VIP/systemd workers. Pre-stop failure still
  * attempts backend removal, but blocks final success. Failed cleanup requires
  * explicit retry; cancellation/changed catalog cannot count as success. */
 int lcs_config_startup_process(lcs_config_startup_t *startup, uint64_t now_ms);
@@ -48,7 +50,14 @@ bool lcs_config_startup_verified(const lcs_config_startup_t *startup,
                                    const lcs_config_runtime_t *runtime, uint64_t instance);
 /* Recreate only a pending stop scope after actual startup cleanup, using the
  * NEW daemon instance and round. Cannot reconstruct completed receipt history
- * from an applied revision; lease/grant recovery and admission remain separate. */
+ * from an applied revision; lease/grant recovery and admission remain separate.
+ * Returns 1 while saved completed history still needs all-member retirement. */
+/* After verified physical cleanup, restore the latest completed stop/application
+ * scope and (if available) its preceding completion tombstone. Requires a fresh
+ * owner network object and starts no old-instance voting. Missing v1 history
+ * remains unsupported; an applied revision alone is never enough. */
+int lcs_config_startup_restore_completed(lcs_config_startup_t *startup,
+                                         lcs_config_owner_network_t *network);
 int lcs_config_startup_restore_pending(lcs_config_startup_t *startup,
                                        lcs_config_owner_network_t *network, uint64_t now_ms);
 /* Terminal: request cancellation but retain pid/snapshots until process reaps.

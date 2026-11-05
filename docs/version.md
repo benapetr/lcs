@@ -152,3 +152,15 @@ version are unchanged; old daemons reject the new request as unsupported.
 Format 1 describes legacy INI preparation only. Future active-authority status
 must explicitly encode that authority in a new format, rather than reusing this
 bootstrap-only response and letting an older client report INI authority.
+
+## Application catalog record format
+
+`application.json` now writes record format 2 with two complete predecessor
+values in `history`, in addition to `applied` and `pending`. FINISH rotates these
+values atomically. Recovery accepts record formats 1 and 2; format 1 has unknown
+predecessor history and cannot be used to infer completed cleanup scopes. When
+reading a nonzero format-1 applied value, export/BEGIN keep format 1 until a real
+FINISH establishes a predecessor and writes format 2. No synthetic history is
+created. Old binaries that cannot read format 2 must not replace it with legacy
+INI state. This is a private disk/worker-handoff format; resource JSON schema,
+peer wire versions, released HELLO and local CLI protocol do not change.

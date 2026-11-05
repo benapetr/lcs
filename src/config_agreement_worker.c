@@ -315,7 +315,8 @@ static bool empty_runtime(const lcs_config_runtime_t *runtime)
         !runtime->agreement.store && !runtime->application.store &&
         !runtime->activation.store && !runtime->agreement.committed.document &&
         !runtime->agreement.accepted.document && !runtime->application.applied.document &&
-        !runtime->application.pending.document && !runtime->activation.baseline.document &&
+        !runtime->application.pending.document && !runtime->application.history[0].document &&
+        !runtime->application.history[1].document && !runtime->activation.baseline.document &&
         !runtime->agreement.promised && !runtime->agreement.accepted_ballot &&
         !runtime->agreement.committed_ballot && !runtime->agreement.committed_voters &&
         !*runtime->agreement.parent_digest && !runtime->activation.phase &&
