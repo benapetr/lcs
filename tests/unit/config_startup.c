@@ -43,11 +43,12 @@ static lcs_config_store_t store;
 static lcs_config_runtime_t runtime;
 static char directory[96], hook[128], trace[128], error[256];
 static pid_t parent;
-static bool forbid_io, fail_writer_sync;
+static bool forbid_io, fail_writer_sync, stop_writer_sync;
 int __real_fsync(int fd);
 int __wrap_fsync(int fd)
 {
     assert(!forbid_io || getpid() != parent);
+    if (stop_writer_sync && getpid() != parent) raise(SIGSTOP);
     if (fail_writer_sync && getpid() != parent) { errno = EIO; return -1; }
     return __real_fsync(fd);
 }
@@ -1051,6 +1052,42 @@ static void test_recovery_manager_missing_evidence(void)
     }
 }
 
+static void recovery_projection_open(void)
+{
+    bool was_forbidden = forbid_io; forbid_io = false;
+    lcs_config_bootstrap_t *bootstrap = &g_state.config_bootstrap;
+    bootstrap->state = store; bootstrap->initialization_locked = true;
+    assert(!mkdirat(store.directory_fd, "snapshots", 0700));
+    char path[128]; snprintf(path, sizeof(path), "%s/snapshots", directory);
+    assert(!lcs_config_store_open(&bootstrap->snapshots, path, error, sizeof(error)));
+    assert(!unlinkat(bootstrap->snapshots.directory_fd, "lock", 0));
+    close(bootstrap->snapshots.lock_fd); bootstrap->snapshots.lock_fd = -1;
+    strcpy(bootstrap->snapshot_name, "resources.json");
+    forbid_io = was_forbidden;
+}
+
+static void recovery_projection_matches(const lcs_config_value_t *value)
+{
+    char *document; size_t length;
+    lcs_config_bootstrap_t *bootstrap = &g_state.config_bootstrap;
+    assert(!lcs_config_store_read(&bootstrap->snapshots, bootstrap->snapshot_name,
+        &document, &length, value->length + 1, error, sizeof(error)));
+    assert(length == value->length && !memcmp(document, value->document, length)); free(document);
+    struct stat st;
+    assert(!fstatat(bootstrap->snapshots.directory_fd, bootstrap->snapshot_name, &st, AT_SYMLINK_NOFOLLOW));
+    assert(S_ISREG(st.st_mode) && (st.st_mode & 0777) == 0600);
+}
+
+static void recovery_projection_close(void)
+{
+    assert(g_state.config_coordinator.storage.pid <= 0);
+    lcs_config_bootstrap_t *bootstrap = &g_state.config_bootstrap;
+    assert(!unlinkat(bootstrap->snapshots.directory_fd, bootstrap->snapshot_name, 0) || errno == ENOENT);
+    assert(!unlinkat(bootstrap->snapshots.directory_fd, ".resources.json.tmp", 0) || errno == ENOENT);
+    lcs_config_store_close(&bootstrap->snapshots);
+    assert(!unlinkat(store.directory_fd, "snapshots", AT_REMOVEDIR));
+}
+
 static void recovery_live_target(void)
 {
     lcs_config_t *cfg = malloc(3 * sizeof(*cfg)); assert(cfg); uint64_t revision;
@@ -1079,6 +1116,7 @@ static void test_concrete_recovery_tables(void)
     memset(&g_state, 0, sizeof(g_state));
     g_state.cfg = *runtime.base; strcpy(g_state.cfg.resources[0].systemd_unit, "wrong-ini.service");
     g_state.config_runtime = runtime; memset(&runtime, 0, sizeof(runtime));
+    recovery_projection_open();
     g_state.self_index = 0; g_state.instance_id = 900;
     for (size_t i = 0; i < g_state.cfg.node_count; i++) g_state.peers[i].fd = -1;
     recovery_bus_t bus = {0}; lcs_config_recovery_t managers[2] = {{0}};
@@ -1126,8 +1164,9 @@ static void test_concrete_recovery_tables(void)
     recovery_install_t other = {.manager = &managers[1]};
     assert(!lcs_config_recovery_start(&managers[0], &g_state.config_coordinator, &bus.nodes[0], lcs_config_recovery_live_install, &live));
     assert(!lcs_config_recovery_start(&managers[1], &peer_coordinator, &bus.nodes[1], recovery_install, &other));
+    assert(!symlinkat("../agreement.json", g_state.config_bootstrap.snapshots.directory_fd, "resources.json"));
     live_owner_network = &bus.nodes[0];
-    bool checked = false, closed_proof = false, checked_retry = false;
+    bool checked = false, closed_proof = false, checked_retry = false, repaired_projection = false;
     for (unsigned i = 0; i < 10000; i++)
     {
         if (!checked && managers[0].phase == LCS_CONFIG_RECOVERY_INSTALL)
@@ -1159,6 +1198,15 @@ static void test_concrete_recovery_tables(void)
         for (size_t n = 0; n < 2; n++)
             if (managers[n].phase == LCS_CONFIG_RECOVERY_BLOCKED)
             {
+                if (!n && !repaired_projection && g_state.config_coordinator.completed_projections && g_state.config_coordinator.last_projection_result)
+                {
+                    assert(managers[n].blocked_phase == LCS_CONFIG_RECOVERY_INSTALL && live.attempt == 0 && live_cancellations == 3);
+                    assert(!g_state.config_coordinator.failed && !g_state.config_runtime.agreement.poisoned && !g_state.config_runtime.application.poisoned);
+                    assert(g_state.config_runtime.application.applied.revision == 2 && g_state.config_runtime.application.pending.revision == 3);
+                    assert(g_state.cfg.resource_count == 2 && g_state.lease_grants[0].promised_epoch == 100);
+                    assert(!unlinkat(g_state.config_bootstrap.snapshots.directory_fd, "resources.json", 0));
+                    repaired_projection = true;
+                }
                 if (!n && managers[n].blocked_phase == LCS_CONFIG_RECOVERY_FINISH) closed_proof = true;
                 lcs_config_runtime_t *other_runtime = n ? &g_state.config_runtime : &peer;
                 if (managers[1 - n].cleanup && lcs_config_startup_verified(managers[1 - n].cleanup,
@@ -1169,7 +1217,7 @@ static void test_concrete_recovery_tables(void)
         if (i == 9999) fprintf(stderr, "live recovery states %u/%u errors %s / %s\n", managers[0].phase, managers[1].phase, managers[0].error, managers[1].error);
         assert(i < 9999); usleep(1000);
     }
-    assert(checked && closed_proof && checked_retry && live_cancellations == 6 && live.attempt == 1);
+    assert(checked && closed_proof && checked_retry && repaired_projection && live_cancellations == 6 && live.attempt == 1);
     assert(g_state.cfg.resource_count == 3 && !strcmp(g_state.cfg.resources[1].name, "a_parent"));
     assert(g_state.resources[1].epoch == 50 && !memcmp(&g_state.lease_grants[1], &promised, sizeof(promised)));
     assert(g_state.resources[1].disabled && g_state.resources[1].disabled_generation == 10);
@@ -1181,12 +1229,15 @@ static void test_concrete_recovery_tables(void)
     assert(!g_state.lease_grants[0].promised_epoch && !g_state.lease_grants[2].promised_epoch && !g_state.resources[2].disabled_generation);
     assert(g_state.resource_generation.revision == 3 && !g_state.resource_generation_admitted && g_state.config_runtime.requires_recovery);
     assert(!g_state.voting_ready && !g_state.votes_seen && !lcs_config_coordinator_can_vote(&g_state.config_coordinator));
+    recovery_projection_matches(&g_state.config_runtime.agreement.committed);
+    assert(g_state.config_coordinator.completed_projections == 2);
     live_owner_network = NULL; live_cancel_bump = false;
     stop_manager(&managers[0]); stop_manager(&managers[1]);
     lcs_config_runtime_close(&peer); forbid_io = false;
     const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json", "lock"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) assert(!unlinkat(peer_store.directory_fd, names[i], 0));
     lcs_config_store_close(&peer_store); assert(!rmdir(path));
+    recovery_projection_close();
     runtime = g_state.config_runtime; memset(&g_state, 0, sizeof(g_state));
     lcs_config_startup_t empty = {0}; cleanup(&empty);
 }
@@ -1195,6 +1246,7 @@ static void test_concrete_quorum_recovery_tables(void)
 {
     setup(false, true); memset(&g_state, 0, sizeof(g_state));
     g_state.cfg = *runtime.base; g_state.config_runtime = runtime; memset(&runtime, 0, sizeof(runtime));
+    recovery_projection_open();
     g_state.self_index = 2; g_state.instance_id = 902;
     for (size_t i = 0; i < g_state.cfg.node_count; i++) g_state.peers[i].fd = -1;
     live_cancellations = 0;
@@ -1205,13 +1257,79 @@ static void test_concrete_quorum_recovery_tables(void)
     assert(!lcs_config_owner_network_init(&g_state.config_owners, g_state.config_runtime.base, &g_state.config_runtime.application, 2, 902));
     assert(!lcs_config_recovery_start(&manager, &g_state.config_coordinator, &g_state.config_owners, lcs_config_recovery_live_install, &live));
     uint64_t instances[LCS_MAX_NODES] = {0, 0, 902};
-    for (unsigned i = 0; manager.phase != LCS_CONFIG_RECOVERY_READY && i < 5000; i++)
-    { assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) >= 0); usleep(1000); }
-    assert(manager.phase == LCS_CONFIG_RECOVERY_READY && live.attempt == 1 && live_cancellations == 3);
-    assert(g_state.cfg.resource_count == 2 && g_state.resource_generation.revision == 2 && !g_state.resource_generation_admitted);
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) >= 0);
+        if (g_state.config_coordinator.phase == LCS_CONFIG_COORD_PROJECTING) break;
+        assert(i < 4999); usleep(1000);
+    }
+    assert(live.projection.completion == 1 && live.attempt == 0);
+    for (unsigned i = 0; g_state.config_coordinator.storage.pid > 0 && i < 5000; i++)
+    { (void)lcs_config_coordinator_process(&g_state.config_coordinator, lcs_now_ms()); usleep(1000); }
+    assert(g_state.config_coordinator.storage.pid <= 0 && g_state.config_coordinator.projected_revision == 2);
+    recovery_projection_matches(&g_state.config_runtime.agreement.committed);
+    /* Learn a newer checkpoint before the adapter observes its old publication
+     * completion. It must publish 4, even while its installation target is 2. */
+    char *document; size_t length;
+    assert(!lcs_resource_config_encode(&g_state.cfg, 4, &document, &length, error, sizeof(error)));
+    lcs_config_value_t value = {0};
+    assert(!lcs_config_value_init(&value, g_state.config_runtime.base, "publication-checkpoint-4", document, length, error, sizeof(error)));
+    lcs_config_agreement_job_t job = {.action = LCS_CONFIG_CHECKPOINT, .ballot = 128, .voters = 5, .value = &value};
+    strcpy(job.parent_digest, g_state.config_runtime.agreement.committed.digest);
+    assert(!lcs_config_coordinator_start_checkpoint(&g_state.config_coordinator, &job, error, sizeof(error)));
+    free(document);
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) >= 0);
+        if (g_state.config_coordinator.projected_revision != 4) assert(live.attempt == 0);
+        if (manager.phase == LCS_CONFIG_RECOVERY_READY && g_state.config_runtime.application.applied.revision == 4) break;
+        assert(i < 4999); usleep(1000);
+    }
+    lcs_config_value_clear(&value);
+    assert(manager.phase == LCS_CONFIG_RECOVERY_READY && live.attempt == 2 && live_cancellations == 6);
+    assert(g_state.cfg.resource_count == 2 && g_state.resource_generation.revision == 4 && !g_state.resource_generation_admitted);
     assert(g_state.config_application_remapping && g_state.config_runtime.requires_recovery && !g_state.voting_ready);
+    assert(g_state.config_coordinator.completed_projections == 2 && g_state.config_coordinator.projected_revision == 4);
     assert(access(trace, F_OK) < 0 && errno == ENOENT);
-    stop_manager(&manager); runtime = g_state.config_runtime; memset(&g_state, 0, sizeof(g_state));
+    recovery_projection_matches(&g_state.config_runtime.agreement.committed);
+    stop_manager(&manager); recovery_projection_close(); runtime = g_state.config_runtime; memset(&g_state, 0, sizeof(g_state));
+    lcs_config_startup_t empty = {0}; cleanup(&empty);
+}
+
+static void test_recovery_projection_cancellation(void)
+{
+    setup(false, true); memset(&g_state, 0, sizeof(g_state));
+    g_state.cfg = *runtime.base; g_state.config_runtime = runtime; memset(&runtime, 0, sizeof(runtime));
+    recovery_projection_open(); g_state.self_index = 2; g_state.instance_id = 902;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++) g_state.peers[i].fd = -1;
+    live_cancellations = 0;
+    lcs_config_recovery_t manager = {0}; lcs_config_recovery_live_t live = {0};
+    assert(!lcs_config_recovery_live_prepare(&live, &manager, -1, error, sizeof(error)));
+    lcs_config_coordinator_init(&g_state.config_coordinator, &g_state.config_runtime, &g_state.config_readiness);
+    assert(!lcs_config_coordinator_recover(&g_state.config_coordinator));
+    assert(!lcs_config_owner_network_init(&g_state.config_owners, g_state.config_runtime.base, &g_state.config_runtime.application, 2, 902));
+    assert(!lcs_config_recovery_start(&manager, &g_state.config_coordinator, &g_state.config_owners, lcs_config_recovery_live_install, &live));
+    uint64_t instances[LCS_MAX_NODES] = {0, 0, 902}; stop_writer_sync = true;
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) >= 0);
+        if (g_state.config_coordinator.phase == LCS_CONFIG_COORD_PROJECTING) break;
+        assert(i < 4999); usleep(1000);
+    }
+    pid_t writer = g_state.config_coordinator.storage.pid; assert(writer > 0 && live.attempt == 0);
+    bool stopped = false;
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        int status; pid_t got = waitpid(writer, &status, WNOHANG | WUNTRACED);
+        if (got > 0) { assert(WIFSTOPPED(status)); stopped = true; break; }
+        assert(i < 4999); usleep(1000);
+    }
+    assert(stopped && live.projection.completion == 1 && !lcs_config_coordinator_can_close(&g_state.config_coordinator));
+    stop_manager(&manager); stop_writer_sync = false;
+    assert(g_state.config_coordinator.storage.pid <= 0 && !g_state.config_coordinator.completed_projections && !g_state.config_coordinator.completed_applications);
+    assert(g_state.config_runtime.agreement.poisoned && g_state.config_runtime.requires_recovery && !g_state.resource_generation_admitted);
+    assert(g_state.config_runtime.application.applied.revision == 2 && !g_state.config_runtime.application.pending.document);
+    recovery_projection_close(); runtime = g_state.config_runtime; memset(&g_state, 0, sizeof(g_state));
     lcs_config_startup_t empty = {0}; cleanup(&empty);
 }
 
@@ -1225,6 +1343,7 @@ int main(void)
     test_recovery_manager_skew_and_repairs(); test_quorum_recovery_manager_and_cancellation();
     test_recovery_manager_storage_failure_and_worker_stop(); test_recovery_manager_missing_evidence();
     test_concrete_recovery_tables(); test_concrete_quorum_recovery_tables();
+    test_recovery_projection_cancellation();
     puts("authoritative startup cleanup, pending receipt recovery and worker lifetime unit tests passed");
     return 0;
 }

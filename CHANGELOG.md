@@ -2,6 +2,8 @@
 
 ## Next
 
+- Recovery table installation now requires publication of the latest learned resources.json through the shared writer, including older pending targets, quorum-only nodes and idempotent retries. Added projection-error repair, superseded-completion and stopped-writer cancellation coverage while retaining catalog/lease fences. Automatic daemon startup and final generation/restart admission remain unfinished.
+
 - Added the concrete fenced recovery table adapter: restore exact last-applied JSON definitions before listeners, validate pristine startup state, remap matching incarnation epochs/private grants/policies after verified cleanup, and reset new/replaced resources. Generation-session closure requires fresh owner proof; retries preserve promises without repeated remapping. Automatic startup, projection and generation/lease admission remain unfinished.
 
 - Added an explicit nonblocking startup recovery controller using the shared catalog writer, asynchronous cleanup, exact all-full-member receipt barriers, fresh proof handoffs and a mandatory fenced table-installation callback. It handles differing pending revisions, checkpoint wake-up, repair retries and cancellation while keeping votes/leases fenced even when caught up. Automatic daemon startup/admission and missing-history transfer remain unfinished.

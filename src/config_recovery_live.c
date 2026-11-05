@@ -58,6 +58,24 @@ static bool pristine(void)
     return true;
 }
 
+static bool projection_storage_ready(const lcs_config_runtime_t *runtime)
+{
+    const lcs_config_bootstrap_t *bootstrap = &g_state.config_bootstrap;
+    return runtime->agreement.store && bootstrap->initialization_locked && bootstrap->worker_pid <= 0 &&
+        !bootstrap->refresh_pending && bootstrap->snapshots.directory_fd >= 0 &&
+        bootstrap->state.directory_fd == runtime->agreement.store->directory_fd &&
+        bootstrap->state.lock_fd == runtime->agreement.store->lock_fd && bootstrap->state.lock_fd >= 0 &&
+        memchr(bootstrap->snapshot_name, 0, sizeof(bootstrap->snapshot_name)) && *bootstrap->snapshot_name;
+}
+
+static int publish_current(lcs_config_recovery_live_t *live, char *err, size_t err_len)
+{
+    if (live->projection.coordinator != &g_state.config_coordinator || live->projection.bootstrap != &g_state.config_bootstrap ||
+        !projection_storage_ready(&g_state.config_runtime))
+        return reject(err, err_len, "recovery projection lost its frozen shared-writer storage binding");
+    return lcs_config_projection_step(&live->projection, &g_state.config_runtime.agreement.committed, err, err_len);
+}
+
 static void empty_tables(void)
 {
     memset(g_state.resources, 0, sizeof(g_state.resources));
@@ -72,7 +90,7 @@ int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
 {
     const lcs_config_runtime_t *runtime = &g_state.config_runtime;
     if (!live || live->prepared || !recovery || recovery->coordinator || recovery->phase != LCS_CONFIG_RECOVERY_IDLE ||
-        !runtime->requires_recovery || !runtime->base || !runtime->application.applied.revision || !g_state.instance_id ||
+        !runtime->requires_recovery || !runtime->base || !projection_storage_ready(runtime) || !runtime->application.applied.revision || !g_state.instance_id ||
         g_state.self_index != lcs_config_self_index(runtime->base) || config_reload_in_progress() ||
         g_state.resource_generation_enabled || g_state.voting_ready || g_state.config_reload.active_generation == UINT64_MAX ||
         !lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) || !pristine())
@@ -93,6 +111,7 @@ int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
     g_state.config_reload.active_generation++;
     g_state.voting_not_before_ms = lcs_now_ms() + (uint64_t)g_state.cfg.lease_ms + g_state.cfg.peer_timeout_ms;
     *live = (lcs_config_recovery_live_t){.recovery = recovery, .epoll_fd = epoll_fd, .prepared = true};
+    lcs_config_projection_init(&live->projection, &g_state.config_coordinator, &g_state.config_bootstrap);
     return 0;
 }
 
@@ -130,10 +149,13 @@ int lcs_config_recovery_live_install(void *context, const lcs_config_reconcile_v
         return reject(err, err_len, "recovery current-table installation requires completed receipt retirement");
     if (work_busy()) return 0;
     if (live->attempt && view->attempt <= live->attempt)
-        return view->attempt == live->attempt && !strcmp(live->digest, view->value->digest) && matches(&g_state.cfg, view->value) &&
-            g_state.resource_generation.revision == view->value->revision && !strcmp(g_state.resource_generation.digest, view->value->digest) &&
-            !strcmp(g_state.resource_generation.membership, runtime->agreement.membership) ?
-            1 : reject(err, err_len, "stale or conflicting recovery installation attempt");
+    {
+        if (view->attempt != live->attempt || strcmp(live->digest, view->value->digest) || !matches(&g_state.cfg, view->value) ||
+            g_state.resource_generation.revision != view->value->revision || strcmp(g_state.resource_generation.digest, view->value->digest) ||
+            strcmp(g_state.resource_generation.membership, runtime->agreement.membership))
+            return reject(err, err_len, "stale or conflicting recovery installation attempt");
+        return publish_current(live, err, err_len);
+    }
     if (!matches(&g_state.cfg, &runtime->application.applied) || !matches(view->old_config, &runtime->application.applied) ||
         lcs_config_candidate_validate(&g_state.cfg, view->target, err, err_len) || g_state.config_reload.active_generation == UINT64_MAX)
         return reject(err, err_len, "recovery runtime table differs from its durable old generation");
@@ -144,6 +166,8 @@ int lcs_config_recovery_live_install(void *context, const lcs_config_reconcile_v
             !lcs_config_backend_equal(&view->old_config->resources[old], &view->target->resources[i]))) old = -1;
         if (view->plan->new_to_old[i] != old) return reject(err, err_len, "recovery incarnation remapping plan is inconsistent");
     }
+    int published = publish_current(live, err, err_len);
+    if (published != 1) return published;
     struct tables { resource_runtime_t resources[LCS_MAX_RESOURCES]; lease_grant_t grants[LCS_MAX_RESOURCES]; };
     struct tables *old = malloc(sizeof(*old));
     if (!old) return reject(err, err_len, "cannot retain old recovery runtime tables");

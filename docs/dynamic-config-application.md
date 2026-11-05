@@ -760,9 +760,9 @@ The sequence is:
 `READY` means the latest learned catalog is installed, physically cleaned, and
 its completed receipt has retired; **recovery and backend/reactivation fences
 remain held**. The controller leaves `requires_recovery` set and never grants
-resource/configuration votes or starts backends. Projection publication, calling
-the concrete table adapter from daemon startup, and ordinary generation/restart/
-lease admission remain separate integration work, as does missing-history transfer.
+resource/configuration votes or starts backends. Calling the concrete table and
+projection adapter from daemon startup, and ordinary generation/restart/lease
+admission remain separate integration work, as does missing-history transfer.
 
 Backend/hook failures retain their runner and masks for an explicit repair/retry.
 Failed or expired owner collections retain receipts and require a new collection
@@ -790,8 +790,7 @@ No wire layout, disk format, public command or release version changes.
 
 `config_recovery_live.c` supplies the controller's mandatory definition-table
 installer. It remains an explicit adapter: the daemon's distributed-startup guard
-is still present until scheduler, projection and generation/restart admission are
-connected. It does not enable runtime mutation commands or reinterpret a partial
+is still present until scheduler and generation/restart admission are connected. It does not enable runtime mutation commands or reinterpret a partial
 revision-zero initialization as activated state.
 
 Call `lcs_config_recovery_live_prepare()` before listeners or ordinary work. It
@@ -799,7 +798,9 @@ requires valid recovered authority and a nonzero applied schema-2 catalog, no
 peer/CLI/handshake sessions, no indexed operations or workers (including removed
 resource slots), and no existing ownership epochs or private lease promises.
 It decodes the exact last-applied definitions from durable state, never the INI
-resource table or a newer pending target. Static settings must still pass the
+resource table or a newer pending target. The bootstrap must be frozen with no
+legacy snapshot writer/queued refresh, matching state-directory/lock descriptors,
+and an open projection directory/name. Static settings must still pass the
 ordinary resource-only candidate boundary.
 
 Preparation establishes global definition/remapping fences before cancellation,
@@ -845,6 +846,48 @@ generation retries, wrong maps, workers in removed slots, occupied pre-listener
 state and a quorum-only concrete installation that performs no backend hooks.
 The transport cancellation is simulated in this harness; live daemon/lab startup
 is not claimed. No wire layout, public command or release version changes.
+
+## Recovery projection publication barrier
+
+The concrete recovery adapter now owns a `config_projection` provider borrowing
+the daemon's frozen bootstrap and shared storage coordinator. Every successful
+installation callback requires the **latest learned** value to have been durably
+published to `resources.json`. This includes already-current startup tables,
+quorum-only installations and idempotent retries after generation-session changes.
+Publication is a derived-file obligation, not a decision or ownership certificate.
+
+An existing pending application may be older than the learned checkpoint. The
+adapter publishes the checkpoint, then installs its original immutable pending
+target after the owner barrier. It never overwrites the projection with that
+older target. If a checkpoint advances before a prior projection completion is
+observed, the provider consumes that completion but publishes the new revision
+before reporting success. Completion binds to the coordinator's revision/digest;
+BEGIN/FINISH and projection jobs share the same single writer.
+
+The callback validates its target, mapping, cleanup, owner proof and outstanding
+workers before starting publication. No table changes, generation-session closure
+or promise remapping occur until publication succeeds. Before each subsequent
+callback the controller rechecks owner proof; an expired or disconnected collection
+requires explicit repair/retry even if its projection write completed. A successful
+projection never authorizes a lost owner barrier or bypasses catalog application.
+
+Known destination errors (including an unsafe symlink) leave agreement/application
+handles healthy and retain the pending target, old tables, promises and global
+fences. Repair the destination and explicitly retry the blocked installation;
+the provider publishes the current learned value again. A cancelled or broken
+shared writer retains the normal uncertainty requirement and needs disk recovery.
+The bootstrap, state lock and projection directory remain borrowed/immutable until
+the shared writer has exited. Shutdown cancels and reaps that writer before the
+outer owner may close its descriptors, including when the child was stopped
+inside fsync. Parent event-loop code performs no projection fsync/rename.
+
+Regressions cover a full-member symlink failure and repair before table changes,
+a quorum-only checkpoint advancing before an earlier publication is observed,
+exact file contents and mode, and cancellation of a stopped projection writer.
+They verify the application/voting hold, recovery fences and unadmitted generation
+remain intact. Projection errors cannot fall back to INI or turn file edits into
+committed definitions. Daemon startup/scheduler and final generation/restart/lease
+admission are still not enabled; there is no wire, catalog format or CLI change.
 
 ## Client outcomes
 

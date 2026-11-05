@@ -222,6 +222,11 @@ durable distributed configuration protocol.
   verified cleanup/owner scope. Remap matching incarnation promises/policies,
   normalize observed ownership after physical cleanup, reset replacements, and
   preserve fences through generation-session cancellation and proof retries.
+- [x] Require latest-learned resources.json publication through the shared writer
+  before recovery table installation, including already-current/quorum-only tables
+  and retries of older pending targets. Retain fences/catalogs on known projection
+  errors, recheck newer checkpoints after delayed completions, and retain borrowed
+  storage until cancelled projection workers are reaped.
 - [ ] Connect recovery, the local adapter/publisher and distributed old-owner
   provider to live daemon startup/application and generation/restart admission.
   Restart cleanup and any lease-expiry/external fencing path require explicit
