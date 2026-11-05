@@ -297,7 +297,11 @@ static void test_quorum_only_and_completed_history(void)
         lcs_config_owner_network_t network;
         assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, q ? 2 : 0, 900));
         assert(lcs_config_startup_restore_pending(&startup, &network, lcs_now_ms()) < 0 && !network.receipt.sealed && !network.retired);
-        if (q) assert(lcs_config_startup_restore_completed(&startup, &network) < 0);
+        if (q)
+        {
+            assert(lcs_config_startup_restore_completed(&startup, &network) < 0);
+            assert(lcs_config_startup_bind_owner_history(&startup, &network) < 0);
+        }
         else
         {
             assert(!lcs_config_startup_restore_completed(&startup, &network));
@@ -448,12 +452,118 @@ static void test_completed_history_cleanup_and_legacy(void)
     lcs_config_owner_network_stop(&network); cleanup(&startup);
 }
 
+static lcs_config_owner_message_t history_reply;
+static bool history_backpressure;
+static int capture_history(void *context, size_t node, const void *payload, size_t length)
+{
+    (void)context; assert(node == 1);
+    lcs_config_owner_message_t message;
+    assert(!lcs_config_owner_decode(payload, length, &message));
+    if (message.kind == LCS_CONFIG_OWNER_REPLY || message.kind == LCS_CONFIG_OWNER_APPLIED_REPLY)
+        history_reply = message;
+    return history_backpressure ? 1 : 0;
+}
+
+static void historical_query(lcs_config_owner_network_t *network, lcs_config_owner_message_t *query, uint8_t expected)
+{
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(query, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(network, 1, 901, payload, length, lcs_now_ms()));
+    uint64_t instances[LCS_MAX_NODES] = {900, 901, 0};
+    memset(&history_reply, 0, sizeof(history_reply));
+    lcs_config_owner_network_process(network, instances, lcs_now_ms(), capture_history, NULL);
+    assert(history_reply.result == expected && history_reply.id == query->id);
+    assert(history_reply.sender_instance == 900 && history_reply.target_instance == 901);
+    assert(lcs_config_owner_scope_equal(&history_reply.scope, &query->scope));
+}
+
+static void test_differing_history_scopes(void)
+{
+    setup(true, false); lcs_config_startup_t startup = {0};
+    lcs_config_owner_network_t network;
+    assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, 0, 900));
+    assert(!lcs_config_startup_begin(&startup, &runtime, 900, error, sizeof(error)));
+    assert(lcs_config_startup_bind_owner_history(&startup, &network) < 0);
+    finish(&startup, LCS_CONFIG_STARTUP_DONE);
+    assert(!lcs_config_startup_restore_completed(&startup, &network));
+    assert(!lcs_config_startup_bind_owner_history(&startup, &network));
+    assert(lcs_config_startup_bind_owner_history(&startup, &network) < 0);
+
+    /* The requester skipped revision 1. Its exact 0->2 scope differs from this
+     * node's pinned 1->2 scope, including replacement backend cleanup. */
+    lcs_config_application_t pair = runtime.application;
+    pair.applied = startup.history[1]; pair.pending = startup.applied;
+    lcs_config_owner_scope_t scope;
+    assert(!lcs_config_owner_scope(&pair, &scope, error, sizeof(error)));
+    assert(scope.old_revision == 0 && scope.target_revision == 2 && scope.drain == 3);
+    lcs_config_owner_round_t round = {0}; lcs_config_owner_receipt_t local = {0};
+    uint64_t instances[LCS_MAX_NODES] = {900, 901, 0}; uint64_t now = lcs_now_ms();
+    assert(!lcs_config_owner_begin(&round, runtime.base, &scope, 1, instances, 77, now));
+    assert(!lcs_config_owner_receipt_seal(&local, &scope, 901));
+    assert(!lcs_config_owner_local(&round, &local));
+    lcs_config_owner_message_t query;
+    assert(!lcs_config_owner_query(&round, 0, 900, now, &query));
+    historical_query(&network, &query, LCS_CONFIG_OWNER_STOPPED);
+    assert(!lcs_config_owner_reply(&round, 0, 900, lcs_now_ms(), &history_reply));
+    assert(lcs_config_owner_poll(&round, lcs_now_ms()) == 1);
+    /* Exact application confirmation uses the same historical old table. */
+    assert(!lcs_config_owner_begin(&round, runtime.base, &scope, 1, instances, 78, now));
+    assert(!lcs_config_owner_local(&round, &local));
+    assert(!lcs_config_owner_query(&round, 0, 900, now, &query));
+    query.kind = LCS_CONFIG_OWNER_APPLIED_QUERY;
+    historical_query(&network, &query, LCS_CONFIG_OWNER_STOPPED);
+    history_reply.kind = LCS_CONFIG_OWNER_REPLY;
+    assert(!lcs_config_owner_reply(&round, 0, 900, lcs_now_ms(), &history_reply));
+    assert(lcs_config_owner_poll(&round, lcs_now_ms()) == 1);
+    assert(network.receipt.scope.old_revision == 1 && network.receipt.scope.target_revision == 2);
+
+    /* Supplied drain masks and old value digests are never trusted. */
+    query.scope.drain ^= 1;
+    historical_query(&network, &query, LCS_CONFIG_OWNER_FAILED);
+    query.scope = scope; query.scope.old_value[0] = scope.old_value[0] == 'a' ? 'b' : 'a';
+    historical_query(&network, &query, LCS_CONFIG_OWNER_FAILED);
+
+    pair.pending = startup.pending;
+    assert(!lcs_config_owner_scope(&pair, &query.scope, error, sizeof(error)));
+    query.kind = LCS_CONFIG_OWNER_QUERY;
+    historical_query(&network, &query, LCS_CONFIG_OWNER_STOPPED);
+    query.kind = LCS_CONFIG_OWNER_APPLIED_QUERY;
+    historical_query(&network, &query, LCS_CONFIG_OWNER_FAILED); /* Pending is not applied. */
+
+    /* Backpressure must not preserve evidence after recovery fences are lost. */
+    query.scope = scope; query.kind = LCS_CONFIG_OWNER_QUERY;
+    history_backpressure = true;
+    historical_query(&network, &query, LCS_CONFIG_OWNER_STOPPED);
+    assert(network.pending_replies == 2);
+    runtime.requires_recovery = false;
+    history_backpressure = false;
+    lcs_config_owner_network_process(&network, instances, lcs_now_ms(), capture_history, NULL);
+    assert(history_reply.result == LCS_CONFIG_OWNER_FAILED && network.receipt.failed);
+    assert(network.release.failed && !network.pending_replies);
+    lcs_config_owner_network_stop(&network); cleanup(&startup);
+
+    /* Current snapshots do not recover an unknown old table from a v1 catalog. */
+    setup(true, false); memset(&startup, 0, sizeof(startup));
+    lcs_config_value_t saved[2] = {runtime.application.history[0], runtime.application.history[1]};
+    memset(runtime.application.history, 0, sizeof(runtime.application.history));
+    assert(!lcs_config_startup_begin(&startup, &runtime, 900, error, sizeof(error)));
+    finish(&startup, LCS_CONFIG_STARTUP_DONE);
+    assert(!lcs_config_owner_network_init(&network, runtime.base, &runtime.application, 0, 900));
+    assert(lcs_config_startup_bind_owner_history(&startup, &network) < 0);
+    pair = runtime.application; pair.applied = saved[1]; pair.pending = startup.applied;
+    assert(!lcs_config_owner_scope(&pair, &query.scope, error, sizeof(error)));
+    historical_query(&network, &query, LCS_CONFIG_OWNER_PENDING);
+    lcs_config_owner_network_stop(&network);
+    runtime.application.history[0] = saved[0]; runtime.application.history[1] = saved[1];
+    cleanup(&startup);
+}
+
 int main(void)
 {
     parent = getpid();
     test_applied_cleanup_and_pending_receipt(); test_failures_and_retry(); test_timeout_cancellation_and_binding();
     test_quorum_only_and_completed_history(); test_workers_die_with_parent();
-    test_completed_history_cleanup_and_legacy();
+    test_completed_history_cleanup_and_legacy(); test_differing_history_scopes();
     puts("authoritative startup cleanup, pending receipt recovery and worker lifetime unit tests passed");
     return 0;
 }

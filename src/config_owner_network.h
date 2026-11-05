@@ -5,6 +5,11 @@
 #include "config_reconcile.h"
 
 typedef int (*lcs_config_owner_send_t)(void *context, size_t node, const void *payload, size_t length);
+/* Optional recovery evidence for an exact query: 1 proved, 0 unsupported,
+ * -1 invalidated cleanup. A NULL query only checks lifetime validity.
+ * Invoked again before queued replies leave the process.
+ * The provider must retain backend/reactivation fences for its entire lifetime. */
+typedef int (*lcs_config_owner_recovery_t)(void *context, const lcs_config_owner_message_t *query);
 typedef struct
 {
     const lcs_config_t *base;
@@ -19,6 +24,8 @@ typedef struct
     bool applied, retired;
     lcs_config_owner_message_t replies[LCS_MAX_NODES];
     uint32_t pending_replies;
+    lcs_config_owner_recovery_t recovery;
+    void *recovery_context;
     bool closing;
 } lcs_config_owner_network_t;
 
@@ -30,7 +37,8 @@ int lcs_config_owner_network_init(lcs_config_owner_network_t *network, const lcs
 /* Explicit entry after local drain/fencing; scope must match this local catalog.
  * The previous scope stays pinned until every full member acknowledges exact
  * durable application. Retain its completion tombstone across the next scope;
- * differing old generations and restart history still require recovery support. */
+ * An explicit recovery provider can answer additional known-history scopes;
+ * missing history and differing-target coordination remain separate. */
 int lcs_config_owner_network_start(lcs_config_owner_network_t *network,
                                     const lcs_config_owner_scope_t *scope, uint64_t now_ms);
 /* Reconciliation owner callback, ONLY after local drain. The concrete live

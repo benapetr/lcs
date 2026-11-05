@@ -196,9 +196,15 @@ durable distributed configuration protocol.
   backends on restart. Restore the latest completed owner scope and preceding
   completion record only after snapshot-bound physical cleanup, then collect
   fresh all-full-member application confirmation before a pending scope proceeds.
-- [ ] Reconcile catch-up with differing old generations and recover missing
-  predecessor history from older catalogs; keep unsupported scopes blocked.
-  Catalog revision numbers alone do not reconstruct backend cleanup proof.
+- [x] After verified startup cleanup, answer differing exact old-generation
+  scopes when both values are retained and the target is current applied or
+  pending. Recompute drain masks, confirm APPLIED only for the exact current
+  applied target, and revalidate buffered replies before sending. Keep recovery
+  fences held; this explicit provider does not perform admission or change receipts.
+- [ ] Coordinate catch-up/application and receipt retirement across differing
+  target generations, and recover missing predecessor history from older catalogs;
+  keep unsupported scopes blocked. Catalog revision numbers alone do not
+  reconstruct backend cleanup proof.
 - [ ] Connect the local adapter/publisher and distributed old-owner provider to
   live daemon startup/application. Restart cleanup and any lease-expiry/external
   fencing path require explicit validated evidence; no default proof is permitted.

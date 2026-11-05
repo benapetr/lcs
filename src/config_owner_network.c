@@ -22,6 +22,8 @@ int lcs_config_owner_network_init(lcs_config_owner_network_t *network, const lcs
  * apply the next scope: they must retire this scope before sealing that next one. */
 static void advance_release(lcs_config_owner_network_t *network, uint64_t now_ms)
 {
+    if (network->recovery && network->recovery(network->recovery_context, NULL) < 0)
+        lcs_config_owner_network_revoke(network);
     if (!network->receipt.sealed || network->receipt.failed || !network->application || network->application->poisoned)
         return;
     const lcs_config_owner_scope_t *scope = &network->receipt.scope;
@@ -137,6 +139,30 @@ blocked:
     return -1;
 }
 
+/* Query evaluation is repeated at send time: a buffered positive answer must
+ * not survive cancellation, catalog replacement, or revoked recovery evidence. */
+static uint8_t query_result(lcs_config_owner_network_t *network, const lcs_config_owner_message_t *query)
+{
+    if (network->application && network->application->poisoned)
+        return LCS_CONFIG_OWNER_FAILED;
+    if (network->recovery)
+    {
+        int proof = network->recovery(network->recovery_context, query);
+        if (proof < 0)
+        { lcs_config_owner_network_revoke(network); return LCS_CONFIG_OWNER_FAILED; }
+        if (!network->receipt.failed && proof > 0) return LCS_CONFIG_OWNER_STOPPED;
+    }
+    if (network->retired && lcs_config_owner_scope_equal(&network->retired_scope, &query->scope))
+        return LCS_CONFIG_OWNER_STOPPED;
+    if (network->receipt.failed) return LCS_CONFIG_OWNER_FAILED;
+    if (!network->receipt.sealed) return LCS_CONFIG_OWNER_PENDING;
+    if (lcs_config_owner_scope_equal(&network->receipt.scope, &query->scope))
+        return query->kind == LCS_CONFIG_OWNER_QUERY || network->applied ?
+            LCS_CONFIG_OWNER_STOPPED : LCS_CONFIG_OWNER_PENDING;
+    return query->scope.old_revision >= network->receipt.scope.target_revision ?
+        LCS_CONFIG_OWNER_PENDING : LCS_CONFIG_OWNER_FAILED;
+}
+
 int lcs_config_owner_network_receive(lcs_config_owner_network_t *network, size_t node, uint64_t instance,
                                       const void *payload, size_t length, uint64_t now_ms)
 {
@@ -159,18 +185,7 @@ int lcs_config_owner_network_receive(lcs_config_owner_network_t *network, size_t
         lcs_config_owner_message_t reply = message;
         reply.kind = message.kind == LCS_CONFIG_OWNER_QUERY ? LCS_CONFIG_OWNER_REPLY : LCS_CONFIG_OWNER_APPLIED_REPLY;
         reply.sender_instance = network->instance; reply.target_instance = instance;
-        if (network->retired && lcs_config_owner_scope_equal(&network->retired_scope, &message.scope))
-            reply.result = LCS_CONFIG_OWNER_STOPPED; /* APPLIED for kind 4. */
-        else if (network->receipt.failed)
-            reply.result = LCS_CONFIG_OWNER_FAILED;
-        else if (!network->receipt.sealed)
-            reply.result = LCS_CONFIG_OWNER_PENDING;
-        else if (lcs_config_owner_scope_equal(&network->receipt.scope, &message.scope))
-            reply.result = message.kind == LCS_CONFIG_OWNER_QUERY || network->applied ?
-                LCS_CONFIG_OWNER_STOPPED : LCS_CONFIG_OWNER_PENDING;
-        else
-            reply.result = message.scope.old_revision >= network->receipt.scope.target_revision ?
-                LCS_CONFIG_OWNER_PENDING : LCS_CONFIG_OWNER_FAILED;
+        reply.result = query_result(network, &message);
         network->replies[node] = reply;
         network->pending_replies |= UINT32_C(1) << node;
     }
@@ -230,6 +245,12 @@ void lcs_config_owner_network_process(lcs_config_owner_network_t *network,
             continue;
         if (!instances[i] || network->replies[i].target_instance != instances[i])
         { network->pending_replies &= ~bit; continue; }
+        lcs_config_owner_message_t query = network->replies[i];
+        query.kind = query.kind == LCS_CONFIG_OWNER_REPLY ? LCS_CONFIG_OWNER_QUERY : LCS_CONFIG_OWNER_APPLIED_QUERY;
+        query.result = 0;
+        query.sender_instance = network->replies[i].target_instance;
+        query.target_instance = network->instance;
+        network->replies[i].result = query_result(network, &query);
         unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
         if (!lcs_config_owner_encode(&network->replies[i], payload, sizeof(payload), &length) &&
             !send(context, i, payload, length))
@@ -260,5 +281,6 @@ void lcs_config_owner_network_stop(lcs_config_owner_network_t *network)
         return;
     lcs_config_owner_network_revoke(network);
     network->closing = true;
+    network->recovery = NULL; network->recovery_context = NULL;
     network->pending_replies = 0;
 }

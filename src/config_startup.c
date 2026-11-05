@@ -346,6 +346,51 @@ int lcs_config_startup_restore_pending(lcs_config_startup_t *startup,
     return lcs_config_owner_network_start(network, &scope, now_ms);
 }
 
+static const lcs_config_value_t *known_value(const lcs_config_startup_t *startup,
+                                               uint64_t revision, const char *digest)
+{
+    const lcs_config_value_t *values[] = {&startup->applied, &startup->pending,
+        &startup->history[0], &startup->history[1]};
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+        if (values[i]->document && values[i]->revision == revision && !strcmp(values[i]->digest, digest))
+            return values[i];
+    return NULL;
+}
+
+static int answer_history(void *context, const lcs_config_owner_message_t *query)
+{
+    lcs_config_startup_t *startup = context;
+    if (!startup || !lcs_config_startup_verified(startup, startup->runtime,
+        query ? query->target_instance : startup->instance) || startup->quorum_only) return -1;
+    if (!query) return 0;
+    const lcs_config_owner_scope_t *scope = &query->scope;
+    const lcs_config_value_t *old = known_value(startup, scope->old_revision, scope->old_value);
+    const lcs_config_value_t *target = known_value(startup, scope->target_revision, scope->target_value);
+    /* Pending was never installed by this recovery instance and is not an old
+     * backend snapshot. A newer target is not evidence of an older application. */
+    if (!old || !target || old == &startup->pending ||
+        (target != &startup->applied && target != &startup->pending) ||
+        (query->kind == LCS_CONFIG_OWNER_APPLIED_QUERY && target != &startup->applied)) return 0;
+    lcs_config_application_t pair = startup->runtime->application;
+    pair.applied = *old; pair.pending = *target;
+    lcs_config_owner_scope_t exact;
+    char error[256];
+    if (lcs_config_owner_scope(&pair, &exact, error, sizeof(error))) return 0;
+    return lcs_config_owner_scope_equal(scope, &exact) ? 1 : 0;
+}
+
+int lcs_config_startup_bind_owner_history(lcs_config_startup_t *startup,
+                                           lcs_config_owner_network_t *network)
+{
+    if (!startup || !network || !lcs_config_startup_verified(startup, startup->runtime, network->instance) ||
+        startup->quorum_only || (startup->applied.revision && !startup->history[0].document) ||
+        network->closing || network->receipt.failed || network->recovery ||
+        network->base != startup->runtime->base || network->application != &startup->runtime->application ||
+        network->self != (size_t)lcs_config_self_index(startup->config)) return -1;
+    network->recovery = answer_history; network->recovery_context = startup;
+    return 0;
+}
+
 void lcs_config_startup_stop(lcs_config_startup_t *startup)
 {
     if (!startup || !startup->config) return;

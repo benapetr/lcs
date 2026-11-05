@@ -636,8 +636,7 @@ format 1 until a real FINISH establishes a known predecessor; that FINISH writes
 format 2 with one saved predecessor. Unknown older entries are never fabricated.
 Startup cleanup may verify the available current backends, but cannot acknowledge
 unknown completed scopes or bypass missing history to start another pending
-scope. Such recovery, and catch-up with different old-generation scopes, remain
-unsupported/gated. Released legacy INI configurations have no distributed catalog
+scope. Missing-history recovery remains gated. Released legacy INI configurations have no distributed catalog
 and retain their existing upgrade path.
 
 The history is bounded: four possible full values (applied, pending and two
@@ -645,6 +644,38 @@ predecessors), each within the existing 512-KiB resource-document cap. The catal
 limit is 4 MiB plus 32 KiB to accommodate JSON string escaping and metadata.
 The shared writer still limits parent pipe processing to 64 KiB per poll. No new
 library, peer frame/layout/version or CLI protocol is needed for this disk format.
+
+## Serving differing catch-up scopes during restart cleanup
+
+The explicit `lcs_config_startup_bind_owner_history()` adapter lets a recovering
+full member answer a different old-generation scope without replacing its pinned
+local receipt. For example, at applied `C` with history `[B, A]`, its restored
+receipt covers `B -> C`, while a peer that skipped `B` may ask about `A -> C`.
+After physical cleanup of all three tables, the adapter recomputes that exact
+`A -> C` scope from the saved values, including the dependency drain mask. Both
+STOPPED and APPLIED queries can succeed for this exact current applied target.
+
+STOPPED queries may also name the saved pending target, whose backends have not
+been installed during recovery. APPLIED queries may not: pending, a higher
+revision, and a matching resource name are not evidence of durable application.
+Unknown old snapshots, conflicting digests, and incorrect drain masks provide no
+additional proof. Existing pinned receipt/completion handling remains available
+for its own exact scopes; this adapter neither replaces nor retires receipts.
+
+The adapter borrows the startup runner until the owner network is stopped. All
+backend/reactivation and recovery fences must remain held throughout that time.
+Cancellation, catalog/history changes, poisoning, or leaving recovery invalidates
+the provider and revokes active collection. Queued replies are evaluated again
+before each send, including retries after backpressure. Full-member session,
+instance, membership, attempt and deadline checks still apply on both ends.
+Quorum-only nodes cannot register this provider or supply owner evidence.
+Nonzero format-1 catalogs without predecessor history cannot register either.
+
+This serves bounded known-history queries; it does not coordinate transitions
+whose target generations differ, fetch absent predecessor tables, bypass the
+previous receipt's all-member retirement, admit lease traffic, or enable automatic
+daemon startup. Those manager/recovery steps remain unchecked in the plan. There
+is no peer message layout, protocol version, catalog format or CLI change.
 
 ## Client outcomes
 

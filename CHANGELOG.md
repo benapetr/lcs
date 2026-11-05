@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added an explicit recovery provider for differing old-generation owner scopes backed by physically cleaned retained snapshots. Exact digest/drain checks and send-time revalidation prevent fabricated or stale cleanup replies; APPLIED requires the exact current durable target. Missing-history recovery, differing-target coordination and automatic daemon admission remain gated.
+
 - Added application catalog format 2 with two complete predecessor snapshots retained atomically by FINISH. Startup cleanup now covers historical backends/hooks and can restore exact completed scopes and the preceding completion record under a new instance before fresh all-member confirmation. Format-1 catalogs remain readable without invented history; missing-history/differing-generation catch-up and automatic startup/admission remain gated.
 
 - Added an explicit startup cleanup runner using recovered last-applied backend definitions and old hooks in dependency order, with bounded asynchronous workers, retry/cancellation and catalog-bound completion. Verified cleanup can recreate a pending stop scope under a new daemon instance; completed-history recovery and automatic startup/admission remain unfinished. Backend and supervised hook process groups now terminate with their daemon to prevent late orphan work.

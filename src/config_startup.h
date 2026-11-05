@@ -48,18 +48,26 @@ int lcs_config_startup_process(lcs_config_startup_t *startup, uint64_t now_ms);
 int lcs_config_startup_retry(lcs_config_startup_t *startup);
 bool lcs_config_startup_verified(const lcs_config_startup_t *startup,
                                    const lcs_config_runtime_t *runtime, uint64_t instance);
-/* Recreate only a pending stop scope after actual startup cleanup, using the
- * NEW daemon instance and round. Cannot reconstruct completed receipt history
- * from an applied revision; lease/grant recovery and admission remain separate.
- * Returns 1 while saved completed history still needs all-member retirement. */
 /* After verified physical cleanup, restore the latest completed stop/application
  * scope and (if available) its preceding completion tombstone. Requires a fresh
  * owner network object and starts no old-instance voting. Missing v1 history
  * remains unsupported; an applied revision alone is never enough. */
 int lcs_config_startup_restore_completed(lcs_config_startup_t *startup,
                                          lcs_config_owner_network_t *network);
+/* Recreate only a pending stop scope after actual startup cleanup, using the
+ * NEW daemon instance and round. Cannot reconstruct completed receipt history
+ * from an applied revision; lease/grant recovery and admission remain separate.
+ * Returns 1 while saved completed history still needs all-member retirement. */
 int lcs_config_startup_restore_pending(lcs_config_startup_t *startup,
                                        lcs_config_owner_network_t *network, uint64_t now_ms);
+/* Serve exact catch-up scopes from physically cleaned retained snapshots.
+ * Borrow startup until network_stop; the caller must keep all recovery fences
+ * held. Catalog changes/cancellation invalidate even already queued answers.
+ * APPLIED is proved only for the exact current applied target; missing snapshots
+ * never grant proof. Nonzero v1 catalogs without predecessor history cannot
+ * register. No persistence, receipt replacement, or admission occurs. */
+int lcs_config_startup_bind_owner_history(lcs_config_startup_t *startup,
+                                           lcs_config_owner_network_t *network);
 /* Terminal: request cancellation but retain pid/snapshots until process reaps.
  * close returns -1 while a worker exists or before DONE/STOPPED/RECOVERY/BLOCKED. */
 void lcs_config_startup_stop(lcs_config_startup_t *startup);
