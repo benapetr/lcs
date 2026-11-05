@@ -4,6 +4,7 @@
 
 #include "config_reconcile.h"
 #include "config_projection.h"
+#include "config_owner_network.h"
 
 typedef int (*lcs_config_live_projection_t)(void *context, const lcs_config_value_t *committed,
                                              char *err, size_t err_len);
@@ -13,6 +14,7 @@ typedef struct
     int epoll_fd;
     lcs_config_live_projection_t project;
     lcs_config_reconcile_step_t owner_barrier;
+    void (*owner_revoke)(void *context);
     void *barrier_context;
     uint64_t attempt, revision;
     char digest[LCS_CONFIG_DIGEST_SIZE];
@@ -41,6 +43,14 @@ int lcs_config_live_init_with_projection(lcs_config_live_t *live, int epoll_fd,
                                           lcs_config_coordinator_t *coordinator,
                                           lcs_config_bootstrap_t *bootstrap,
                                           lcs_config_reconcile_step_t owner_barrier, void *context);
+/* Concrete all-full-member stop exchange, still explicit and startup-gated.
+ * Network must borrow this exact runtime's base/catalog, and its transport must
+ * process admission/session changes before reconciliation. Local backend state
+ * must already be recovered. Receipts stay pinned; another scope blocks. */
+int lcs_config_live_init_with_owner_network(lcs_config_live_t *live, int epoll_fd,
+                                             lcs_config_coordinator_t *coordinator,
+                                             lcs_config_bootstrap_t *bootstrap,
+                                             lcs_config_owner_network_t *network);
 const lcs_config_reconcile_ops_t *lcs_config_live_ops(void);
 /* Resource scheduler hook: during a fenced generation handover, retain existing
  * unchanged leases only until their current deadline; never renew without quorum.

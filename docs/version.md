@@ -120,6 +120,20 @@ Dynamic HELLO uses frozen baseline fingerprints/counts and cannot advertise voti
 readiness; legacy INI HELLO fields keep their existing meaning. Dynamic authority
 requires wire 6 even though legacy peering still supports wire 5.
 
+Wire 6 also adds `CONFIG_OWNER_BARRIER` (38) for explicit old-owner stop proof.
+The format-1 body is exactly 243 bytes: u16 format, u8 kind, u8 result,
+u64 sender instance, target instance, round ID, old revision and target revision,
+u32 dependency-drain mask, and three canonical 65-byte membership/old-value/
+target-value digests. Kind 1 is QUERY with result zero; kind 2 is REPLY with
+STOPPED (1), PENDING (2), or FAILED (3). Both directions use fresh outer sequences.
+Established full-member admission and negotiated wire 6 are mandatory. This raw
+configuration channel remains available across resource-generation differences;
+it is not an indexed resource envelope. INI-only nodes answer PENDING without
+creating configuration history. Explicit collection still requires local cleanup
+and every full member's stop proof; no query authorizes cleanup or activation.
+Receipt lifecycle and automatic application remain unfinished. This addition is
+within unreleased wire 6 and does not change released HELLO or the CLI protocol.
+
 Wire 6 is temporarily labelled `unreleased` by `lcs_peer_protocol_release()`.
 When releasing it for the first time, replace that label in `src/protocol.c` and
 update the corresponding protocol-label assertions in

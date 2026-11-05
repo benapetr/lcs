@@ -59,7 +59,7 @@ def closed(sock):
     try:
         while True:
             kind, _, _ = frame(sock)
-            assert kind not in (32, 33), "rejected request received a configuration reply"
+            assert kind not in (32, 33, 38), "rejected request received a configuration reply"
     except (EOFError, ConnectionResetError):
         return
 
@@ -116,6 +116,16 @@ with socket.socket() as listener:
                 send(sock, 33, 61003, sync_query)
                 status = receive_type(sock, 33)
                 assert len(status) == 255 and status[2:4] == bytes((6, 3))
+                # Stop-proof queries cannot create cleanup receipts on an INI-only node.
+                def owner_query(txid, sender=INSTANCE):
+                    return (struct.pack("!HBBQQQQQI", 1, 1, 0, sender, local_instance, txid, 0, 1, 1) +
+                            membership + baseline + b"c" * 64 + b"\0")
+                for txid in (1, 2):
+                    send(sock, 38, 63000 + txid, owner_query(txid))
+                    stopped = receive_type(sock, 38)
+                    assert len(stopped) == 243 and stopped[2:4] == bytes((2, 2))
+                    assert struct.unpack("!QQQ", stopped[4:28]) == (local_instance, INSTANCE, txid)
+                    assert stopped[28:] == owner_query(txid)[28:]
                 # Dynamic resource envelopes cannot grant votes or alter INI authority.
                 envelope = (struct.pack("!HHQQQ", 1, 26, INSTANCE, local_instance, 1) +
                             membership + baseline + b"\1")
@@ -145,6 +155,14 @@ with socket.socket() as listener:
                 envelope = (struct.pack("!HHQQQ", 1, 26, INSTANCE, local_instance, 1) +
                             membership + baseline + b"\1")
                 send(sock, 37, 62002, envelope)
+                closed(sock)
+            sock, local_instance = establish(listener, 5)
+            with sock:
+                send(sock, 38, 63003, owner_query(3))
+                closed(sock)
+            sock, local_instance = establish(listener, 6)
+            with sock:
+                send(sock, 38, 63004, owner_query(4, sender=INSTANCE + 1))
                 closed(sock)
             state = Path(config + ".state")
             for name in ("activation.json", "barrier.json", "agreement.json", "application.json"):

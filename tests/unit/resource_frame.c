@@ -28,6 +28,7 @@ int main(void)
     payload[LCS_RESOURCE_FRAME_PREFIX - 1] = 'x';
     assert(lcs_resource_frame_decode(payload, length, 100, 101, &decoded, &type, &body, &body_length) < 0);
     assert(lcs_resource_frame_prefix(&generation, 100, 101, LCS_MSG_CONFIG_TX_CONTROL, 0, payload, sizeof(payload), &length) < 0);
+    assert(lcs_resource_frame_prefix(&generation, 100, 101, LCS_MSG_CONFIG_OWNER_BARRIER, 0, payload, sizeof(payload), &length) < 0);
     assert(lcs_resource_frame_prefix(&generation, 100, 101, LCS_MSG_RESOURCE_FRAME, 0, payload, sizeof(payload), &length) < 0);
     assert(!lcs_resource_frame_prefix(&generation, 100, 101, LCS_MSG_STATE_SYNC_REQ,
         LCS_MAX_FRAME - LCS_RESOURCE_FRAME_PREFIX, payload, sizeof(payload), &length));

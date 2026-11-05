@@ -98,12 +98,14 @@ waits for dependents and indexed workers, and remaps matching incarnations witho
 changing their ownership or promises. Its concrete asynchronous publisher writes
 the latest learned snapshot through the shared storage worker; file errors block
 application for retry without changing configuration authority. The distributed
-old-owner provider and startup integration remain unfinished; automatic daemon
+receipt lifecycle and startup integration remain unfinished; automatic daemon
 application remains disabled. See [projection durability](dynamic-config-application.md#durable-projection-publisher)
 and [local backend transitions](dynamic-config-application.md#local-backend-drain-and-runtime-adapter).
 Internal [old-owner proof primitives](dynamic-config-application.md#old-owner-proof-primitives)
 now bind explicit full-member stop receipts to exact transitions and daemon
-instances; transport and receipt lifecycle integration remain unfinished.
+instances. The [explicit network adapter](dynamic-config-application.md#explicit-owner-network-adapter)
+now connects transport and local drain for one pinned transition; receipt lifecycle
+and automatic application remain unfinished.
 
 ## Inspecting preparation across members
 

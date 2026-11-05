@@ -2,6 +2,8 @@
 
 ## Next
 
+- Connected explicit old-owner stop collection to wire-6 peer message 38 and local drain callbacks for one pinned transition. Added bounded pending responses, retry/deadline handling, session-change invalidation, cleanup-failure revocation and a final pre-install proof check. Receipt release/history, startup recovery and automatic application remain unfinished.
+
 - Added internal old-owner stop-proof primitives with exact catalog/drain scopes, pinned instance-bound receipts, strict message codecs and all-full-member collection. Missing peers, failed cleanup, conflicting evidence and timeouts cannot become success. Peer transport, receipt lifecycle, startup recovery and automatic application remain unfinished.
 
 - Added an asynchronous learned-resource projection publisher through the shared configuration writer, including revision-bound completion, safe file replacement, retryable projection errors and an explicit local-adapter initializer. Distributed old-owner proof, startup reconciliation and automatic activation remain unfinished.

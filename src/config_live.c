@@ -120,6 +120,8 @@ static int drain(void *context, const lcs_config_reconcile_view_t *view, char *e
         resource_runtime_t *resource = &g_state.resources[i];
         if (resource->state == LCS_RES_STOP_FAILED || resource->startup_cleanup_failed)
         {
+            if (live->owner_revoke)
+                live->owner_revoke(live->barrier_context);
             snprintf(err, length, "resource %s cleanup failed; confirm cleanup or fencing before retry", view->old_config->resources[i].name);
             return -1;
         }
@@ -162,9 +164,11 @@ static int install(void *context, const lcs_config_reconcile_view_t *view, char 
     }
     if (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL)
     {
-        int drained = drain(context, view, err, length);
-        if (drained != 1)
-            return drained;
+        /* Collection may have completed before a disconnect or cleanup fault.
+         * Recheck the owner provider at the final pre-install boundary. */
+        int safe = owners(context, view, err, length);
+        if (safe != 1)
+            return safe;
     }
     if (g_state.config_reload.active_generation == UINT64_MAX)
         return -1;
@@ -252,6 +256,20 @@ int lcs_config_live_init_with_projection(lcs_config_live_t *live, int epoll_fd,
         return -1;
     live->managed_projection = true;
     lcs_config_projection_init(&live->projection, coordinator, bootstrap);
+    return 0;
+}
+
+int lcs_config_live_init_with_owner_network(lcs_config_live_t *live, int epoll_fd,
+                                             lcs_config_coordinator_t *coordinator,
+                                             lcs_config_bootstrap_t *bootstrap,
+                                             lcs_config_owner_network_t *network)
+{
+    if (!coordinator || !coordinator->runtime || !network || !network->instance || network->closing ||
+        network->base != coordinator->runtime->base || network->application != &coordinator->runtime->application ||
+        lcs_config_live_init_with_projection(live, epoll_fd, coordinator, bootstrap,
+            lcs_config_owner_network_step, network))
+        return -1;
+    live->owner_revoke = lcs_config_owner_network_revoke;
     return 0;
 }
 

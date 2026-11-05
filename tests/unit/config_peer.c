@@ -54,6 +54,19 @@ int peer_queue_config_transaction(int epoll_fd, int node, uint16_t type, const v
     return 1;
 }
 
+static lcs_config_owner_message_t last_owner;
+static unsigned owners_queued;
+static bool owner_backpressure;
+int peer_queue_config_owner(int epoll_fd, int node, const void *payload, uint32_t length)
+{
+    (void)epoll_fd; (void)node;
+    if (owner_backpressure)
+        return 1;
+    assert(!lcs_config_owner_decode(payload, length, &last_owner));
+    owners_queued++;
+    return 0;
+}
+
 static void initialize(void)
 {
     memset(&g_state, 0, sizeof(g_state));
@@ -426,6 +439,41 @@ static void test_explicit_peer_readiness(void)
     cleanup_durable_runtime();
 }
 
+static void test_owner_transport_admission(void)
+{
+    initialize(); g_state.instance_id = 100; g_state.self_index = 0;
+    establish(1, 6); g_state.peers[1].instance_id = 200;
+    establish(2, 6); g_state.peers[2].instance_id = 300;
+    lcs_config_owner_message_t query = { .kind = LCS_CONFIG_OWNER_QUERY, .sender_instance = 200,
+        .target_instance = 100, .id = 1, .scope = { .old_revision = 0, .target_revision = 1, .drain = 1 } };
+    strcpy(query.scope.membership, g_state.config_status.membership);
+    memset(query.scope.old_value, 'a', 64); memset(query.scope.target_value, 'b', 64);
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(&query, payload, sizeof(payload), &length));
+    owners_queued = 0; owner_backpressure = true;
+    assert(!config_peer_receive_owner(-1, 1, payload, length));
+    assert(!owners_queued && g_state.config_owners.pending_replies == 2);
+    assert(!g_state.config_runtime.base && !g_state.config_owners.receipt.sealed && !g_state.config_owners.round.active);
+    owner_backpressure = false; config_peer_process(-1);
+    assert(owners_queued == 1 && last_owner.result == LCS_CONFIG_OWNER_PENDING);
+    assert(last_owner.sender_instance == 100 && last_owner.target_instance == 200);
+    assert(config_peer_receive_owner(-1, 2, payload, length) < 0); /* Quorum only. */
+    g_state.peers[1].protocol_version = 5;
+    assert(config_peer_receive_owner(-1, 1, payload, length) < 0);
+    g_state.peers[1].protocol_version = 6;
+    g_state.peers[1].instance_id = 201;
+    assert(config_peer_receive_owner(-1, 1, payload, length) < 0);
+    g_state.peers[1].instance_id = 200;
+    query.target_instance++; assert(!lcs_config_owner_encode(&query, payload, sizeof(payload), &length));
+    assert(config_peer_receive_owner(-1, 1, payload, length) < 0);
+    query.target_instance--; query.scope.membership[0] = query.scope.membership[0] == 'a' ? 'b' : 'a';
+    assert(!lcs_config_owner_encode(&query, payload, sizeof(payload), &length));
+    assert(config_peer_receive_owner(-1, 1, payload, length) < 0);
+    assert(!g_state.config_owners.receipt.sealed && !g_state.config_owners.round.active);
+    config_peer_stop(); assert(g_state.config_owners.closing);
+    assert(config_peer_receive_owner(-1, 1, payload, length) < 0);
+}
+
 int main(void)
 {
     test_metadata_and_reload();
@@ -433,6 +481,7 @@ int main(void)
     test_readiness_codecs();
     test_readiness_round();
     test_explicit_peer_readiness();
+    test_owner_transport_admission();
     puts("configuration peer metadata and explicit readiness unit tests passed");
     return 0;
 }

@@ -12,6 +12,7 @@
 #include "config_readiness.h"
 #include "config_coordinator.h"
 #include "config_transaction.h"
+#include "config_owner_network.h"
 #include "resource_frame.h"
 
 #include <sys/socket.h>
@@ -469,6 +470,7 @@ typedef struct
     lcs_config_readiness_t config_readiness;
     lcs_config_coordinator_t config_coordinator;
     lcs_config_transactions_t config_transactions;
+    lcs_config_owner_network_t config_owners;
     uint64_t config_readiness_attempt;
     uint64_t config_readiness_next_send_ms;
     bool config_bootstrap_initialized;

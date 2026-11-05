@@ -352,6 +352,7 @@ static bool peer_is_request_type(uint16_t type)
         case LCS_MSG_OWNER_RELEASE_REQ:
         case LCS_MSG_MOVE_REQ:
         case LCS_MSG_CONFIG_BOOTSTRAP_STATUS:
+        case LCS_MSG_CONFIG_OWNER_BARRIER:
         case LCS_MSG_CONFIG_READINESS_QUERY:
         case LCS_MSG_CONFIG_READINESS_REPLY:
         case LCS_MSG_CONFIG_TX_CONTROL:
@@ -712,6 +713,18 @@ static int peer_queue_frame(int epoll_fd, int node_idx, uint16_t type, uint32_t 
                    g_state.cfg.nodes[node_idx].name, type, seq, length,
                    peer->out_len - peer->out_off);
     return peer_update_epoll(epoll_fd, node_idx);
+}
+
+int peer_queue_config_owner(int epoll_fd, int node_idx, const void *payload, uint32_t length)
+{
+    if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count || node_idx == g_state.self_index ||
+        g_state.cfg.nodes[node_idx].role != LCS_NODE_FULL || g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL)
+        return 1;
+    const peer_runtime_t *peer = &g_state.peers[node_idx];
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED ||
+        peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_OWNERS)
+        return 1;
+    return peer_queue_frame(epoll_fd, node_idx, LCS_MSG_CONFIG_OWNER_BARRIER, lcs_next_seq(), payload, length);
 }
 
 int peer_queue_config_status(int epoll_fd, int node_idx, const void *payload, uint32_t length)
@@ -1201,6 +1214,9 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
     if (hdr->type >= LCS_MSG_CONFIG_TX_CONTROL && hdr->type <= LCS_MSG_CONFIG_TX_END &&
         g_state.peers[source_node_idx].protocol_version < LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS)
         return -1;
+    if (hdr->type == LCS_MSG_CONFIG_OWNER_BARRIER &&
+        g_state.peers[source_node_idx].protocol_version < LCS_PROTO_FEATURE_CONFIG_OWNERS)
+        return -1;
     if (hdr->seq == 0)
     {
         peer_queue_simple_resp(epoll_fd, source_node_idx, hdr->seq, LCS_MSG_ERROR, -1, "invalid sequence");
@@ -1213,6 +1229,8 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
     }
     switch (hdr->type)
     {
+        case LCS_MSG_CONFIG_OWNER_BARRIER:
+            return config_peer_receive_owner(epoll_fd, source_node_idx, payload, hdr->length);
         case LCS_MSG_CONFIG_BOOTSTRAP_STATUS:
             return config_peer_receive(source_node_idx, payload, hdr->length);
         case LCS_MSG_CONFIG_READINESS_QUERY:
@@ -1362,6 +1380,7 @@ void peer_close_connection(int epoll_fd, int node_idx, bool mark_offline, const 
     memset(&peer->resource_generation, 0, sizeof(peer->resource_generation));
     peer->config_status_known = false;
     lcs_config_transactions_disconnect(&g_state.config_transactions, (size_t)node_idx);
+    lcs_config_owner_network_disconnect(&g_state.config_owners, (size_t)node_idx);
     peer->config_status_sent = 0;
     memset(&peer->config_status, 0, sizeof(peer->config_status));
     peer->voting_ready = false;

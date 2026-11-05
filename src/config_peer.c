@@ -53,6 +53,69 @@ int config_peer_propose(uint64_t id, const lcs_config_value_t *requested)
     return lcs_config_transactions_propose(&g_state.config_transactions, instances, id, requested, lcs_now_ms());
 }
 
+static int send_owner(void *context, size_t node, const void *payload, size_t length)
+{
+    return peer_queue_config_owner(*(int *)context, (int)node, payload, (uint32_t)length);
+}
+
+int config_peer_owner_prepare(void)
+{
+    lcs_config_owner_network_t *network = &g_state.config_owners;
+    const lcs_config_t *base = g_state.config_runtime.base ? g_state.config_runtime.base : &g_state.cfg;
+    const lcs_config_application_t *application = g_state.config_runtime.base ? &g_state.config_runtime.application : NULL;
+    char membership[LCS_CONFIG_DIGEST_SIZE];
+    if (g_state.config_coordinator.closing || g_state.config_coordinator.failed ||
+        config_reload_in_progress() || !g_state.instance_id || g_state.self_index < 0 ||
+        lcs_config_agreement_membership(base, membership))
+        return -1;
+    if (network->instance && network->instance == g_state.instance_id && network->base == base &&
+        network->application == application && !strcmp(network->membership, membership))
+        return network->closing ? -1 : 0;
+    if (network->instance && (network->round.active || network->receipt.sealed || network->receipt.failed || network->closing))
+    {
+        lcs_config_owner_network_revoke(network);
+        return -1;
+    }
+    return lcs_config_owner_network_init(network, base, application, (size_t)g_state.self_index, g_state.instance_id);
+}
+
+static void process_owners(int epoll_fd)
+{
+    if (!g_state.config_owners.instance)
+        return;
+    if (config_peer_owner_prepare())
+    {
+        lcs_config_owner_network_revoke(&g_state.config_owners);
+        return;
+    }
+    uint64_t instances[LCS_MAX_NODES] = {0};
+    instances[g_state.self_index] = g_state.instance_id;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if ((int)i != g_state.self_index && peer->fd >= 0 && peer->conn_state == LCS_PEER_ESTABLISHED &&
+            peer->protocol_version >= LCS_PROTO_FEATURE_CONFIG_OWNERS)
+            instances[i] = peer->instance_id;
+    }
+    lcs_config_owner_network_process(&g_state.config_owners, instances, lcs_now_ms(), send_owner, &epoll_fd);
+}
+
+int config_peer_receive_owner(int epoll_fd, int node, const void *payload, size_t length)
+{
+    if (node < 0 || (size_t)node >= g_state.cfg.node_count || node == g_state.self_index ||
+        g_state.cfg.nodes[node].role != LCS_NODE_FULL || g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL)
+        return -1;
+    const peer_runtime_t *peer = &g_state.peers[node];
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED || !peer->instance_id ||
+        peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_OWNERS || config_peer_owner_prepare())
+        return -1;
+    int result = lcs_config_owner_network_receive(&g_state.config_owners, (size_t)node, peer->instance_id,
+        payload, length, lcs_now_ms());
+    if (!result)
+        process_owners(epoll_fd);
+    return result;
+}
+
 static bool durable_readiness_available(void)
 {
     const lcs_config_runtime_t *runtime = &g_state.config_runtime;
@@ -107,6 +170,7 @@ void config_peer_stop(void)
     g_state.config_coordinator.closing = true;
     lcs_config_coordinator_stop(&g_state.config_coordinator);
     lcs_config_transactions_close(&g_state.config_transactions);
+    lcs_config_owner_network_stop(&g_state.config_owners);
 }
 
 bool config_peer_stopped(void)
@@ -287,6 +351,7 @@ static void process_checkpoint_sync(void)
 void config_peer_process(int epoll_fd)
 {
     process_readiness(epoll_fd);
+    process_owners(epoll_fd);
     lcs_config_transactions_process(&g_state.config_transactions, lcs_now_ms(), send_transaction, &epoll_fd);
     process_checkpoint_sync();
     if (lcs_now_ms() < g_state.config_status_retry_ms)

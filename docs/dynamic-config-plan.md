@@ -178,9 +178,13 @@ durable distributed configuration protocol.
   scopes, pinned local stop receipts, strict message codecs, and instance-bound
   collection from every full member. No majority, disconnect or timer implies
   stop; failed cleanup, contradictory replies and session changes invalidate proof.
-- [ ] Connect the old-owner proof collector to admitted peer transport and local
-  drain callbacks. Implement receipt retention/release across applications and
-  recovery/catch-up with differing old generations; keep unsupported scopes blocked.
+- [x] Connect the old-owner proof collector to admitted wire-6 peer transport
+  and explicit local drain callbacks for one pinned transition, with bounded
+  responses/retries, instance teardown invalidation, cleanup-failure revocation
+  and a final pre-install barrier recheck. Legacy queries remain nonmutating.
+- [ ] Implement receipt retention/release across applications and recovery/catch-up
+  with differing old generations; keep unsupported scopes blocked. A pinned
+  receipt may not be cleared to make another transition proceed.
 - [ ] Connect the local adapter/publisher and distributed old-owner provider to
   live daemon startup/application. Restart cleanup and any lease-expiry/external
   fencing path require explicit validated evidence; no default proof is permitted.

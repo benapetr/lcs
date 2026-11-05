@@ -29,6 +29,12 @@ bool config_peer_stopped(void);
 bool config_peer_configuration_vote_ready(void);
 int config_peer_receive_readiness(int epoll_fd, int node, uint16_t type,
                                    const void *payload, size_t length);
+/* Owner exchange never starts cleanup or seals a receipt on a query. The live
+ * manager initializes the explicit local adapter separately after startup safety. */
+int config_peer_receive_owner(int epoll_fd, int node, const void *payload, size_t length);
+/* Initialize/validate the borrowed owner transport against the current immutable
+ * static base. Does not start a collection or authorize backend application. */
+int config_peer_owner_prepare(void);
 int config_peer_receive_transaction(int epoll_fd, int node, uint16_t type,
                                      const void *payload, size_t length);
 

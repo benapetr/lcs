@@ -95,7 +95,7 @@ rules. The 64-KiB frame limit includes the prefix.
 
 These APIs are not invoked automatically yet. The daemon still refuses persisted
 distributed startup. The local runtime adapter below now implements backend/remap callbacks;
-distributed owner proof, startup recovery and automatic activation
+distributed receipt lifecycle, startup recovery and automatic activation
 remain unfinished. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
@@ -235,7 +235,7 @@ Tests cover shared-writer exclusion, delayed publication, large pipe results,
 stale imports, failed file/directory sync, and cancellation. The internal
 reconciliation sequencer below now coordinates catalog writes and explicit
 backend barriers; the local adapter below now supplies backend/remap callbacks, while its
-distributed owner provider and automatic daemon integration remain pending.
+distributed receipt lifecycle and automatic daemon integration remain pending.
 
 ## Internal reconciliation sequencer
 
@@ -341,8 +341,9 @@ pause. After the exact applied marker is durable, the adapter admits generation
 traffic so ordinary state-sync/restart recovery can run. It releases the remaining
 definition fences only after local voting readiness and quorum are established.
 
-The running daemon still lacks the distributed owner-barrier provider, startup
-reconstruction/cleanup adapter and automatic activation wiring.
+The running daemon still lacks automatic owner-provider integration, the startup
+reconstruction/cleanup adapter and automatic activation wiring. The explicit
+network provider below supports a single pinned transition.
 This live adapter assumes the last-applied backend/ownership state was recovered;
 ownerless runtime entries alone do not establish that old backends are absent.
 Tests exercise local callbacks with controlled backend/provider doubles, including
@@ -385,12 +386,11 @@ cancellation lifetime, and publication through the local application adapter.
 ## Old-owner proof primitives
 
 `config_owner_barrier.c` provides an internal stop-proof collector and responder.
-It is not connected to peer dispatch, local drain callbacks or automatic
-application yet. There is no new peer frame type or protocol version in this
-step. The strict format-1 message codec is ready for a separate admitted
-configuration channel; a transport adapter must authenticate the configured
-source, require the appropriate wire capability, copy outgoing messages, and
-report every session/instance change before installation.
+The explicit network adapter described below now connects it to admitted peer
+transport and local drain callbacks for one pinned transition. Automatic
+application remains disabled. Transport authenticates the configured source,
+requires wire 6, copies outgoing messages, and reports session/instance changes
+before installation.
 
 A scope comes from the healthy durable applied/pending catalog: both complete
 value digests, old and target revisions, static membership, and the dependency
@@ -416,9 +416,10 @@ perform those backend actions. It pins one exact scope and instance; a query
 never creates a receipt or changes its scope. Missing receipts answer PENDING,
 conflicting scopes or known failure answer FAILED, and revocation is terminal.
 A receipt cannot be reused after a daemon restart or silently evicted to make
-room for another application. The eventual distributed provider must retain
-these guarantees until all consumers have finished, with an explicit release or
-history policy; that lifecycle is unfinished.
+room for another application. The network provider retains one pinned scope and
+blocks a different transition. Retention/release until all consumers have finished
+still needs an explicit distributed release or history policy; that lifecycle is
+unfinished.
 
 These primitives deliberately block different old-generation scopes. Applying
 checkpoints across revision gaps needs additional cleanup-scope reconciliation;
@@ -429,6 +430,53 @@ extraction, two full members plus a quorum-only member, refusal of a mere
 majority among three full members, offline peers, stale/duplicate/contradictory
 replies, instance changes after completion, pinned/revoked receipts, fixed
 deadlines and malformed codecs.
+
+## Explicit owner network adapter
+
+`config_owner_network.c` connects the stop-proof primitives to bounded message
+exchange. `CONFIG_OWNER_BARRIER` (38) is a separate wire-6 configuration message,
+with the existing strict 243-byte format-1 query/reply body. It stays available
+while resource generations differ and never uses indexed resource envelopes.
+Peer dispatch and queueing require established, admitted wire-6 full-member
+sessions; quorum-only members neither send nor contribute owner proof. Both
+queries and replies use fresh outer sequences, with correlation in the body.
+
+Queries never start cleanup or create a receipt. Legacy INI-only nodes answer
+PENDING without initializing distributed history. There is one copied pending
+response per peer; failed queue attempts retain it for retry, and a local
+revocation changes unsent STOPPED responses to FAILED. Session loss discards
+buffered responses and invalidates a collection bound to that instance, including
+a completed collection. Query retries run at most every 250 ms and retain the
+original ten-second collection deadline. A transport failure cannot reduce the
+required full-member set. A valid FAILED response blocks the barrier without
+being treated as malformed traffic.
+
+`lcs_config_live_init_with_owner_network()` explicitly binds the concrete
+projection publisher and owner callback to the same recovered base/catalog.
+After local drain succeeds, the callback derives the exact catalog scope, seals
+the pinned local receipt, and starts collection. The live adapter checks local
+drain and owner proof again immediately before installation. A newly observed
+cleanup failure revokes the local receipt and blocks network-only retry. A failed
+collection may be explicitly retried under a new round ID while retaining its
+local stop receipt and fences; neither timeout nor a retry repairs failed cleanup.
+Transport/session processing must precede reconciliation so the final check sees
+current admission. Normal installation closes indexed sessions only after this
+check; other collectors may need to retry after those intentional reconnects.
+
+Only one scope is supported per network object. The provider never clears a
+pinned receipt to admit a newer pending target, including a checkpoint arriving
+during application. It blocks instead. Receipt retention/release across later
+transitions, differing-old-generation recovery and startup cleanup remain
+unfinished. Creating a fresh network object to evade that restriction would break
+the receipt lifetime contract and is not a supported upgrade or recovery action.
+The daemon does not automatically initialize or run the local application adapter.
+
+Tests exercise three full-member transport participants, delayed local drains,
+PENDING responses, bounded output backpressure, fixed deadlines, instance changes,
+explicit retry, failed-response delivery, refusal of a later scope, and final
+installation checks after disconnect/cleanup failure. Socket integration tests
+verify the actual frame dispatch, INI-only PENDING replies, wire-5 rejection,
+wrong-instance rejection, and absence of initialized distributed records.
 
 ## Client outcomes
 

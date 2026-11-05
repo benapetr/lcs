@@ -53,8 +53,8 @@ int lcs_config_owner_encode(const lcs_config_owner_message_t *message,
 int lcs_config_owner_decode(const void *payload, size_t length, lcs_config_owner_message_t *message);
 
 /* Zero-initialize receipt and round objects before first use.
- * Explicit proof primitive only; not connected to peer dispatch or automatic
- * application. Seal ONLY after local cleanup including hooks/workers succeeds,
+ * Proof primitive used by the explicit peer network adapter; automatic
+ * application is not enabled. Seal ONLY after local cleanup including hooks/workers succeeds,
  * restart cleanup is known, and old-generation grants/reactivation are fenced.
  * These guarantees must outlive every consumer of this receipt. Pin one scope
  * per fresh object; no automatic eviction, restart reuse, or timeout release.

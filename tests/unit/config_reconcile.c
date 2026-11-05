@@ -17,7 +17,7 @@
 
 daemon_state_t g_state;
 static unsigned generation_cancellations;
-static bool generation_reload, expanded_fixture, live_mode, project_ready, owners_ready, invalid_owner_result;
+static bool generation_reload, expanded_fixture, all_full_fixture, live_mode, project_ready, owners_ready, invalid_owner_result;
 static unsigned released[16], released_count, projected, dropped;
 void resources_drop_local(int resource_idx, int epoll_fd)
 { (void)epoll_fd; assert(resource_idx == 0); dropped++; }
@@ -131,7 +131,7 @@ static void setup(bool quorum_only)
     {
         snprintf(base->nodes[i].name, sizeof(base->nodes[i].name), "node%zu", i);
         strcpy(base->nodes[i].address, "127.0.0.1"); base->nodes[i].port = 3322;
-        base->nodes[i].role = i == 2 ? LCS_NODE_QUORUM_ONLY : LCS_NODE_FULL;
+        base->nodes[i].role = i == 2 && !all_full_fixture ? LCS_NODE_QUORUM_ONLY : LCS_NODE_FULL;
     }
     base->resource_count = 1;
     strcpy(base->resources[0].name, "vip"); base->resources[0].type = LCS_RESOURCE_VIP;
@@ -925,6 +925,180 @@ static void test_owner_barrier_proofs(void)
     lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
 }
 
+
+typedef struct
+{
+    lcs_config_owner_network_t nodes[3];
+    struct { size_t source, target, length; unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; } frames[128];
+    size_t head, tail, source;
+    bool backpressure;
+} owner_bus_t;
+
+static int owner_send(void *context, size_t node, const void *payload, size_t length)
+{
+    owner_bus_t *bus = context;
+    if (bus->backpressure)
+        return 1;
+    assert(node != bus->source && node < 3 && bus->tail < 128 && length == LCS_CONFIG_OWNER_MESSAGE_SIZE);
+    bus->frames[bus->tail].source = bus->source; bus->frames[bus->tail].target = node;
+    bus->frames[bus->tail].length = length; memcpy(bus->frames[bus->tail++].payload, payload, length);
+    return 0;
+}
+
+static void owner_exchange(owner_bus_t *bus, const uint64_t instances[LCS_MAX_NODES], uint64_t now)
+{
+    for (unsigned pass = 0; pass < 4; pass++)
+    {
+        for (size_t i = 0; i < 3; i++)
+        {
+            bus->source = i;
+            lcs_config_owner_network_process(&bus->nodes[i], instances, now, owner_send, bus);
+        }
+        while (bus->head < bus->tail)
+        {
+            size_t frame = bus->head++;
+            size_t from = bus->frames[frame].source, to = bus->frames[frame].target;
+            assert(!lcs_config_owner_network_receive(&bus->nodes[to], from, instances[from],
+                bus->frames[frame].payload, bus->frames[frame].length, now));
+        }
+        bus->head = bus->tail = 0;
+    }
+}
+
+static void test_owner_network_exchange(void)
+{
+    all_full_fixture = true; setup(false); all_full_fixture = false;
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    lcs_config_owner_scope_t scope;
+    assert(!lcs_config_owner_scope(&runtime.application, &scope, error, sizeof(error)));
+    owner_bus_t bus = {0}; uint64_t instances[LCS_MAX_NODES] = {100, 101, 102};
+    for (size_t i = 0; i < 3; i++)
+        assert(!lcs_config_owner_network_init(&bus.nodes[i], runtime.base, &runtime.application, i, instances[i]));
+    owner_exchange(&bus, instances, 900);
+    assert(!lcs_config_owner_network_start(&bus.nodes[0], &scope, 1000));
+    bus.backpressure = true; owner_exchange(&bus, instances, 1001);
+    assert(bus.nodes[0].round.stopped == 1 && bus.nodes[0].round.deadline_ms == 11000);
+    bus.backpressure = false; owner_exchange(&bus, instances, 1300);
+    assert(bus.nodes[0].round.stopped == 1 && !bus.nodes[1].receipt.sealed && !bus.nodes[2].receipt.sealed);
+    assert(!lcs_config_owner_network_start(&bus.nodes[1], &scope, 9000));
+    owner_exchange(&bus, instances, 9500);
+    assert(bus.nodes[0].round.stopped == 3 && !lcs_config_owner_poll(&bus.nodes[0].round, 9501));
+    assert(!lcs_config_owner_network_start(&bus.nodes[2], &scope, 10000));
+    owner_exchange(&bus, instances, 10050);
+    for (size_t i = 0; i < 3; i++)
+        assert(lcs_config_owner_poll(&bus.nodes[i].round, 10051) == 1);
+
+    /* A session change invalidates a completed proof and clears buffered replies. */
+    lcs_config_owner_network_disconnect(&bus.nodes[0], 1);
+    assert(bus.nodes[0].round.failed && bus.nodes[0].receipt.sealed && !bus.nodes[0].receipt.failed);
+    assert(!lcs_config_owner_network_retry(&bus.nodes[0], 11000));
+    owner_exchange(&bus, instances, 11001);
+    assert(lcs_config_owner_poll(&bus.nodes[0].round, 11002) == 1 && bus.nodes[0].serial == 2);
+    instances[1] = 201; bus.source = 0;
+    lcs_config_owner_network_process(&bus.nodes[0], instances, 11003, owner_send, &bus);
+    assert(bus.nodes[0].round.failed);
+    instances[1] = 101;
+    lcs_config_owner_network_process(&bus.nodes[0], instances, 11004, owner_send, &bus);
+
+    /* Revocation rewrites unsent STOPPED replies under output backpressure. */
+    assert(!lcs_config_owner_network_retry(&bus.nodes[0], 12000));
+    lcs_config_owner_message_t query;
+    assert(!lcs_config_owner_query(&bus.nodes[0].round, 1, 101, 12001, &query));
+    unsigned char payload[LCS_CONFIG_OWNER_MESSAGE_SIZE]; size_t length;
+    assert(!lcs_config_owner_encode(&query, payload, sizeof(payload), &length));
+    assert(!lcs_config_owner_network_receive(&bus.nodes[1], 0, 100, payload, length, 12001));
+    assert(bus.nodes[1].pending_replies == 1 && bus.nodes[1].replies[0].result == LCS_CONFIG_OWNER_STOPPED);
+    lcs_config_owner_network_revoke(&bus.nodes[1]);
+    assert(bus.nodes[1].replies[0].result == LCS_CONFIG_OWNER_FAILED);
+    owner_exchange(&bus, instances, 12002);
+    assert(bus.nodes[0].round.failed && lcs_config_owner_network_retry(&bus.nodes[1], 12003) < 0);
+
+    /* An unavailable full member stays required; query retries cannot extend expiry. */
+    /* Force a fresh explicit round after session loss, with node0 unavailable. */
+    lcs_config_owner_network_disconnect(&bus.nodes[2], 0);
+    assert(!lcs_config_owner_network_retry(&bus.nodes[2], 13001));
+    instances[0] = 0;
+    bus.source = 2;
+    lcs_config_owner_network_process(&bus.nodes[2], instances, 23001, owner_send, &bus);
+    assert(bus.nodes[2].round.failed && bus.nodes[2].round.required == 7);
+    bus.head = bus.tail = 0;
+    assert(!lcs_config_application_finish(&runtime.application, first.digest, error, sizeof(error)));
+    lcs_config_value_t second = successor(&first, true); learn(&second);
+    assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+    lcs_config_owner_scope_t newer;
+    assert(!lcs_config_owner_scope(&runtime.application, &newer, error, sizeof(error)));
+    assert(lcs_config_owner_network_start(&bus.nodes[0], &newer, 24000) < 0);
+    assert(lcs_config_owner_scope_equal(&bus.nodes[0].receipt.scope, &scope));
+    lcs_config_value_clear(&second);
+    for (size_t i = 0; i < 3; i++)
+    {
+        lcs_config_owner_network_stop(&bus.nodes[i]);
+        assert(bus.nodes[i].closing && bus.nodes[i].receipt.failed && !bus.nodes[i].pending_replies);
+    }
+    lcs_config_value_clear(&first); cleanup();
+}
+
+static void test_live_owner_network_recheck(void)
+{
+    for (unsigned fault = 0; fault < 2; fault++)
+    {
+        setup(false);
+        lcs_config_bootstrap_t bootstrap; projection_open(&bootstrap);
+        lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+        assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+        assert(!lcs_config_application_finish(&runtime.application, first.digest, error, sizeof(error)));
+        lcs_config_value_t second = successor(&first, true); learn(&second);
+        memset(&g_state, 0, sizeof(g_state));
+        uint64_t revision;
+        assert(!lcs_resource_config_decode(first.document, first.length, runtime.base, &g_state.cfg, &revision, error, sizeof(error)));
+        g_state.self_index = 0; g_state.instance_id = 100; g_state.resources[0].owner_node = -1;
+        generation_cancellations = 0; generation_reload = false; released_count = 0;
+        owner_bus_t bus = {0}; uint64_t instances[LCS_MAX_NODES] = {100, 101, 0};
+        for (size_t i = 0; i < 2; i++)
+            assert(!lcs_config_owner_network_init(&bus.nodes[i], runtime.base, &runtime.application, i, instances[i]));
+        /* Third participant is quorum-only and never sends owner proof. */
+        assert(!lcs_config_owner_network_init(&bus.nodes[2], runtime.base, NULL, 2, 102));
+        lcs_config_live_t live;
+        assert(!lcs_config_live_init_with_owner_network(&live, -1, &coordinator, &bootstrap, &bus.nodes[0]));
+        lcs_config_reconcile_init(&reconcile, &coordinator, lcs_config_live_ops(), &live);
+        live_mode = true; forbid_io = true;
+        assert(!lcs_config_reconcile_start(&reconcile));
+        until(LCS_CONFIG_RECONCILE_OWNERS);
+        assert(!tick() && bus.nodes[0].receipt.sealed && !live.installed);
+        lcs_config_owner_scope_t scope = bus.nodes[0].receipt.scope;
+        assert(scope.drain == 1);
+        assert(!lcs_config_owner_network_start(&bus.nodes[1], &scope, lcs_now_ms()));
+        owner_exchange(&bus, instances, lcs_now_ms() + 250);
+        until(LCS_CONFIG_RECONCILE_INSTALL);
+        if (!fault)
+            lcs_config_owner_network_disconnect(&bus.nodes[0], 1);
+        else
+            g_state.resources[0].state = LCS_RES_STOP_FAILED;
+        assert(tick() < 0 && reconcile.phase == LCS_CONFIG_RECONCILE_BLOCKED && !live.installed);
+        assert(!generation_cancellations);
+        if (!fault)
+        {
+            assert(!bus.nodes[0].receipt.failed);
+            assert(!lcs_config_owner_network_retry(&bus.nodes[0], lcs_now_ms()));
+            owner_exchange(&bus, instances, lcs_now_ms() + 250);
+            assert(!lcs_config_reconcile_retry(&reconcile));
+            until(LCS_CONFIG_RECONCILE_ADMIT);
+            assert(!tick()); g_state.voting_ready = true; g_state.votes_seen = 2;
+            until(LCS_CONFIG_RECONCILE_DONE);
+            assert(live.installed && generation_cancellations == 3);
+        }
+        else
+        {
+            assert(bus.nodes[0].receipt.failed && lcs_config_owner_network_retry(&bus.nodes[0], lcs_now_ms()) < 0);
+        }
+        for (size_t i = 0; i < 3; i++) lcs_config_owner_network_stop(&bus.nodes[i]);
+        live_mode = false; memset(&g_state, 0, sizeof(g_state));
+        projection_close(&bootstrap);
+        lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
+    }
+}
+
 int main(void)
 {
     parent = getpid();
@@ -941,6 +1115,8 @@ int main(void)
     test_live_managed_projection(false);
     test_live_managed_projection(true);
     test_owner_barrier_proofs();
+    test_owner_network_exchange();
+    test_live_owner_network_recheck();
     puts("durable configuration reconciliation ordering and safety barriers unit tests passed");
     return 0;
 }
