@@ -71,9 +71,9 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
     -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$RECONCILE_BIN"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
-    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_startup.c" "$ROOT_DIR/src/config_startup.c" "$ROOT_DIR/src/config_recovery.c" \
-    "$ROOT_DIR/src/config_recovery_live.c" "$ROOT_DIR/src/config_projection.c" "$ROOT_DIR/src/resource_generation.c" "$ROOT_DIR/src/resource_frame.c" \
+    "$ROOT_DIR/src/cluster.c" "$ROOT_DIR/src/config_recovery_live.c" "$ROOT_DIR/src/config_projection.c" "$ROOT_DIR/src/resource_generation.c" "$ROOT_DIR/src/resource_frame.c" \
     "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_agreement_worker.c" \
     "$ROOT_DIR/src/config_owner_barrier.c" "$ROOT_DIR/src/config_owner_network.c" \
     "$ROOT_DIR/src/config_runtime.c" "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" \
@@ -81,7 +81,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
     "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/config.c" \
     "$ROOT_DIR/src/vip.c" "$ROOT_DIR/src/systemd_service.c" "$ROOT_DIR/src/log.c" \
     "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
-    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$STARTUP_BIN"
+    -Wl,--wrap=fsync -Wl,--gc-sections "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$STARTUP_BIN"
 "$STARTUP_BIN"
 "$RECONCILE_BIN"
 

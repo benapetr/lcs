@@ -227,8 +227,15 @@ durable distributed configuration protocol.
   and retries of older pending targets. Retain fences/catalogs on known projection
   errors, recheck newer checkpoints after delayed completions, and retain borrowed
   storage until cancelled projection workers are reaped.
+- [x] Add explicit two-stage admission after caught-up recovery: enable only
+  matching-generation restart sync while grants/configuration votes remain fenced,
+  require the ordinary restart floor, fresh admitted peer sync and quorum, then
+  detach owned cleanup providers and transfer the coordinator/network without
+  resetting serials or promises. Re-fence on new learning, authority loss or stop;
+  preserve the latest completion tombstone for slow peers after transfer.
 - [ ] Connect recovery, the local adapter/publisher and distributed old-owner
-  provider to live daemon startup/application and generation/restart admission.
+  provider to live daemon startup/application and drive the explicit admission
+  handoff from its scheduler.
   Restart cleanup and any lease-expiry/external fencing path require explicit
   validated evidence; no default proof is permitted.
 - [ ] Define how read-only status/export reports configuration origin, committed

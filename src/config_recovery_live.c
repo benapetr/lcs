@@ -2,6 +2,7 @@
 #include "config_recovery_live.h"
 #include "config_candidate.h"
 #include "config_reload.h"
+#include "cluster.h"
 #include "peer.h"
 #include "util.h"
 #include <stdio.h>
@@ -109,6 +110,7 @@ int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
     if (result) { free(applied); return reject(err, err_len, "cannot establish fenced recovery generation"); }
     empty_tables(); g_state.cfg = *applied; free(applied);
     g_state.config_reload.active_generation++;
+    g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
     g_state.voting_not_before_ms = lcs_now_ms() + (uint64_t)g_state.cfg.lease_ms + g_state.cfg.peer_timeout_ms;
     *live = (lcs_config_recovery_live_t){.recovery = recovery, .epoll_fd = epoll_fd, .prepared = true};
     lcs_config_projection_init(&live->projection, &g_state.config_coordinator, &g_state.config_bootstrap);
@@ -194,4 +196,104 @@ int lcs_config_recovery_live_install(void *context, const lcs_config_reconcile_v
     g_state.config_reload.active_generation++;
     live->attempt = view->attempt; memcpy(live->digest, view->value->digest, sizeof(live->digest));
     return 1;
+}
+
+static void cancel_admission(void *context)
+{
+    lcs_config_recovery_live_t *live = context;
+    g_state.config_application_fenced = g_state.config_application_remapping = true;
+    g_state.config_application_drain_mask = UINT32_MAX;
+    g_state.resource_generation_admitted = false;
+    g_state.voting_ready = false; g_state.votes_seen = 0;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        g_state.peers[i].voting_ready = false;
+        g_state.peers[i].initial_sync_complete = false;
+        g_state.peers[i].resource_generation_matches = false;
+        g_state.peers[i].next_heartbeat_ms = 0;
+    }
+    live->synchronizing = false;
+}
+
+static bool generation_matches_applied(void)
+{
+    const lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    return g_state.resource_generation_enabled &&
+        g_state.resource_generation.revision == runtime->application.applied.revision &&
+        !strcmp(g_state.resource_generation.digest, runtime->application.applied.digest) &&
+        !strcmp(g_state.resource_generation.membership, runtime->agreement.membership) &&
+        matches(&g_state.cfg, &runtime->application.applied);
+}
+
+static bool projection_matches_applied(const lcs_config_recovery_live_t *live)
+{
+    const lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    return !live->projection.completion && projection_storage_ready(runtime) &&
+        g_state.config_coordinator.projected_revision == runtime->application.applied.revision &&
+        !strcmp(g_state.config_coordinator.projected_digest, runtime->application.applied.digest);
+}
+
+static int admit(void *context, const lcs_config_reconcile_view_t *view, char *err, size_t err_len)
+{
+    lcs_config_recovery_live_t *live = context;
+    lcs_config_recovery_t *recovery = live->recovery;
+    if (!live->prepared || live->admitted || recovery->phase != LCS_CONFIG_RECOVERY_ADMITTING ||
+        recovery->coordinator != &g_state.config_coordinator || !g_state.config_runtime.requires_recovery ||
+        !g_state.config_application_fenced || g_state.config_application_drain_mask != UINT32_MAX ||
+        !lcs_config_value_equal(view->value, &g_state.config_runtime.application.applied) ||
+        !g_state.quorum_needed || g_state.quorum_needed != lcs_config_quorum(&g_state.cfg) ||
+        !generation_matches_applied() || !projection_matches_applied(live))
+        return reject(err, err_len, "admission generation, projection or recovery fences changed");
+    if (work_busy()) return 0;
+    if (!live->synchronizing)
+    {
+        if (!g_state.config_application_remapping || g_state.resource_generation_admitted || g_state.voting_ready)
+            return reject(err, err_len, "admission must begin from a fully fenced generation");
+        for (size_t i = 0; i < g_state.cfg.node_count; i++)
+        {
+            g_state.peers[i].voting_ready = false;
+            g_state.peers[i].initial_sync_complete = false;
+            g_state.peers[i].resource_generation_matches = false;
+        }
+        if (peer_admit_resource_generation()) return reject(err, err_len, "cannot enable matching-generation restart sync");
+        g_state.config_application_remapping = false;
+        live->synchronizing = true;
+    }
+    if (!g_state.resource_generation_admitted || g_state.config_application_remapping)
+        return reject(err, err_len, "matching-generation restart sync lost admission");
+    cluster_update_recovery_state(); cluster_recompute_votes();
+    uint32_t synchronized = 1, voters = cluster_local_voting_ready() ? 1 : 0;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index) continue;
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED || !peer->instance_id ||
+            peer->instance_id != recovery->network->instances[i] || peer->protocol_version < LCS_PROTO_FEATURE_RESOURCE_GENERATION ||
+            !peer->initial_sync_complete || !peer->resource_generation_known || !peer->resource_generation_matches ||
+            !lcs_resource_generation_equal(&peer->resource_generation, &g_state.resource_generation) || !cluster_node_is_online(i)) continue;
+        synchronized++; if (peer->voting_ready) voters++;
+    }
+    return lcs_now_ms() >= g_state.voting_not_before_ms && synchronized >= g_state.quorum_needed &&
+        voters >= g_state.quorum_needed && cluster_local_voting_ready() && cluster_has_quorum() ? 1 : 0;
+}
+
+static void complete_admission(void *context)
+{
+    lcs_config_recovery_live_t *live = context;
+    g_state.config_application_fenced = false; g_state.config_application_drain_mask = 0;
+    live->synchronizing = false; live->admitted = true;
+}
+
+int lcs_config_recovery_live_begin_admission(lcs_config_recovery_live_t *live, char *err, size_t err_len)
+{
+    if (!live || !live->prepared || live->admitted || live->synchronizing || !live->recovery ||
+        live->recovery->coordinator != &g_state.config_coordinator ||
+        live->recovery->install != lcs_config_recovery_live_install || live->recovery->context != live ||
+        live->attempt != live->recovery->attempt || strcmp(live->digest, g_state.config_runtime.application.applied.digest) ||
+        !g_state.config_application_fenced || !g_state.config_application_remapping ||
+        g_state.config_application_drain_mask != UINT32_MAX || g_state.resource_generation_admitted || g_state.voting_ready ||
+        !generation_matches_applied() || !projection_matches_applied(live) ||
+        lcs_config_recovery_begin_admission(live->recovery, admit, cancel_admission, complete_admission, live))
+        return reject(err, err_len, "recovery is not ready for explicit generation/restart admission");
+    return 0;
 }

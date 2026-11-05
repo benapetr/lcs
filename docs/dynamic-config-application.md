@@ -761,8 +761,9 @@ The sequence is:
 its completed receipt has retired; **recovery and backend/reactivation fences
 remain held**. The controller leaves `requires_recovery` set and never grants
 resource/configuration votes or starts backends. Calling the concrete table and
-projection adapter from daemon startup, and ordinary generation/restart/lease
-admission remain separate integration work, as does missing-history transfer.
+projection adapter from daemon startup, and driving the explicit generation/
+restart/lease handoff from its scheduler remain integration work, as does
+missing-history transfer.
 
 Backend/hook failures retain their runner and masks for an explicit repair/retry.
 Failed or expired owner collections retain receipts and require a new collection
@@ -790,7 +791,7 @@ No wire layout, disk format, public command or release version changes.
 
 `config_recovery_live.c` supplies the controller's mandatory definition-table
 installer. It remains an explicit adapter: the daemon's distributed-startup guard
-is still present until scheduler and generation/restart admission are connected. It does not enable runtime mutation commands or reinterpret a partial
+is still present until the scheduler drives recovery and its explicit admission handoff. It does not enable runtime mutation commands or reinterpret a partial
 revision-zero initialization as activated state.
 
 Call `lcs_config_recovery_live_prepare()` before listeners or ordinary work. It
@@ -834,8 +835,8 @@ fresh collection before retrying installation/FINISH. The install callback is
 idempotent for the exact attempt, full table and generation digest; a retry does
 not close sessions again or reset preserved promises. It leaves recovery,
 definition/remapping fences, the application hold and generation admission in
-place. Ordinary state sync, restart waiting, quorum and final lease admission
-remain mandatory separate steps.
+place. Ordinary state sync, restart waiting and quorum remain mandatory; the explicit
+admission handoff below now coordinates these checks before releasing fences.
 
 The regression drives two recovery controllers with the concrete daemon-table
 adapter on one full member. It inserts a resource before existing sorted indices,
@@ -886,8 +887,73 @@ a quorum-only checkpoint advancing before an earlier publication is observed,
 exact file contents and mode, and cancellation of a stopped projection writer.
 They verify the application/voting hold, recovery fences and unadmitted generation
 remain intact. Projection errors cannot fall back to INI or turn file edits into
-committed definitions. Daemon startup/scheduler and final generation/restart/lease
-admission are still not enabled; there is no wire, catalog format or CLI change.
+committed definitions. Daemon startup/scheduler integration is still not enabled; there is no wire, catalog format or CLI change.
+
+## Explicit generation and restart admission handoff
+
+`lcs_config_recovery_live_begin_admission()` starts a second stage from exact
+caught-up `READY` state. `READY` alone continues to mean fenced, and is not
+permission to start resources. The generic controller requires all three trusted
+provider callbacks (step, cancel, complete); it installs no permissive admission
+or timeout defaults. Revision-zero initialization cannot use this handoff.
+
+At entry the applied value must equal the latest committed decision, its exact
+definitions/generation must be installed, its projection must be published, and
+the writer must be idle. Full members must have retired the exact latest completed
+owner scope, with no pinned receipt, active round or borrowed cleanup worker.
+The verified cleanup/catalog and application/voting hold remain bound throughout.
+
+The concrete step enables matching-generation frames and clears only the global
+remapping gate, so ordinary restart state synchronization can proceed. It requests
+new sync and clears cached per-peer ready/matching/synchronized flags. The
+all-resource definition mask and coordinator application hold remain in force;
+lease grants, acquisitions, backend placement and configuration votes stay fenced.
+Ordinary local restart-ready heartbeats may become true during synchronization;
+that flag alone cannot release these resource/configuration fences.
+
+The step uses the existing cluster restart/quorum helpers and additionally checks
+the restart waiting floor and fresh synchronized peers against current admitted
+instances, established sockets, wire-6 capability, exact generation digests and
+peer timeouts. Both synchronized and ready-voter counts must satisfy the configured
+quorum. Cached flags, a closed/old-instance session, a different generation,
+incomplete cleanup, or elapsed time without synchronization cannot complete
+admission. Quorum-only nodes perform the same metadata/restart checks without
+backend work or owner-stop evidence.
+
+While `ADMITTING`, a new checkpoint or writer job cancels admission and restores
+global remapping, resource and voting fences **before** the controller may stage
+new learning. It keeps its application hold and retained cleanup snapshots, then
+finishes recovery and requires fresh explicit admission. Private promises and
+observed epochs survive this cancellation. Authority loss or a failed admission
+provider is terminal and re-fences before stopping owner replies; shutdown does
+likewise before cancelling/reaping any workers.
+
+Once the provider verifies readiness, the controller rechecks its exact authority
+and scope, closes its owned cleanup snapshot, detaches the startup-history query
+provider and transfers the still-open coordinator/owner network. It retains owner
+request serials, admitted instances and the latest completion tombstone. Slow
+peers can still confirm that completed scope after the startup runner is freed;
+unknown future scopes remain pending. It then clears the in-memory
+`requires_recovery` flag and application hold, enters `COMPLETE`, and invokes the
+completion callback to release the all-resource fence. No backend is started and
+no epoch or private promise is incremented/reset by this handoff. Subsequent
+ordinary lease/placement logic owns those actions.
+
+`stop()` and `close()` after `COMPLETE` cannot shut down the transferred coordinator
+or network; their live owner must handle normal shutdown. An interrupted handoff
+still owns those objects and retains fences until normal cancellation/reaping.
+The `process()` return of 1 now means either fenced `READY` or transferred
+`COMPLETE`; callers must inspect the phase rather than using that integer as an
+admission certificate.
+
+Tests use the real cluster restart/quorum helpers with simulated admitted peer
+observations. They exercise waiting floors, stale sync, old protocol/instance,
+closed/expired sessions, generation mismatches and missing voters; verify a
+checkpoint cancels admission before applying another target; cover full and
+quorum-only transfer, authority loss and shutdown; and retain promises, serials
+and late completion replies across successful transfer. Daemon startup/scheduler
+wiring and socket-level/lab admission validation remain unfinished. There is no
+wire, catalog-format, public command or release-version change.
 
 ## Client outcomes
 

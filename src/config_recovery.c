@@ -4,8 +4,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void cancel_admission(lcs_config_recovery_t *recovery)
+{
+    if (recovery->admission_cancel) recovery->admission_cancel(recovery->admission_context);
+    recovery->admission = NULL; recovery->admission_cancel = NULL; recovery->admission_complete = NULL;
+    recovery->admission_context = NULL;
+}
+
 static int failure(lcs_config_recovery_t *recovery, const char *message, bool terminal)
 {
+    if (terminal) cancel_admission(recovery);
     if (terminal && recovery->network) lcs_config_owner_network_stop(recovery->network);
     recovery->blocked_phase = recovery->phase;
     recovery->phase = terminal ? LCS_CONFIG_RECOVERY_FAILED : LCS_CONFIG_RECOVERY_BLOCKED;
@@ -97,6 +105,68 @@ static int resolve(lcs_config_recovery_t *recovery)
     return 1;
 }
 
+static bool admission_ready(const lcs_config_recovery_t *recovery)
+{
+    const lcs_config_coordinator_t *coordinator = recovery->coordinator;
+    if (!coordinator || !coordinator->initialized || coordinator->failed || coordinator->closing ||
+        coordinator->application_owner != recovery || coordinator->phase != LCS_CONFIG_COORD_READY || coordinator->storage.pid > 0 ||
+        !recovery->cleanup || recovery->next_cleanup || !recovery->network || recovery->network->closing ||
+        recovery->network->receipt.sealed || recovery->network->receipt.failed || recovery->network->round.active ||
+        recovery->network->release.active) return false;
+    const lcs_config_runtime_t *runtime = coordinator->runtime;
+    if (!runtime->application.applied.revision || runtime->application.pending.document ||
+        !lcs_config_value_equal(&runtime->application.applied, &runtime->agreement.committed) ||
+        strcmp(recovery->installed, runtime->application.applied.digest) ||
+        !lcs_config_startup_verified(recovery->cleanup, runtime, recovery->network->instance)) return false;
+    if (recovery->quorum_only) return !recovery->network->recovery;
+    lcs_config_application_t pair = runtime->application;
+    pair.pending = pair.applied; pair.applied = runtime->application.history[0];
+    lcs_config_owner_scope_t scope; char error[256];
+    return recovery->network->retired && recovery->network->recovery && recovery->network->recovery_context == recovery->cleanup &&
+        !lcs_config_owner_scope(&pair, &scope, error, sizeof(error)) &&
+        lcs_config_owner_scope_equal(&scope, &recovery->network->retired_scope);
+}
+
+int lcs_config_recovery_begin_admission(lcs_config_recovery_t *recovery,
+                                         lcs_config_reconcile_step_t step,
+                                         void (*cancel)(void *), void (*complete)(void *), void *context)
+{
+    if (!recovery || recovery->phase != LCS_CONFIG_RECOVERY_READY || !step || !cancel || !complete || !admission_ready(recovery))
+        return -1;
+    recovery->admission = step; recovery->admission_cancel = cancel; recovery->admission_complete = complete;
+    recovery->admission_context = context; recovery->phase = LCS_CONFIG_RECOVERY_ADMITTING;
+    return 0;
+}
+
+static int progress_admission(lcs_config_recovery_t *recovery)
+{
+    if (!admission_ready(recovery))
+    {
+        cancel_admission(recovery); recovery->phase = LCS_CONFIG_RECOVERY_READY;
+        return 0; /* Re-fence before the normal controller can stage newer learning. */
+    }
+    lcs_config_application_plan_t plan = {0};
+    for (size_t i = 0; i < recovery->cleanup->config->resource_count; i++) plan.new_to_old[i] = (int)i;
+    lcs_config_reconcile_view_t view = {.old_config = recovery->cleanup->config, .target = recovery->cleanup->config,
+        .value = &recovery->cleanup->applied, .plan = &plan, .attempt = recovery->attempt};
+    int result = recovery->admission(recovery->admission_context, &view, recovery->error, sizeof(recovery->error));
+    if (result < 0 || result > 1) return failure_detail(recovery, "generation/restart admission failed", recovery->error, true);
+    if (!result) return 0;
+    if (!admission_ready(recovery)) return failure(recovery, "admission changed recovery authority", true);
+    /* No callback, transport work, or writer may reenter between these checks
+     * and ownership transfer. Retain the current completion scope and serials. */
+    if (lcs_config_startup_close(recovery->cleanup)) return failure(recovery, "cleanup still borrowed during admission", true);
+    recovery->network->recovery = NULL; recovery->network->recovery_context = NULL;
+    free(recovery->cleanup); recovery->cleanup = NULL; clear_target(recovery);
+    recovery->coordinator->runtime->requires_recovery = false;
+    recovery->coordinator->application_owner = NULL;
+    recovery->phase = LCS_CONFIG_RECOVERY_COMPLETE;
+    recovery->admission_complete(recovery->admission_context);
+    recovery->admission = NULL; recovery->admission_cancel = NULL; recovery->admission_complete = NULL;
+    recovery->admission_context = NULL;
+    return 1;
+}
+
 static int catalog_job(lcs_config_recovery_t *recovery, bool finish, uint64_t now_ms)
 {
     lcs_config_coordinator_t *coordinator = recovery->coordinator;
@@ -134,6 +204,7 @@ int lcs_config_recovery_process(lcs_config_recovery_t *recovery,
 {
     if (!recovery || !recovery->coordinator) return -1;
     lcs_config_coordinator_t *coordinator = recovery->coordinator;
+    if (recovery->phase == LCS_CONFIG_RECOVERY_COMPLETE) return 1;
     if (recovery->phase == LCS_CONFIG_RECOVERY_STOPPED) return 0;
     (void)lcs_config_coordinator_process(coordinator, now_ms);
     if (recovery->phase == LCS_CONFIG_RECOVERY_STOPPING)
@@ -183,6 +254,7 @@ int lcs_config_recovery_process(lcs_config_recovery_t *recovery,
     }
     if (!lcs_config_startup_verified(recovery->cleanup, runtime, recovery->network->instance))
         return failure(recovery, "catalog changed outside the recovery sequencer", true);
+    if (recovery->phase == LCS_CONFIG_RECOVERY_ADMITTING) return progress_admission(recovery);
     if (!recovery->quorum_only && recovery->network->receipt.failed)
         return failure(recovery, "local recovery cleanup proof revoked; retain fences", true);
     if (recovery->phase == LCS_CONFIG_RECOVERY_RETIRE)
@@ -250,7 +322,8 @@ int lcs_config_recovery_retry(lcs_config_recovery_t *recovery, uint64_t now_ms)
 
 void lcs_config_recovery_stop(lcs_config_recovery_t *recovery)
 {
-    if (!recovery || !recovery->coordinator) return;
+    if (!recovery || !recovery->coordinator || recovery->phase == LCS_CONFIG_RECOVERY_COMPLETE) return;
+    cancel_admission(recovery);
     lcs_config_owner_network_stop(recovery->network);
     if (recovery->cleanup) lcs_config_startup_stop(recovery->cleanup);
     if (recovery->next_cleanup) lcs_config_startup_stop(recovery->next_cleanup);
@@ -260,6 +333,8 @@ void lcs_config_recovery_stop(lcs_config_recovery_t *recovery)
 
 int lcs_config_recovery_close(lcs_config_recovery_t *recovery)
 {
+    if (recovery && recovery->phase == LCS_CONFIG_RECOVERY_COMPLETE)
+    { memset(recovery, 0, sizeof(*recovery)); return 0; }
     if (!recovery || recovery->phase != LCS_CONFIG_RECOVERY_STOPPED || !lcs_config_coordinator_can_close(recovery->coordinator)) return -1;
     if ((recovery->cleanup && lcs_config_startup_close(recovery->cleanup)) ||
         (recovery->next_cleanup && lcs_config_startup_close(recovery->next_cleanup))) return -1;

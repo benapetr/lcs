@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added explicit two-stage recovery admission: permit matching-generation restart sync under resource/configuration-vote fences, then require restart waiting, fresh peer synchronization and quorum before transferring the coordinator/owner network and releasing fences. New learning, authority loss and shutdown re-fence; successful transfer preserves private promises, request serials and the latest completion scope. Daemon startup/scheduler wiring remains unfinished.
+
 - Recovery table installation now requires publication of the latest learned resources.json through the shared writer, including older pending targets, quorum-only nodes and idempotent retries. Added projection-error repair, superseded-completion and stopped-writer cancellation coverage while retaining catalog/lease fences. Automatic daemon startup and final generation/restart admission remain unfinished.
 
 - Added the concrete fenced recovery table adapter: restore exact last-applied JSON definitions before listeners, validate pristine startup state, remap matching incarnation epochs/private grants/policies after verified cleanup, and reset new/replaced resources. Generation-session closure requires fresh owner proof; retries preserve promises without repeated remapping. Automatic startup, projection and generation/lease admission remain unfinished.

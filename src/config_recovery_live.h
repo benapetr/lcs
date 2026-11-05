@@ -11,7 +11,7 @@ typedef struct
     int epoll_fd;
     uint64_t attempt;
     char digest[LCS_CONFIG_DIGEST_SIZE];
-    bool prepared;
+    bool prepared, synchronizing, admitted;
 } lcs_config_recovery_live_t;
 
 /* Zero-initialize the adapter and an unstarted controller.
@@ -35,4 +35,11 @@ int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
  * closing generation sessions may require a fresh explicit owner-proof retry. */
 int lcs_config_recovery_live_install(void *context, const lcs_config_reconcile_view_t *view,
                                        char *err, size_t err_len);
+/* Explicit final handoff after READY. The controller drives matching-generation
+ * state synchronization while every resource and configuration vote stays fenced.
+ * Completion requires the ordinary restart floor, fresh admitted peer sync and
+ * quorum. New learning/cancellation re-fences before recovery resumes. Only a
+ * successful controller transfer releases resource fences; never starts backends
+ * or changes epochs/promises. Daemon scheduler/startup wiring remains separate. */
+int lcs_config_recovery_live_begin_admission(lcs_config_recovery_live_t *live, char *err, size_t err_len);
 #endif

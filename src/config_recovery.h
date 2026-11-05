@@ -13,6 +13,8 @@ typedef enum
     LCS_CONFIG_RECOVERY_INSTALL,
     LCS_CONFIG_RECOVERY_FINISH,
     LCS_CONFIG_RECOVERY_READY,
+    LCS_CONFIG_RECOVERY_ADMITTING,
+    LCS_CONFIG_RECOVERY_COMPLETE,
     LCS_CONFIG_RECOVERY_BLOCKED,
     LCS_CONFIG_RECOVERY_FAILED,
     LCS_CONFIG_RECOVERY_STOPPING,
@@ -26,6 +28,9 @@ typedef struct
     lcs_config_startup_t *cleanup, *next_cleanup;
     lcs_config_reconcile_step_t install;
     void *context;
+    lcs_config_reconcile_step_t admission;
+    void (*admission_cancel)(void *context), (*admission_complete)(void *context);
+    void *admission_context;
     lcs_config_t *configs;
     lcs_config_value_t target;
     lcs_config_application_plan_t plan;
@@ -40,8 +45,7 @@ typedef struct
  * Zero initialize; keep all backend/reactivation and lease fences held until a
  * SEPARATE generation/restart admission operation. Start before ordinary
  * backend/hook/probe/handoff workers run, or drain/cancel them first.
- * The coordinator must already
- * have recovered the durable barrier, and the owner network must be fresh and
+ * The coordinator must already have recovered the durable barrier, and the owner network must be fresh and
  * borrow that exact runtime. install is mandatory, nonblocking and idempotent:
  * restore/remap definition tables and incarnation-aware private promises without
  * starting backends, granting votes, or clearing recovery. Its view is borrowed
@@ -54,14 +58,27 @@ int lcs_config_recovery_start(lcs_config_recovery_t *recovery,
                                 lcs_config_reconcile_step_t install, void *context);
 /* Advances the shared writer, owner transport and cleanup workers without
  * synchronous disk/backend I/O. Call after transport/session admission updates;
- * admitted messages enter through owner_network_receive. 1 caught up/fenced,
- * 0 pending/stopping, -1 blocked/failed. READY resumes if learning advances.
+ * admitted messages enter through owner_network_receive. 1 READY (caught up
+ * and fenced) or COMPLETE (ownership transferred), 0 pending/stopping, -1
+ * blocked/failed. Inspect phase; READY resumes if learning advances.
  * The same transport/instance rules apply during BLOCKED and writer waits. */
 int lcs_config_recovery_process(lcs_config_recovery_t *recovery,
                                   const uint64_t instances[LCS_MAX_NODES], uint64_t now_ms,
                                   lcs_config_owner_send_t send, void *context);
 /* Explicit repair retry only; uncertain storage requires disk recovery. */
 int lcs_config_recovery_retry(lcs_config_recovery_t *recovery, uint64_t now_ms);
+/* Explicit second stage, only from exact caught-up READY state. All callbacks
+ * are mandatory. step may enable matching-generation sync while retaining all
+ * resource/configuration-vote fences, then returns 1 only after ordinary restart
+ * waiting, fresh state synchronization and quorum. cancel restores those fences
+ * synchronously on interruption/new learning; complete releases resource fences
+ * only AFTER the controller transfers its hold/network to the live owner.
+ * COMPLETE retains serials and the latest completion tombstone, detaches borrowed
+ * cleanup providers, clears requires_recovery and releases the application hold.
+ * stop/close after COMPLETE must not stop the transferred coordinator/network. */
+int lcs_config_recovery_begin_admission(lcs_config_recovery_t *recovery,
+                                         lcs_config_reconcile_step_t step,
+                                         void (*cancel)(void *), void (*complete)(void *), void *context);
 /* Terminal shutdown retains the writer lock, workers and snapshots until reaped.
  * Process STOPPING to completion before close; neither path releases admission. */
 void lcs_config_recovery_stop(lcs_config_recovery_t *recovery);
