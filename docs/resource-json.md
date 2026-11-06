@@ -8,7 +8,7 @@ durable catalogs can resume through startup recovery, described below. Peering s
 wire 6 adds diagnostic bootstrap metadata and explicit readiness queries, without
 establishing dynamic authority.
 The agreement and checkpoint synchronization paths are implemented internally;
-automatic activation and normal live resource application must be connected before
+automatic activation and the public mutation-command path must be completed before
 ordinary upgrades can switch authority or runtime definition commands can be enabled.
 
 ## Storage and upgrades
@@ -86,8 +86,8 @@ application remain unfinished. See
 The internal reconciliation sequencer persists pending cleanup before invoking
 backend/owner/install barriers and records applied state before generation
 admission. It retains old pending targets across newer checkpoints and blocks
-votes on failures. Normal live application and automatic activation remain
-unfinished; see [application ordering](dynamic-config-application.md#internal-reconciliation-sequencer).
+votes on failures. The activated daemon manager now drives live application;
+automatic activation remains unfinished. See [application ordering](dynamic-config-application.md#internal-reconciliation-sequencer).
 
 Dynamic resource-generation framing and explicit install/admit APIs now reject
 stale resource traffic before dispatch or RPC completion, while keeping config
@@ -98,9 +98,9 @@ The explicit local backend adapter now drains affected resources with old hooks,
 waits for dependents and indexed workers, and remaps matching incarnations without
 changing their ownership or promises. Its concrete asynchronous publisher writes
 the latest learned snapshot through the shared storage worker; file errors block
-application for retry without changing configuration authority. Normal running-daemon
-definition application remains disabled; supported activated catalogs use startup
-recovery. See [projection durability](dynamic-config-application.md#durable-projection-publisher)
+application for retry without changing configuration authority. The activated
+daemon manager drives these callbacks for learned-definition updates, following
+startup recovery. See [projection durability](dynamic-config-application.md#durable-projection-publisher)
 and [local backend transitions](dynamic-config-application.md#local-backend-drain-and-runtime-adapter).
 Internal [old-owner proof primitives](dynamic-config-application.md#old-owner-proof-primitives)
 now bind explicit full-member stop receipts to exact transitions and daemon
@@ -146,10 +146,22 @@ waits for its workers before releasing storage handles.
 CLI requests are rejected until admission. `lcs config status` reports explicit
 JSON authority, committed/applied/pending revisions and digests, application state,
 admission and blocked cleanup errors. Recovery progress and admission
-revision are logged. Normal live definition application is not connected yet:
-if new definitions are learned after admission, the daemon fences and exits with
-an error so restart recovery can apply them. No peer or CLI protocol version
-change accompanies this startup wiring.
+revision are logged. After admission, newly learned definitions are applied live
+through the same shared writer and exact old-owner barriers, without restarting
+full members. No peer or CLI protocol version change accompanies this wiring.
+
+During live application, normal backend/hook/lease/peer progress continues, while
+automatic placement and local mutations pause. Old definitions/hooks remain in
+use until affected backends drain and every full member supplies exact stop proof.
+Latest JSON publication, incarnation remapping, durable FINISH and fresh generation
+admission precede placement. Consecutive transitions retain request serials and
+old-owner receipts; a new checkpoint cannot erase an older pending cleanup target.
+Repairable projection errors and failed transport collections retry with fences
+held. Failed backend cleanup never becomes success on a timer: repair the backend
+and restart for verified startup cleanup. Uncertain catalog writes or lost
+coordinator authority stop the daemon with fences held for restart recovery.
+Read-only config status reports live progress using the existing application-state
+fields. Public resource definition commands and automatic activation remain disabled.
 
 ## Inspecting preparation across members
 

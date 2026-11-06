@@ -16,6 +16,11 @@ For those catalogs, `lcs config status` also shows local durable committed,
 applied and pending revisions/digests, recovery state, admission and cleanup
 errors. Peer entries remain advisory preparation metadata. Dynamic definition
 commands remain unavailable.
+After startup recovery, activated nodes apply newly learned definitions live.
+Local mutations and automatic placement pause during that transition while
+backend, hook, lease and peer work continue. Projection/transport failures retain
+fences for retry; failed backend cleanup requires repair and verified restart
+cleanup. See [live application](resource-json.md#activated-startup-recovery).
 
 ---
 

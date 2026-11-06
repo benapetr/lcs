@@ -12,6 +12,8 @@ int config_manager_prepare(char *err, size_t err_len);
 void config_manager_attach(int epoll_fd);
 bool config_manager_enabled(void);
 bool config_manager_recovering(void);
+/* Live transitions keep backend progress running while placement/CLI edits pause. */
+bool config_manager_applying(void);
 bool config_manager_failed(void);
 /* Fill local diagnostics only; no disk I/O, state advance or peer evidence. */
 void config_manager_diagnostics(lcs_config_status_view_t *view);

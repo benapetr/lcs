@@ -4,8 +4,9 @@ Status: contract with implemented local catalog and reconciliation sequencing;
 local backend callbacks, receipt retirement and explicit startup cleanup are
 implemented, including completed scopes backed by retained predecessor history.
 Differing pending generations now recover through daemon startup when their
-predecessor history is retained. Missing-history catch-up, normal live definition
-application and automatic activation remain unfinished. Ordinary upgrades retain
+predecessor history is retained. The activated manager also applies newly learned
+definitions live. Missing-history catch-up, public definition commands and
+automatic activation remain unfinished. Ordinary upgrades retain
 INI authority and support wire 5–6; supported already-activated catalogs resume
 JSON authority through the fenced startup path. Wire-6 bootstrap metadata does
 not enable dynamic edits.
@@ -99,8 +100,8 @@ rules. The 64-KiB frame limit includes the prefix.
 
 The daemon invokes these APIs for supported already-activated startup recovery.
 The local runtime adapter below implements normal backend/remap callbacks, whose
-running-daemon integration remains unfinished alongside missing-history catch-up
-and automatic activation. Tests cover
+running-daemon integration is now driven by the activated manager. Missing-history
+catch-up and automatic activation remain unfinished. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
 and cancellation-before-remap ordering. They do not yet constitute a running
@@ -192,10 +193,10 @@ refresh. An existing `activation.json` intent first restores the frozen baseline
 and resumes interrupted local journal/catalog initialization. After local preparation,
 missing records require recovery rather than recreation. This does not authorize
 configuration voting or activate JSON authority. It retains an immutable base for
-both handles and refuses to run persisted distributed state until activation-aware
-peering/application exists.
-The catalog is not yet connected to live resource application; its synchronous
-primitives are available through the same background storage worker used for
+both handles. Supported activated state uses fenced startup recovery; unsupported
+initialization or missing-history states still refuse startup.
+The catalog is connected to activated daemon application; its synchronous
+primitives run through the same background storage worker used for
 agreement. It uses the same exclusively locked state directory as agreement and
 a node/membership-bound,
 checksummed `application.json` record. The record contains canonical complete
@@ -240,16 +241,15 @@ uncertain worker result poisons both handles until disk recovery after child exi
 Tests cover shared-writer exclusion, delayed publication, large pipe results,
 stale imports, failed file/directory sync, and cancellation. The internal
 reconciliation sequencer below now coordinates catalog writes and explicit
-backend barriers; the local adapter below now supplies backend/remap callbacks, while its
-missing-history catch-up and automatic daemon integration remain pending.
+backend barriers; the local adapter below supplies backend/remap callbacks and
+the activated daemon manager drives them. Missing-history catch-up remains pending.
 
 ## Internal reconciliation sequencer
 
 `config_reconcile.c` implements the local ordering state machine. It requires an
-explicit start after durable activation authorization and startup fencing; no daemon backend
-adapter, automatic authority switch or permissive default callbacks are installed.
-Projection publication, live adapter calls to the generation binding APIs, and
-startup ownership recovery still need daemon integration before this path can run live. An already
+explicit start after durable activation authorization and startup fencing. The
+activated daemon manager supplies concrete backend/owner/projection callbacks;
+this module does not install an automatic authority switch or permissive defaults. An already
 current catalog returns done without adapters; callers must separately establish
 ordinary restart and generation admission, including a crash after applied
 persistence but before the prior process completed admission.
@@ -383,8 +383,8 @@ quorum. Cached vote counts, stale sockets, expired observations or mismatched
 generations do not release activity. A cancellation re-fences traffic/voting and
 invalidates synchronization; a retry must synchronize again. Only the sequencer's
 completion callback releases resource fences after transferring its hold.
-These explicit adapters remain disconnected from normal live daemon definition
-updates; the manager still stops on new learning after startup admission.
+The activated daemon manager now drives these adapters for learned-definition
+updates after startup admission. Public definition commands remain disabled.
 
 ## Durable projection publisher
 
@@ -453,7 +453,8 @@ conflicting scopes or known failure answer FAILED, and revocation is terminal.
 A receipt cannot be reused after a daemon restart or silently evicted to make
 room for another application. The network provider retains the current scope until
 every full member confirms exact durable application, then retains its completion
-record for slow consumers as described below. Restart reconstruction is unfinished.
+record for slow consumers as described below. Restart reconstruction requires the
+verified cleanup and retained history described below.
 
 These primitives deliberately block different old-generation scopes. Applying
 checkpoints across revision gaps needs additional cleanup-scope reconciliation;
@@ -500,9 +501,10 @@ check; other collectors may need to retry after those intentional reconnects.
 A new scope waits while the previous receipt is pinned, including when a newer
 checkpoint becomes pending during application. The all-full-member retirement
 exchange below permits the next scope after the previous application is confirmed.
-Differing-old-generation recovery and startup cleanup remain unfinished. Creating
+Supported differing-old-generation recovery uses verified startup cleanup below. Creating
 a fresh network object to discard required receipts is not a supported recovery
-action. The daemon does not automatically initialize or run the local adapter.
+action. The activated daemon manager initializes and runs the local adapter after
+startup admission; ordinary INI startup does not activate dynamic authority.
 
 Tests exercise three full-member transport participants, delayed local drains,
 PENDING responses, bounded output backpressure, fixed deadlines, instance changes,
@@ -551,8 +553,8 @@ These records are process-local proof. A restarted daemon cannot recreate them
 from an applied revision alone; it answers PENDING for an unknown scope. The
 startup cleanup runner below can recreate pending and completed scopes under a
 new instance only after physical cleanup of the retained snapshots. Missing
-predecessor history and differing-old-generation reconciliation remain unfinished;
-automatic application remains disabled. Tests cover three sequential transitions with
+predecessor transfer remains unfinished; known-history startup reconciliation and
+activated live application are implemented. Tests cover three sequential transitions with
 independently published durable catalog records, a delayed local application,
 lost completion replies, a fast member serving a slow peer while on its next
 transition, phase confusion, conflicting digests, session loss, timeout/retry,
@@ -1003,9 +1005,28 @@ of edited INI definitions, failed-cleanup blocking and repair retry,
 convergence/admission/placement, and a node restart
 which recreates a missing projection from the journal. This fixture creates
 offline crash-state records through internal APIs; it is not an administrative
-activation procedure. Missing predecessor history and ordinary live definition
-application remain unsupported. Learning new definitions after admission fences
-and stops the daemon for restart recovery until that live path is implemented.
+activation procedure. Missing predecessor history remains unsupported.
+
+After startup admission, the manager initializes one persistent live adapter and
+reconciler over the transferred coordinator/owner network. New learned decisions
+start application only when the shared writer is available. Backend, hook, lease
+and peer work continue while automatic placement and local mutations pause.
+Completed transitions retain adapter attempts and owner request serials for the
+next decision. Projection and transport failures retry with retained fences and
+receipts; failed local cleanup proof is never reset by retry. Uncertain durable
+state or lost coordinator eligibility fences and stops the daemon for restart
+recovery. Shutdown stops the reconciler, drains its ordinary resource workers and
+reaps the shared writer before closing its retained plan or borrowed storage.
+
+A real-process checkpoint fixture advances only a stopped quorum-only store,
+then rejoins over normal wire-6 catch-up. Both full-member processes remain running
+through replacement, creation, priority modification and deletion down to an empty
+catalog. A symlinked projection blocks before old-owner completion; after repair,
+application retries and admits the exact revision. The fixture is not an admin
+mutation or activation interface. Public definition commands remain disabled.
+The same case with `LCS_IT_RESTART_DURING_APPLICATION=1` stops a full member while
+its projection is blocked, then verifies pending-catalog restart recovery against
+the other full member's retained live owner receipt.
 
 ## Client outcomes
 

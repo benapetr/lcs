@@ -337,10 +337,13 @@ static void cli_server_queue_config_status(int epoll_fd, int slot_idx, uint32_t 
 static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
 {
     cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
-    if ((g_state.config_runtime.requires_recovery || (g_state.resource_generation_enabled && g_state.config_application_remapping)) &&
+    if ((g_state.config_runtime.requires_recovery || config_manager_applying() ||
+         (g_state.resource_generation_enabled && g_state.config_application_remapping)) &&
         hdr->type != LCS_MSG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_STATUS_REQ)
     {
-        cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, "resource configuration recovery is active; local mutations are fenced");
+        cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, config_manager_applying() ?
+            "resource configuration application is active; local mutations are fenced" :
+            "resource configuration recovery is active; local mutations are fenced");
         client->close_after_flush = true; return 0;
     }
     switch (hdr->type)

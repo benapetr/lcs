@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_manager.h"
 #include "config_recovery_live.h"
+#include "config_live.h"
 #include "config_peer.h"
 #include "config_reload.h"
 #include "daemon_state.h"
@@ -15,8 +16,12 @@ static struct
 {
     lcs_config_recovery_t recovery;
     lcs_config_recovery_live_t live;
+    lcs_config_reconcile_t application;
+    lcs_config_live_t application_live;
+    bool application_initialized, applying;
     bool enabled, started, active, failed, stopping;
     lcs_config_recovery_phase_t logged_phase;
+    lcs_config_reconcile_phase_t logged_application_phase;
     uint64_t retry_ms;
     char error[256];
 } manager;
@@ -66,6 +71,12 @@ int config_manager_prepare(char *err, size_t err_len)
 void config_manager_attach(int epoll_fd) { if (manager.enabled) manager.live.epoll_fd = epoll_fd; }
 bool config_manager_enabled(void) { return manager.enabled; }
 bool config_manager_recovering(void) { return manager.enabled && !manager.active; }
+bool config_manager_applying(void)
+{
+    const lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    return manager.enabled && manager.active && (manager.applying || runtime->application.pending.document ||
+        !lcs_config_value_equal(&runtime->application.applied, &runtime->agreement.committed));
+}
 bool config_manager_failed(void) { return manager.failed; }
 
 void config_manager_diagnostics(lcs_config_status_view_t *view)
@@ -75,7 +86,11 @@ void config_manager_diagnostics(lcs_config_status_view_t *view)
     const lcs_config_value_t *committed = &g_state.config_runtime.agreement.committed;
     view->authority = LCS_CONFIG_AUTHORITY_JSON;
     view->phase = manager.stopping ? LCS_CONFIG_DIAG_STOPPING :
-        manager.failed ? LCS_CONFIG_DIAG_FAILED : manager.active ? LCS_CONFIG_DIAG_ACTIVE :
+        manager.failed ? LCS_CONFIG_DIAG_FAILED : config_manager_applying() ?
+        (manager.application.phase == LCS_CONFIG_RECONCILE_BLOCKED ? LCS_CONFIG_DIAG_BLOCKED :
+         manager.application.phase == LCS_CONFIG_RECONCILE_ADMIT && !application->pending.document &&
+         lcs_config_value_equal(&application->applied, committed) ? LCS_CONFIG_DIAG_ADMITTING : LCS_CONFIG_DIAG_RECOVERING) :
+        manager.active ? LCS_CONFIG_DIAG_ACTIVE :
         manager.recovery.phase == LCS_CONFIG_RECOVERY_BLOCKED ? LCS_CONFIG_DIAG_BLOCKED :
         manager.recovery.phase == LCS_CONFIG_RECOVERY_ADMITTING ? LCS_CONFIG_DIAG_ADMITTING : LCS_CONFIG_DIAG_RECOVERING;
     view->admitted = view->phase == LCS_CONFIG_DIAG_ACTIVE;
@@ -86,6 +101,8 @@ void config_manager_diagnostics(lcs_config_status_view_t *view)
     memcpy(view->applied_digest, application->applied.digest, sizeof(view->applied_digest));
     memcpy(view->pending_digest, application->pending.digest, sizeof(view->pending_digest));
     if (manager.failed) snprintf(view->error, sizeof(view->error), "%s", manager.error);
+    else if (manager.applying && manager.application.phase == LCS_CONFIG_RECONCILE_BLOCKED)
+        snprintf(view->error, sizeof(view->error), "%s", manager.application.error);
     else if (manager.recovery.phase == LCS_CONFIG_RECOVERY_BLOCKED)
         snprintf(view->error, sizeof(view->error), "%s", manager.recovery.error);
 }
@@ -109,16 +126,56 @@ int config_manager_has_historical_vips(char *err, size_t err_len)
 static int send_owner(void *context, size_t node, const void *payload, size_t length)
 { return peer_queue_config_owner(*(int *)context, (int)node, payload, (uint32_t)length); }
 
+static void process_application(uint64_t now)
+{
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    if (coordinator->failed || coordinator->closing)
+    { fail(*coordinator->error ? coordinator->error : "live configuration coordinator lost eligibility"); return; }
+    if (!manager.applying)
+    {
+        if (!config_manager_applying() || coordinator->phase != LCS_CONFIG_COORD_READY || coordinator->storage.pid > 0) return;
+        if (!manager.application_initialized || lcs_config_reconcile_start(&manager.application))
+        { fail("cannot start live configuration application"); return; }
+        manager.applying = true;
+        lcs_log_info("distributed resource application started applied=%llu committed=%llu",
+            (unsigned long long)g_state.config_runtime.application.applied.revision,
+            (unsigned long long)g_state.config_runtime.agreement.committed.revision);
+    }
+    (void)lcs_config_reconcile_process(&manager.application);
+    if (manager.application.phase == LCS_CONFIG_RECONCILE_RECOVERY)
+    { fail(manager.application.error); return; }
+    if (manager.application.phase != manager.logged_application_phase)
+    {
+        if (manager.application.phase == LCS_CONFIG_RECONCILE_BLOCKED)
+            lcs_log_warn("distributed resource application blocked: %s; cleanup failures require repair and restart", manager.application.error);
+        manager.logged_application_phase = manager.application.phase;
+    }
+    if (manager.application.phase == LCS_CONFIG_RECONCILE_BLOCKED && now >= manager.retry_ms)
+    {
+        manager.retry_ms = now + 1000u;
+        lcs_config_owner_network_t *network = &g_state.config_owners;
+        /* A transport retry retains pinned local proof. Failed cleanup never
+         * becomes success merely because its timer expired. */
+        if (network->receipt.failed) return;
+        if ((network->round.active && network->round.failed) || (network->release.active && network->release.failed))
+            if (lcs_config_owner_network_retry(network, now)) return;
+        (void)lcs_config_reconcile_retry(&manager.application);
+    }
+    else if (manager.application.phase == LCS_CONFIG_RECONCILE_DONE)
+    {
+        manager.applying = false;
+        lcs_log_info("distributed resource application admitted revision=%llu; normal lease placement enabled",
+            (unsigned long long)g_state.config_runtime.application.applied.revision);
+    }
+}
+
 void config_manager_process(int epoll_fd)
 {
     if (!manager.enabled || manager.failed || manager.stopping) return;
     lcs_config_runtime_t *runtime = &g_state.config_runtime;
     if (manager.active)
     {
-        /* Live mutation/application is a separate unfinished manager path. Do
-         * not grant old-definition leases after learning unsupported new state. */
-        if (runtime->application.pending.document || !lcs_config_value_equal(&runtime->application.applied, &runtime->agreement.committed))
-            fail("new committed definitions require restart recovery; live application is not enabled");
+        process_application(lcs_now_ms());
         return;
     }
     uint64_t instances[LCS_MAX_NODES] = {0}, now = lcs_now_ms();
@@ -160,6 +217,11 @@ void config_manager_process(int epoll_fd)
             (unsigned long long)runtime->application.applied.revision);
         if (lcs_config_recovery_close(&manager.recovery)) { fail("cannot release completed recovery controller"); return; }
         manager.started = false;
+        if (lcs_config_live_init_with_owner_network(&manager.application_live, epoll_fd, &g_state.config_coordinator,
+            &g_state.config_bootstrap, &g_state.config_owners))
+        { fail("cannot prepare live application after startup admission"); return; }
+        lcs_config_reconcile_init(&manager.application, &g_state.config_coordinator, lcs_config_live_ops(), &manager.application_live);
+        manager.application_initialized = true;
     }
     else if (result < 0 && manager.recovery.phase != LCS_CONFIG_RECOVERY_BLOCKED)
         fail("unexpected recovery controller result");
@@ -170,6 +232,7 @@ void config_manager_stop(void)
     if (!manager.enabled) return;
     manager.stopping = true;
     if (manager.started) lcs_config_recovery_stop(&manager.recovery);
+    else if (manager.application_initialized) lcs_config_reconcile_stop(&manager.application);
     else lcs_config_coordinator_stop(&g_state.config_coordinator);
 }
 void config_manager_shutdown_process(void)
@@ -186,5 +249,6 @@ int config_manager_close(void)
 {
     if (!config_manager_stopped()) return -1;
     if (manager.started && lcs_config_recovery_close(&manager.recovery)) return -1;
+    if (manager.application_initialized && lcs_config_reconcile_close(&manager.application)) return -1;
     memset(&manager, 0, sizeof(manager)); return 0;
 }

@@ -24,7 +24,7 @@ typedef struct
     lcs_config_owner_network_t *network; /* Optional concrete instance observations. */
 } lcs_config_live_t;
 
-/* Explicit adapter only; no automatic initialization/application is enabled.
+/* Live adapter; daemon-manager integration does not authorize initialization or activation.
  * project must publish the LATEST learned projection asynchronously and idempotently.
  * owner_barrier must establish generation-bound old-owner stop/expiry/fencing
  * evidence; the adapter does not infer that evidence from gossip or a timeout.

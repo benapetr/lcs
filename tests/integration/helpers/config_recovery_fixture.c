@@ -10,7 +10,8 @@ static char error[256];
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) return 2;
+    bool advance = argc == 3 && !strcmp(argv[2], "advance");
+    if (argc != 2 && !advance) return 2;
     lcs_config_t *cfg = calloc(5, sizeof(*cfg));
     if (!cfg) return 1;
     CHECK(lcs_config_load(argv[1], &cfg[0], error, sizeof(error)));
@@ -24,19 +25,38 @@ int main(int argc, char **argv)
     CHECK(lcs_config_store_open(&store, directory, error, sizeof(error)));
     CHECK(lcs_config_activation_open(&activation, &store, &cfg[0], &cfg[1], true, error, sizeof(error)));
     CHECK(lcs_config_activation_resume(&activation, &agreement, &application, error, sizeof(error)));
-    CHECK(lcs_config_barrier_begin(&round, &activation, &agreement, &application, error, sizeof(error)));
-    for (size_t i = 0; i < cfg[0].node_count; i++)
-        CHECK(lcs_config_barrier_ready(&round, i, round.membership, round.baseline, error, sizeof(error)));
-    CHECK(lcs_config_barrier_seal(&round, error, sizeof(error)));
-    CHECK(lcs_config_barrier_open(&barrier, &activation, &agreement, &application, &round, error, sizeof(error)));
-    for (unsigned revision = 1; revision <= 3; revision++)
+    if (advance)
+    {
+        /* A stopped quorum-only fixture relays a pre-decided checkpoint when
+         * it rejoins. Never edit a running store or expose a test daemon command. */
+        if (strcmp(activation.member, "node3") || agreement.committed.revision < 3 || agreement.committed.revision >= 8) return 2;
+        CHECK(lcs_config_barrier_open(&barrier, &activation, &agreement, &application, NULL, error, sizeof(error)));
+    }
+    else
+    {
+        CHECK(lcs_config_barrier_begin(&round, &activation, &agreement, &application, error, sizeof(error)));
+        for (size_t i = 0; i < cfg[0].node_count; i++)
+            CHECK(lcs_config_barrier_ready(&round, i, round.membership, round.baseline, error, sizeof(error)));
+        CHECK(lcs_config_barrier_seal(&round, error, sizeof(error)));
+        CHECK(lcs_config_barrier_open(&barrier, &activation, &agreement, &application, &round, error, sizeof(error)));
+    }
+    unsigned begin = advance ? (unsigned)agreement.committed.revision + 1 : 1;
+    for (unsigned revision = begin; revision <= (advance ? begin : 3); revision++)
     {
         uint64_t previous;
         CHECK(lcs_resource_config_decode(agreement.committed.document, agreement.committed.length,
             &cfg[1], &cfg[2], &previous, error, sizeof(error)));
         cfg[3] = cfg[2];
-        if (revision > 1) snprintf(cfg[3].resources[0].address, sizeof(cfg[3].resources[0].address),
+        if (revision > 1 && revision <= 4) snprintf(cfg[3].resources[0].address, sizeof(cfg[3].resources[0].address),
             "127.0.0.%u/32", 199 + revision);
+        if (revision == 5)
+        {
+            cfg[3].resources[1] = cfg[3].resources[0];
+            strcpy(cfg[3].resources[1].name, "vip2"); strcpy(cfg[3].resources[1].address, "127.0.0.204/32");
+            cfg[3].resource_count = 2;
+        }
+        if (revision == 6) { cfg[3].resources[0].priority = 66; cfg[3].resources[0].priority_set = true; }
+        if (revision >= 7) cfg[3].resource_count = revision == 7 ? 1 : 0;
         CHECK(lcs_resource_config_assign_identities(&cfg[2], previous, &cfg[3], &cfg[4], error, sizeof(error)));
         char *document; size_t length; char request[32];
         CHECK(lcs_resource_config_encode(&cfg[4], revision, &document, &length, error, sizeof(error)));
@@ -49,7 +69,7 @@ int main(int argc, char **argv)
          * quorum-only node3: applied 3. All have learned revision 3. */
         bool second = !strcmp(activation.member, "node2");
         bool witness = !strcmp(activation.member, "node3");
-        if (!second || revision <= 2)
+        if (!advance && (!second || revision <= 2))
         {
             CHECK(lcs_config_application_begin(&application, &agreement, error, sizeof(error)));
             if (witness || revision == 1 || (!second && revision == 2))

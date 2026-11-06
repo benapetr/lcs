@@ -181,7 +181,7 @@ durable distributed configuration protocol.
   live admission; fence every grant until the sequencer transfers its hold.
   Re-fence synchronization on superseding learning, admission failure, authority
   loss and shutdown. Exercise repair, delayed checkpoints and stale peer state.
-  Normal running-daemon manager integration remains a separate unfinished item.
+  Running-daemon manager integration is tracked separately below.
 - [x] Add internal old-owner proof primitives: exact catalog transition/drain
   scopes, pinned local stop receipts, strict message codecs, and instance-bound
   collection from every full member. No majority, disconnect or timer implies
@@ -248,9 +248,16 @@ durable distributed configuration protocol.
   Exercise differing pending revisions, historical hooks, failed-cleanup repair,
   quorum-only participation, edited INI exclusion and restart with a missing
   projection in real processes.
-- [ ] Connect the local application adapter/publisher and distributed old-owner
-  provider to normal running-daemon definition updates. Until then, new learned
-  definitions after admission must fence and stop the daemon for restart recovery.
+- [x] Connect the local application adapter/publisher and distributed old-owner
+  provider to normal running-daemon learned-definition updates. Keep backend,
+  hook, lease and peer progress running while placement/CLI mutations pause;
+  preserve attempts and receipts across consecutive transitions. Retry repaired
+  projections and transport rounds without clearing failed cleanup proof, retain
+  children/storage through shutdown, and report progress through config status.
+  Exercise checkpoint catch-up, live replacement/creation/policy edits/deletion
+  and projection repair with both full-member processes continuously running.
+  Separately exercise shutdown/restart during blocked application against a
+  continuously running peer's retained owner receipt.
   Restart cleanup and any lease-expiry/external fencing path require explicit
   validated evidence; no default proof is permitted.
 - [x] Report local JSON/INI authority and committed/applied/pending revision/digest

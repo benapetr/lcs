@@ -10,8 +10,8 @@
 
 /* Local application catalog, not a consensus/ownership authority. All writes
  * are synchronous and must run outside the daemon lease event loop. The live
- * daemon validates existing catalogs at startup; live backend application is
- * gated until activation/application integration exists. */
+ * daemon validates existing catalogs at startup; the activated daemon manager
+ * sequences live backend application through the shared nonblocking writer. */
 typedef struct
 {
     lcs_config_store_t *store;
