@@ -18,12 +18,14 @@ static struct
     bool enabled, started, active, failed, stopping;
     lcs_config_recovery_phase_t logged_phase;
     uint64_t retry_ms;
+    char error[256];
 } manager;
 
 static void fail(const char *message)
 {
     if (!manager.failed) lcs_log_error("distributed resource manager failed: %s; retain fences and restart after repair", message);
     manager.failed = true;
+    snprintf(manager.error, sizeof(manager.error), "%s", message);
     g_state.config_application_fenced = g_state.config_application_remapping = true;
     g_state.config_application_drain_mask = UINT32_MAX;
     g_state.resource_generation_admitted = g_state.voting_ready = false; g_state.votes_seen = 0;
@@ -65,6 +67,28 @@ void config_manager_attach(int epoll_fd) { if (manager.enabled) manager.live.epo
 bool config_manager_enabled(void) { return manager.enabled; }
 bool config_manager_recovering(void) { return manager.enabled && !manager.active; }
 bool config_manager_failed(void) { return manager.failed; }
+
+void config_manager_diagnostics(lcs_config_status_view_t *view)
+{
+    if (!manager.enabled) return;
+    const lcs_config_application_t *application = &g_state.config_runtime.application;
+    const lcs_config_value_t *committed = &g_state.config_runtime.agreement.committed;
+    view->authority = LCS_CONFIG_AUTHORITY_JSON;
+    view->phase = manager.stopping ? LCS_CONFIG_DIAG_STOPPING :
+        manager.failed ? LCS_CONFIG_DIAG_FAILED : manager.active ? LCS_CONFIG_DIAG_ACTIVE :
+        manager.recovery.phase == LCS_CONFIG_RECOVERY_BLOCKED ? LCS_CONFIG_DIAG_BLOCKED :
+        manager.recovery.phase == LCS_CONFIG_RECOVERY_ADMITTING ? LCS_CONFIG_DIAG_ADMITTING : LCS_CONFIG_DIAG_RECOVERING;
+    view->admitted = view->phase == LCS_CONFIG_DIAG_ACTIVE;
+    view->committed_revision = committed->revision;
+    view->applied_revision = application->applied.revision;
+    view->pending_revision = application->pending.revision;
+    memcpy(view->committed_digest, committed->digest, sizeof(view->committed_digest));
+    memcpy(view->applied_digest, application->applied.digest, sizeof(view->applied_digest));
+    memcpy(view->pending_digest, application->pending.digest, sizeof(view->pending_digest));
+    if (manager.failed) snprintf(view->error, sizeof(view->error), "%s", manager.error);
+    else if (manager.recovery.phase == LCS_CONFIG_RECOVERY_BLOCKED)
+        snprintf(view->error, sizeof(view->error), "%s", manager.recovery.error);
+}
 
 int config_manager_has_historical_vips(char *err, size_t err_len)
 {

@@ -218,6 +218,52 @@ static void test_strict_codecs(void)
     assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) == -1);
 }
 
+static void test_dynamic_status_codec(void)
+{
+    initialize();
+    lcs_config_status_view_t view, decoded;
+    unsigned char payload[8192], saved[8192]; size_t length;
+    assert(!config_peer_view(&view));
+    assert(!lcs_config_status_view_encode(&view, payload, sizeof(payload), &length));
+    assert(payload[0] == 0 && payload[1] == 1); /* Legacy response stays byte-compatible. */
+    view.authority = LCS_CONFIG_AUTHORITY_JSON;
+    view.phase = LCS_CONFIG_DIAG_BLOCKED;
+    view.committed_revision = 3; view.applied_revision = 1; view.pending_revision = 2;
+    memset(view.committed_digest, 'a', 64); view.committed_digest[64] = 0;
+    memset(view.applied_digest, 'b', 64); view.applied_digest[64] = 0;
+    memset(view.pending_digest, 'c', 64); view.pending_digest[64] = 0;
+    strcpy(view.error, "cleanup failed: \"old\" backend\nrepair required");
+    assert(!lcs_config_status_view_encode(&view, payload, sizeof(payload), &length));
+    assert(payload[0] == 0 && payload[1] == 2);
+    assert(!lcs_config_status_view_decode(payload, length, &decoded));
+    assert(decoded.authority == LCS_CONFIG_AUTHORITY_JSON && !decoded.admitted);
+    assert(decoded.committed_revision == 3 && decoded.applied_revision == 1 && decoded.pending_revision == 2);
+    assert(!strcmp(decoded.error, view.error) && !strcmp(decoded.pending_digest, view.pending_digest));
+    memcpy(saved, payload, length);
+    for (size_t i = 0; i < length; i++) assert(lcs_config_status_view_decode(payload, i, &decoded) < 0);
+    payload[length] = 0;
+    assert(lcs_config_status_view_decode(payload, length + 1, &decoded) < 0);
+    payload[1] = 1; /* An older decoder's format cannot reinterpret dynamic authority. */
+    assert(lcs_config_status_view_decode(payload, length, &decoded) < 0);
+    memcpy(payload, saved, length);
+    size_t extension = length - (4 + 24 + 3 * LCS_CONFIG_STATUS_DIGEST_SIZE + 256);
+    payload[extension] = LCS_CONFIG_AUTHORITY_INI;
+    assert(lcs_config_status_view_decode(payload, length, &decoded) < 0);
+    memcpy(payload, saved, length); payload[extension + 1] = 1;
+    assert(lcs_config_status_view_decode(payload, length, &decoded) < 0); /* Blocked is not admitted. */
+    memcpy(payload, saved, length); payload[length - 1] = 'x';
+    assert(lcs_config_status_view_decode(payload, length, &decoded) < 0); /* Canonical padding. */
+    view.phase = LCS_CONFIG_DIAG_ACTIVE; view.admitted = 1;
+    assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
+    view.applied_revision = 3; view.pending_revision = 0; view.pending_digest[0] = 0; view.error[0] = 0;
+    assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0); /* Digest mismatch. */
+    strcpy(view.applied_digest, view.committed_digest);
+    assert(!lcs_config_status_view_encode(&view, payload, sizeof(payload), &length));
+    assert(!lcs_config_status_view_decode(payload, length, &decoded));
+    assert(decoded.admitted && !decoded.pending_revision && !*decoded.error);
+    assert(!strcmp(lcs_config_status_phase_name(decoded.phase), "active"));
+}
+
 static lcs_config_store_t readiness_store;
 static char readiness_directory[80];
 
@@ -485,6 +531,7 @@ int main(void)
 {
     test_metadata_and_reload();
     test_strict_codecs();
+    test_dynamic_status_codec();
     test_readiness_codecs();
     test_readiness_round();
     test_explicit_peer_readiness();

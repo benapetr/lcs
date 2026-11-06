@@ -31,10 +31,15 @@ if "$LCS" -s "$(node_socket node1)" resource start vip1 >"$TEST_TMP/mutation.log
     die 'recovery allowed a CLI mutation'
 fi
 grep -Fq 'recovery is active' "$TEST_TMP/mutation.log" || die 'missing recovery fence diagnostic'
-if "$LCS" -s "$(node_socket node1)" --json config status >"$TEST_TMP/config-status.log" 2>&1; then
-    die 'dynamic config status falsely reported legacy authority'
-fi
-grep -Fq 'use status' "$TEST_TMP/config-status.log" || die 'missing dynamic diagnostic limitation'
+"$LCS" -s "$(node_socket node1)" --json config status >"$TEST_TMP/config-status.json"
+python3 - "$TEST_TMP/config-status.json" <<'PY'
+import json, sys
+status = json.load(open(sys.argv[1]))
+assert status['authority'] == 'json' and status['dynamic_commands'] is False
+assert status['admitted'] is False and status['application_state'] in ('recovering', 'blocked')
+assert status['committed_revision'] == 3 and status['applied_revision'] == 2 and status['pending_revision'] == 3
+assert len(status['committed_digest']) == 64 and len(status['applied_digest']) == 64
+PY
 sleep 1
 ! grep -q 'recovery admitted' "$TEST_TMP/logs/node1.log" || die 'admitted without other full member'
 touch "$LCS_RECOVERY_TRACE.block"
@@ -43,12 +48,34 @@ start_node node3
 admitted() { grep -Fq 'recovery admitted revision=3' "$TEST_TMP/logs/$1.log"; }
 blocked() { grep -Fq 'distributed resource recovery blocked:' "$TEST_TMP/logs/node2.log"; }
 wait_until 15 'failed cleanup blocks recovery' blocked
+blocked_status() {
+    "$LCS" -s "$(node_socket node2)" --json config status >"$TEST_TMP/blocked.json" &&
+        python3 - "$TEST_TMP/blocked.json" 2>/dev/null <<'PY'
+import json, sys
+status = json.load(open(sys.argv[1]))
+assert status['authority'] == 'json' and status['admitted'] is False
+assert status['application_state'] == 'blocked' and status['error']
+assert status['committed_revision'] == 3 and status['applied_revision'] == 1 and status['pending_revision'] == 2
+PY
+}
+wait_until 10 'read-only cleanup failure diagnostics' blocked_status
 ! admitted node1 && ! admitted node2 || die 'admitted despite failed full-member cleanup'
 rm "$LCS_RECOVERY_TRACE.block"
 for node in node1 node2 node3; do
     wait_until 35 "$node dynamic admission" admitted "$node"
     wait_for_quorum "$node"
+    "$LCS" -s "$(node_socket "$node")" --json config status >"$TEST_TMP/$node-status.json"
+    python3 - "$TEST_TMP/$node-status.json" <<'PY'
+import json, sys
+status = json.load(open(sys.argv[1]))
+assert status['authority'] == 'json' and status['dynamic_commands'] is False
+assert status['admitted'] is True and status['application_state'] == 'active'
+assert status['committed_revision'] == status['applied_revision'] == 3
+assert status['committed_digest'] == status['applied_digest']
+assert status['pending_revision'] is None and status['pending_digest'] is None and status['error'] is None
+PY
 done
+"$LCS" -s "$(node_socket node1)" config status | grep -Fq 'Resource configuration: JSON' || die 'missing JSON text diagnostics'
 wait_until 15 'latest VIP placement' node_status_has node1 'vip1 127.0.0.202/32 dev=lo state=active owner='
 for node in node1 node2 node3; do
     python3 - "$(node_config "$node")" <<'PY'

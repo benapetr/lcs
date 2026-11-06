@@ -143,15 +143,33 @@ releasing fences and allowing normal placement. Shutdown cancels recovery and
 waits for its workers before releasing storage handles.
 
 `lcs status` and `lcs --json status` remain available during recovery. Mutating
-CLI requests are rejected until admission. `lcs config status` currently rejects
-activated authority rather than incorrectly describing it as INI; committed and
-applied revision diagnostics are still planned. Recovery progress and admission
+CLI requests are rejected until admission. `lcs config status` reports explicit
+JSON authority, committed/applied/pending revisions and digests, application state,
+admission and blocked cleanup errors. Recovery progress and admission
 revision are logged. Normal live definition application is not connected yet:
 if new definitions are learned after admission, the daemon fences and exits with
 an error so restart recovery can apply them. No peer or CLI protocol version
 change accompanies this startup wiring.
 
 ## Inspecting preparation across members
+
+For activated catalogs, `lcs config status` additionally reports **local** durable
+committed, applied and pending revisions with their complete value digests.
+JSON output uses `authority: "json"`, `application_state` (`recovering`, `blocked`,
+`admitting`, `active`, `failed` or `stopping`), `admitted`, and
+`committed_revision`/`committed_digest`, `applied_revision`/`applied_digest`,
+`pending_revision`/`pending_digest`, and `error`. Absent pending work and errors
+are JSON `null`. `admitted` means recovery released its fences for normal placement;
+it is not a claim that quorum is currently available or that a resource is owned.
+Use ordinary `lcs status` for current quorum/ownership. These diagnostics are
+in-memory observations of validated durable state, without reading or changing
+files. They do not export definitions or provide durable client request outcomes.
+
+`dynamic_commands` remains false and `activation_ready` remains false: the latter
+does not expose activation authorization, and prepared-peer counts never prove it.
+Peer entries still describe advisory bootstrap metadata, not remote applied
+revisions. A new format-2 local response encodes JSON authority explicitly; old
+clients reject it. Legacy INI responses and peer metadata retain format 1.
 
 Run `lcs config status` or `lcs --json config status` to inspect INI authority,
 local preparation, the canonical membership and bootstrap-value digests, and the

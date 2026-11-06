@@ -246,11 +246,12 @@ durable distributed configuration protocol.
   definitions after admission must fence and stop the daemon for restart recovery.
   Restart cleanup and any lease-expiry/external fencing path require explicit
   validated evidence; no default proof is permitted.
-- [ ] Define how read-only status/export reports configuration origin, committed
-  revision, and pending operations, without treating file edits as commits.
-  Legacy INI origin and prepared-member diagnostics are available through
-  `lcs config status`; committed/applied revision and transaction outcomes still
-  require the durable manager.
+- [x] Report local JSON/INI authority and committed/applied/pending revision/digest
+  through read-only `lcs config status`, including recovery/admission state and
+  blocked errors. Keep prepared-peer metadata advisory and preserve legacy format;
+  older clients must reject activated diagnostics rather than report INI authority.
+- [ ] Add read-only export and durable request/transaction outcome diagnostics,
+  without treating file edits as commits or reconstructing lost request history.
 
 ## 4. Add protocol support and synchronization
 

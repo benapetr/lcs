@@ -3,6 +3,7 @@
 #define LCS_CONFIG_MANAGER_H
 #include <stdbool.h>
 #include <stddef.h>
+#include "config_status_protocol.h"
 
 /* Daemon-owned entry for existing activated catalogs only. Runs before sockets
  * or ordinary workers, freezes legacy bootstrap, and restores durable tables.
@@ -12,6 +13,8 @@ void config_manager_attach(int epoll_fd);
 bool config_manager_enabled(void);
 bool config_manager_recovering(void);
 bool config_manager_failed(void);
+/* Fill local diagnostics only; no disk I/O, state advance or peer evidence. */
+void config_manager_diagnostics(lcs_config_status_view_t *view);
 /* Includes retained historical definitions in the pre-listener capability check. */
 int config_manager_has_historical_vips(char *err, size_t err_len);
 void config_manager_process(int epoll_fd);

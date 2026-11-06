@@ -9,11 +9,14 @@ after values are also supported.
 
 The daemon automatically prepares a local JSON resource snapshot and initialization
 metadata on startup and refreshes the snapshot after successful resource reloads.
-INI remains authoritative in this implementation stage. See
+Normal upgrades retain INI authority; supported already-activated catalogs resume
+JSON authority through fenced recovery. See
 [resource JSON and storage](resource-json.md) for paths, permissions, recovery
 behavior, and the schema. `lcs config status` (also with `--json`) reports
 prepared snapshots and matching members; these observations do not activate
-dynamic management, which is not enabled yet.
+dynamic management, which is not enabled yet. For activated catalogs, it also
+reports local committed/applied/pending revisions and digests, recovery/admission
+state and cleanup errors. These read-only observations do not authorize edits.
 
 ## Live resource reload
 

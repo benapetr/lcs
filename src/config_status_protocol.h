@@ -6,6 +6,19 @@
 
 #define LCS_CONFIG_STATUS_DIGEST_SIZE 65
 #define LCS_CONFIG_STATUS_FORMAT 1
+#define LCS_CONFIG_STATUS_VIEW_FORMAT 2
+
+enum { LCS_CONFIG_AUTHORITY_INI = 0, LCS_CONFIG_AUTHORITY_JSON = 1 };
+enum
+{
+    LCS_CONFIG_DIAG_LEGACY = 0,
+    LCS_CONFIG_DIAG_RECOVERING,
+    LCS_CONFIG_DIAG_BLOCKED,
+    LCS_CONFIG_DIAG_ADMITTING,
+    LCS_CONFIG_DIAG_ACTIVE,
+    LCS_CONFIG_DIAG_FAILED,
+    LCS_CONFIG_DIAG_STOPPING,
+};
 
 /* Advisory bootstrap status, bound to the established peer session. It is not
  * a promise, acceptance, activation-readiness acknowledgement, or authority. */
@@ -32,7 +45,18 @@ typedef struct
     uint16_t count;
     uint16_t self;
     lcs_config_status_node_t nodes[LCS_MAX_NODES];
+    /* Local diagnostics only, never peer readiness/agreement evidence. INI
+     * uses unchanged format 1; JSON uses format 2, rejected by old clients. */
+    uint8_t authority, admitted;
+    uint16_t phase;
+    uint64_t committed_revision, applied_revision, pending_revision;
+    char committed_digest[LCS_CONFIG_STATUS_DIGEST_SIZE];
+    char applied_digest[LCS_CONFIG_STATUS_DIGEST_SIZE];
+    char pending_digest[LCS_CONFIG_STATUS_DIGEST_SIZE];
+    char error[256];
 } lcs_config_status_view_t;
+
+const char *lcs_config_status_phase_name(uint16_t phase);
 
 int lcs_config_status_encode(const lcs_config_status_t *status, void *payload, size_t cap, size_t *length);
 int lcs_config_status_decode(const void *payload, size_t length, lcs_config_status_t *status);

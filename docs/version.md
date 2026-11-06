@@ -147,11 +147,20 @@ update the corresponding protocol-label assertions in
 The existing wire-5 label remains `1.1.0`.
 
 The additive local `config status` request/response use message types 14/15 and
-their own format-1 payload. Existing local status responses and their protocol
+their own versioned payload. Existing ordinary local status responses and their protocol
 version are unchanged; old daemons reject the new request as unsupported.
-Format 1 describes legacy INI preparation only. Future active-authority status
-must explicitly encode that authority in a new format, rather than reusing this
-bootstrap-only response and letting an older client report INI authority.
+Format 1 describes legacy INI preparation only and remains unchanged, including
+peer bootstrap metadata. Activated local diagnostics use response format 2:
+the same count/self/node records followed by a 479-byte local extension containing
+u8 authority (1 = JSON), u8 admitted, u16 application phase, three u64 revisions
+(committed/applied/pending), three canonical 65-byte digest strings and a 256-byte
+zero-padded error string. Pending revision zero requires an empty pending digest.
+Phases 1–6 are recovering, blocked, admitting, active, failed and stopping;
+admitted is true only for active. Active/admitting require caught-up applied state
+and no pending work. Old clients reject format 2 instead of reporting INI authority;
+new clients decode both. These are local diagnostics, not peer readiness or
+agreement evidence. The independent response format changes; peer wire version,
+ordinary local status protocol version and release version remain unchanged.
 
 ## Application catalog record format
 

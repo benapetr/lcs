@@ -12,6 +12,10 @@ prepared definitions across members. Matching snapshots do not enable dynamic
 authority; runtime resource definition commands are not enabled yet. Already
 activated durable catalogs can resume through fenced startup recovery, as
 described in [activated startup recovery](resource-json.md#activated-startup-recovery).
+For those catalogs, `lcs config status` also shows local durable committed,
+applied and pending revisions/digests, recovery state, admission and cleanup
+errors. Peer entries remain advisory preparation metadata. Dynamic definition
+commands remain unavailable.
 
 ---
 

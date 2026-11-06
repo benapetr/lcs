@@ -6,6 +6,7 @@
 #include "cluster.h"
 #include "config_reload.h"
 #include "config_peer.h"
+#include "config_manager.h"
 #include "log.h"
 #include "move.h"
 #include "peer.h"
@@ -316,16 +317,16 @@ static void cli_server_queue_reload(int epoll_fd, int slot_idx, uint32_t seq, ui
 
 static void cli_server_queue_config_status(int epoll_fd, int slot_idx, uint32_t seq, uint32_t length)
 {
-    if (g_state.resource_generation_enabled)
-    {
-        cli_server_queue_error(epoll_fd, slot_idx, seq, "distributed configuration diagnostics are not available in this command yet; use status");
-        return;
-    }
     lcs_config_status_view_t view;
     unsigned char payload[LCS_MAX_FRAME];
     size_t encoded;
-    if (length || config_peer_view(&view) ||
-        lcs_config_status_view_encode(&view, payload, sizeof(payload), &encoded))
+    if (length || config_peer_view(&view))
+    {
+        cli_server_queue_error(epoll_fd, slot_idx, seq, "cannot prepare configuration status");
+        return;
+    }
+    config_manager_diagnostics(&view);
+    if (lcs_config_status_view_encode(&view, payload, sizeof(payload), &encoded))
     {
         cli_server_queue_error(epoll_fd, slot_idx, seq, "cannot prepare configuration status");
         return;

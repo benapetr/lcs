@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added activated JSON configuration diagnostics to `lcs config status` and `--json`: local committed/applied/pending revisions and digests, recovery/admission state and blocked errors. JSON authority uses a distinct local response format; legacy INI status and peer metadata remain compatible. Dynamic definition commands remain disabled.
+
 - Connected already-activated JSON catalogs to daemon startup and scheduler recovery, including differing pending revisions, historical cleanup, projection repair, exact owner barriers and fresh generation/quorum admission. CLI mutations and normal placement remain fenced during recovery; shutdown retains workers/storage until reaped. Added real three-process recovery/restart coverage. Automatic activation, missing-history recovery and normal live definition commands remain unfinished.
 
 - Added explicit two-stage recovery admission: permit matching-generation restart sync under resource/configuration-vote fences, then require restart waiting, fresh peer synchronization and quorum before transferring the coordinator/owner network and releasing fences. New learning, authority loss and shutdown re-fence; successful transfer preserves private promises, request serials and the latest completion scope. Daemon startup/scheduler wiring remains unfinished.

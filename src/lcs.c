@@ -735,8 +735,24 @@ static int cmd_config_status(const char *socket_path, bool json_output)
     const lcs_config_status_t *local = &view.nodes[view.self].status;
     if (json_output)
     {
-        printf("{\"authority\":\"ini\",\"dynamic_commands\":false,\"activation_ready\":false,\"prepared\":%s,",
-               local->prepared ? "true" : "false");
+        printf("{\"authority\":\"%s\",\"dynamic_commands\":false,\"activation_ready\":false,\"prepared\":%s,",
+               view.authority == LCS_CONFIG_AUTHORITY_JSON ? "json" : "ini", local->prepared ? "true" : "false");
+        if (view.authority == LCS_CONFIG_AUTHORITY_JSON)
+        {
+            printf("\"application_state\":"); json_string(stdout, lcs_config_status_phase_name(view.phase));
+            printf(",\"admitted\":%s,\"committed_revision\":%llu,\"committed_digest\":",
+                view.admitted ? "true" : "false", (unsigned long long)view.committed_revision);
+            json_string(stdout, view.committed_digest);
+            printf(",\"applied_revision\":%llu,\"applied_digest\":", (unsigned long long)view.applied_revision);
+            json_string(stdout, view.applied_digest);
+            printf(",\"pending_revision\":");
+            if (view.pending_revision) printf("%llu", (unsigned long long)view.pending_revision); else printf("null");
+            printf(",\"pending_digest\":");
+            if (view.pending_revision) json_string(stdout, view.pending_digest); else printf("null");
+            printf(",\"error\":");
+            if (*view.error) json_string(stdout, view.error); else printf("null");
+            putchar(',');
+        }
         printf("\"membership\":"); json_string(stdout, local->membership);
         printf(",\"baseline_digest\":"); json_string(stdout, local->baseline);
         printf(",\"prepared_members\":%u,\"matching_members\":%u,\"configured_members\":%u,\"nodes\":[",
@@ -760,9 +776,19 @@ static int cmd_config_status(const char *socket_path, bool json_output)
     }
     else
     {
-        printf("Resource configuration: INI\nPrepared snapshots: %u/%u; matching local snapshot: %u/%u\n",
-               prepared, view.count, matching, view.count);
-        printf("Dynamic commands: unavailable (distributed activation is not implemented)\n");
+        printf("Resource configuration: %s\n", view.authority == LCS_CONFIG_AUTHORITY_JSON ? "JSON" : "INI");
+        if (view.authority == LCS_CONFIG_AUTHORITY_JSON)
+        {
+            printf("Application: %s; admitted: %s\nCommitted: %llu %s\nApplied: %llu %s\n",
+                lcs_config_status_phase_name(view.phase), view.admitted ? "yes" : "no",
+                (unsigned long long)view.committed_revision, view.committed_digest,
+                (unsigned long long)view.applied_revision, view.applied_digest);
+            if (view.pending_revision) printf("Pending: %llu %s\n", (unsigned long long)view.pending_revision, view.pending_digest);
+            else printf("Pending: none\n");
+            if (*view.error) printf("Recovery error: %s\n", view.error);
+        }
+        printf("Prepared snapshots: %u/%u; matching local snapshot: %u/%u\n", prepared, view.count, matching, view.count);
+        printf("Dynamic commands: unavailable\n");
         for (size_t i = 0; i < view.count; i++)
         {
             const lcs_config_status_node_t *node = &view.nodes[i];
