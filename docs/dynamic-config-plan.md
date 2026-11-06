@@ -1,9 +1,10 @@
 # Dynamic distributed resource configuration migration plan
 
 Status: implementation in progress. Checked items have been implemented; unchecked
-items remain future work. The current stage prepares local JSON snapshots while
-INI remains authoritative. Distributed activation and runtime definition commands
-are not implemented yet. See [resource-json.md](resource-json.md) for current behavior.
+items remain future work. Normal upgrades prepare local JSON snapshots while
+INI remains authoritative; already-activated durable catalogs can resume through
+fenced daemon recovery. Automatic distributed activation and runtime definition
+commands are not implemented yet. See [resource-json.md](resource-json.md) for current behavior.
 
 The goal is to create, modify, and delete resources and groups through `lcs`
 while the cluster runs. The daemon will distribute and persist their JSON
@@ -138,8 +139,8 @@ durable distributed configuration protocol.
   startup/reload authoritative until coordinated automatic activation.
 - [x] Recover and validate existing agreement/application records before INI
   bootstrap can write snapshots or the daemon can open listeners. The current
-  legacy-mode daemon refuses persisted distributed state until activation-aware
-  recovery is implemented; it never silently falls back to INI.
+  daemon resumes supported activated catalogs through fenced recovery and refuses
+  unsupported initialization/history states; it never silently falls back to INI.
 - [x] Persist the exact revision-zero baseline before creating agreement or
   application records. Resume interrupted local initialization from that frozen
   value, reject missing records after preparation, and block INI snapshot refresh
@@ -213,8 +214,8 @@ durable distributed configuration protocol.
   Resume differing pending/applied targets and new checkpoints while retaining the
   application/voting hold through caught-up readiness. Exercise repairs, session
   loss, uncertain storage, cancellation, quorum-only operation and missing evidence.
-- [ ] Connect recovery control to the distributed daemon manager and recover
-  missing predecessor history from older catalogs; keep unsupported scopes blocked.
+- [ ] Recover missing predecessor history from older catalogs in the distributed
+  daemon manager; keep unsupported scopes blocked.
   Catalog revision numbers alone do not reconstruct backend cleanup proof.
 - [x] Add the concrete recovery table adapter: prepare last-applied schema-2
   definitions before listeners under pristine-state checks, establish an
@@ -233,9 +234,16 @@ durable distributed configuration protocol.
   detach owned cleanup providers and transfer the coordinator/network without
   resetting serials or promises. Re-fence on new learning, authority loss or stop;
   preserve the latest completion tombstone for slow peers after transfer.
-- [ ] Connect recovery, the local adapter/publisher and distributed old-owner
-  provider to live daemon startup/application and drive the explicit admission
-  handoff from its scheduler.
+- [x] Connect existing activated-catalog recovery, the startup table adapter,
+  projection publisher and distributed old-owner provider to daemon startup;
+  drive the explicit admission handoff from the scheduler. Fence CLI mutations
+  and normal placement while recovering; retain cleanup workers through shutdown.
+  Exercise differing pending revisions, historical hooks, failed-cleanup repair,
+  quorum-only participation, edited INI exclusion and restart with a missing
+  projection in real processes.
+- [ ] Connect the local application adapter/publisher and distributed old-owner
+  provider to normal running-daemon definition updates. Until then, new learned
+  definitions after admission must fence and stop the daemon for restart recovery.
   Restart cleanup and any lease-expiry/external fencing path require explicit
   validated evidence; no default proof is permitted.
 - [ ] Define how read-only status/export reports configuration origin, committed

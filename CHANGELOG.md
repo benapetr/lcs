@@ -2,6 +2,8 @@
 
 ## Next
 
+- Connected already-activated JSON catalogs to daemon startup and scheduler recovery, including differing pending revisions, historical cleanup, projection repair, exact owner barriers and fresh generation/quorum admission. CLI mutations and normal placement remain fenced during recovery; shutdown retains workers/storage until reaped. Added real three-process recovery/restart coverage. Automatic activation, missing-history recovery and normal live definition commands remain unfinished.
+
 - Added explicit two-stage recovery admission: permit matching-generation restart sync under resource/configuration-vote fences, then require restart waiting, fresh peer synchronization and quorum before transferring the coordinator/owner network and releasing fences. New learning, authority loss and shutdown re-fence; successful transfer preserves private promises, request serials and the latest completion scope. Daemon startup/scheduler wiring remains unfinished.
 
 - Recovery table installation now requires publication of the latest learned resources.json through the shared writer, including older pending targets, quorum-only nodes and idempotent retries. Added projection-error repair, superseded-completion and stopped-writer cancellation coverage while retaining catalog/lease fences. Automatic daemon startup and final generation/restart admission remain unfinished.

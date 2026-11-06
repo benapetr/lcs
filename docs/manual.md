@@ -9,7 +9,9 @@ configuration authority. See [resource JSON and storage](resource-json.md) for
 the current implementation stage, build dependencies, state paths, and recovery
 behavior. Use `lcs config status` or `lcs --json config status` to inspect
 prepared definitions across members. Matching snapshots do not enable dynamic
-authority; runtime resource definition commands are not enabled yet.
+authority; runtime resource definition commands are not enabled yet. Already
+activated durable catalogs can resume through fenced startup recovery, as
+described in [activated startup recovery](resource-json.md#activated-startup-recovery).
 
 ---
 
@@ -132,7 +134,7 @@ group supervisor cancels the hook and its foreground child commands on timeout,
 cancellation or daemon exit. Hook workers do not keep daemon sockets/storage
 open. Stop hooks should be idempotent because cleanup may need to repeat them.
 
-The internal dynamic startup cleanup runner (not automatically enabled yet) also
+The startup cleanup runner for an already-activated durable catalog also
 sets `LCS_RECOVERY=1` and `LCS_CONFIG_REVISION` to the last-applied revision.
 Recovery uses saved applied and retained predecessor definitions with epoch/lease
 ID zero, since ownership is unknown. Retained stop-hook programs must remain

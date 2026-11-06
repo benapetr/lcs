@@ -6,6 +6,7 @@
 #include "group.h"
 #include "config_reload.h"
 #include "config_peer.h"
+#include "config_manager.h"
 #include "lease.h"
 #include "cli_server.h"
 #include "log.h"
@@ -74,6 +75,13 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
     bool run_placement = !g_state.next_placement_ms || now >= g_state.next_placement_ms;
 
     peer_poll(sched->epoll_fd);
+    if (config_manager_enabled())
+    {
+        handshake_expire(sched->epoll_fd); cli_server_expire(sched->epoll_fd);
+        config_peer_process(sched->epoll_fd);
+        config_manager_process(sched->epoll_fd);
+        if (config_manager_recovering() || config_manager_failed()) return;
+    }
     resources_process_vip_operations(sched->epoll_fd);
     resources_process_service_operations(sched->epoll_fd);
     resources_progress_handoffs(sched->epoll_fd);
@@ -96,7 +104,7 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
         else if (result > 0)
             lcs_log_debug("resource JSON bootstrap refreshed after INI reload");
     }
-    config_peer_process(sched->epoll_fd);
+    if (!config_manager_enabled()) config_peer_process(sched->epoll_fd);
     if (run_placement && !config_reload_in_progress())
     {
         g_state.next_placement_ms = now + LCS_PLACEMENT_INTERVAL_MS;
@@ -155,5 +163,6 @@ int scheduler_run_shutdown_once(const scheduler_t *sched)
     resources_progress_graceful_shutdown(sched->epoll_fd);
     resources_maintain_owned_leases(sched->epoll_fd);
     config_peer_shutdown_process();
+    config_manager_shutdown_process();
     return 0;
 }

@@ -316,6 +316,11 @@ static void cli_server_queue_reload(int epoll_fd, int slot_idx, uint32_t seq, ui
 
 static void cli_server_queue_config_status(int epoll_fd, int slot_idx, uint32_t seq, uint32_t length)
 {
+    if (g_state.resource_generation_enabled)
+    {
+        cli_server_queue_error(epoll_fd, slot_idx, seq, "distributed configuration diagnostics are not available in this command yet; use status");
+        return;
+    }
     lcs_config_status_view_t view;
     unsigned char payload[LCS_MAX_FRAME];
     size_t encoded;
@@ -331,6 +336,12 @@ static void cli_server_queue_config_status(int epoll_fd, int slot_idx, uint32_t 
 static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
 {
     cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
+    if ((g_state.config_runtime.requires_recovery || (g_state.resource_generation_enabled && g_state.config_application_remapping)) &&
+        hdr->type != LCS_MSG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_STATUS_REQ)
+    {
+        cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, "resource configuration recovery is active; local mutations are fenced");
+        client->close_after_flush = true; return 0;
+    }
     switch (hdr->type)
     {
         case LCS_MSG_CONFIG_STATUS_REQ:

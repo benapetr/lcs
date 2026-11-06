@@ -4,6 +4,7 @@
 #include "cluster.h"
 #include "config_reload.h"
 #include "config_peer.h"
+#include "config_manager.h"
 #include "config.h"
 #include "daemon_state.h"
 #include "epoll_util.h"
@@ -471,6 +472,10 @@ static int setup_runtime(int *epoll_fd)
             }
         }
     }
+    char historical_error[256];
+    int historical_vips = config_manager_has_historical_vips(historical_error, sizeof(historical_error));
+    if (historical_vips < 0) { lcs_log_error("cannot inspect recovery capabilities: %s", historical_error); return -1; }
+    manages_vips = manages_vips || historical_vips > 0;
     if (manages_vips && !lcs_vip_dry_run_enabled())
     {
         char capability_error[512];
@@ -489,7 +494,7 @@ static int setup_runtime(int *epoll_fd)
         return -1;
     }
 
-    resources_begin_startup_cleanup();
+    if (!config_manager_recovering()) resources_begin_startup_cleanup();
 
     if (lcs_init_open_sockets() != 0)
         return -1;
@@ -564,7 +569,7 @@ static void run_daemon_loop(int epoll_fd)
             peer_dns_refresh_request();
             config_reload_request();
         }
-        if (scheduler_run_once(&sched) != 0)
+        if (scheduler_run_once(&sched) != 0 || config_manager_failed())
             break;
     }
 }
@@ -576,17 +581,18 @@ static bool shutdown_daemon(int epoll_fd)
         .cli_server_fd = g_cli_server_fd,
         .metrics_fd = g_metrics_fd,
     };
+    config_manager_stop();
     config_peer_stop();
     resources_begin_graceful_shutdown(epoll_fd);
     uint64_t shutdown_deadline_ms = lcs_now_ms() + ((uint64_t)g_state.cfg.hook_timeout_ms * 2u) + resources_service_operation_timeout_ms() + g_state.cfg.peer_timeout_ms + 100u;
-    while ((!resources_graceful_shutdown_complete() || !config_peer_stopped()) && lcs_now_ms() < shutdown_deadline_ms)
+    while ((!resources_graceful_shutdown_complete() || (!config_peer_stopped() || !config_manager_stopped())) && lcs_now_ms() < shutdown_deadline_ms)
     {
         if (scheduler_run_shutdown_once(&sched) != 0)
             break;
     }
     if (!resources_graceful_shutdown_complete())
         lcs_log_warn("graceful shutdown drain timed out; local resources are stopped where possible but release quorum was not confirmed");
-    bool storage_stopped = config_peer_stopped();
+    bool storage_stopped = config_peer_stopped() && config_manager_stopped();
     if (!storage_stopped)
         lcs_log_error("configuration writer has not exited; retaining state handles until process exit instead of reopening storage");
     resources_finish_graceful_shutdown();
@@ -610,6 +616,19 @@ static bool shutdown_daemon(int epoll_fd)
     lcs_log_info("lcsd stopped");
     lcs_log_close();
     return storage_stopped;
+}
+
+static void close_startup_storage(void)
+{
+    config_manager_stop(); config_peer_stop();
+    config_peer_shutdown_process(); config_manager_shutdown_process();
+    /* No recovery process has been scheduled before the daemon loop. */
+    if (config_manager_stopped() && config_peer_stopped())
+    {
+        (void)config_manager_close();
+        lcs_config_runtime_close(&g_state.config_runtime);
+        lcs_config_bootstrap_close(&g_state.config_bootstrap);
+    }
 }
 
 int main(int argc, char **argv)
@@ -649,55 +668,53 @@ int main(int argc, char **argv)
         lcs_log_close();
         return 1;
     }
-    /* Never serve legacy leases using INI in the presence of durable dynamic
-     * history. Active recovery/application is gated until its protocol exists. */
     if (g_state.config_runtime.requires_recovery)
     {
-        lcs_log_error("persisted distributed resource configuration requires activation-aware recovery; this build cannot resume it safely; preserve the state directory and use a compatible recovery-capable build");
-        lcs_config_runtime_close(&g_state.config_runtime);
-        lcs_config_bootstrap_close(&g_state.config_bootstrap);
-        lcs_log_close();
-        return 1;
+        if (config_manager_prepare(bootstrap_error, sizeof(bootstrap_error)))
+        {
+            lcs_log_error("persisted distributed resource configuration requires activation-aware recovery: %s", bootstrap_error);
+            close_startup_storage(); lcs_log_close(); return 1;
+        }
     }
-    if (lcs_config_bootstrap_refresh(&g_state.config_bootstrap, &g_state.cfg,
-                                     bootstrap_error, sizeof(bootstrap_error)))
+    else
     {
-        lcs_log_error("cannot prepare resource configuration: %s", bootstrap_error);
-        lcs_config_runtime_close(&g_state.config_runtime);
-        lcs_config_bootstrap_close(&g_state.config_bootstrap);
-        lcs_log_close();
-        return 1;
+        if (lcs_config_bootstrap_refresh(&g_state.config_bootstrap, &g_state.cfg, bootstrap_error, sizeof(bootstrap_error)))
+        {
+            lcs_log_error("cannot prepare resource configuration: %s", bootstrap_error);
+            close_startup_storage(); lcs_log_close(); return 1;
+        }
+        g_state.config_bootstrap.prepared = true;
+        g_state.config_bootstrap_initialized = true;
+        lcs_log_info("resource JSON bootstrap prepared; INI remains authoritative, dynamic mutations are not enabled");
     }
-    g_state.config_bootstrap.prepared = true;
-    g_state.config_bootstrap_initialized = true;
-    lcs_log_info("resource JSON bootstrap prepared; INI remains authoritative, dynamic mutations are not enabled");
 
     if (config_peer_refresh())
     {
         lcs_log_error("cannot prepare configuration peer metadata");
-        lcs_config_runtime_close(&g_state.config_runtime);
-        lcs_config_bootstrap_close(&g_state.config_bootstrap);
+        close_startup_storage();
         lcs_log_close();
         return 1;
     }
     int epoll_fd = -1;
     if (setup_runtime(&epoll_fd) != 0)
     {
-        lcs_config_runtime_close(&g_state.config_runtime);
-        lcs_config_bootstrap_close(&g_state.config_bootstrap);
+        close_startup_storage();
         lcs_log_close();
         return 1;
     }
 
+    config_manager_attach(epoll_fd);
     log_daemon_started();
     run_daemon_loop(epoll_fd);
+    bool manager_failed = config_manager_failed();
     bool storage_stopped = shutdown_daemon(epoll_fd);
     /* A not-yet-reaped child still owns inherited storage/lock descriptors.
      * Leave the matching parent handles intact until process exit as well. */
     if (storage_stopped)
     {
+        (void)config_manager_close();
         lcs_config_runtime_close(&g_state.config_runtime);
         lcs_config_bootstrap_close(&g_state.config_bootstrap);
     }
-    return storage_stopped ? 0 : 1;
+    return storage_stopped && !manager_failed ? 0 : 1;
 }

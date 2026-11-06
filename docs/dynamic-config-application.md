@@ -3,9 +3,11 @@
 Status: contract with implemented local catalog and reconciliation sequencing;
 local backend callbacks, receipt retirement and explicit startup cleanup are
 implemented, including completed scopes backed by retained predecessor history.
-Differing-generation/missing-history catch-up, daemon integration and automatic
-activation remain unfinished. The running daemon
-still uses INI authority and supports wire 5–6. Wire-6 bootstrap metadata does
+Differing pending generations now recover through daemon startup when their
+predecessor history is retained. Missing-history catch-up, normal live definition
+application and automatic activation remain unfinished. Ordinary upgrades retain
+INI authority and support wire 5–6; supported already-activated catalogs resume
+JSON authority through the fenced startup path. Wire-6 bootstrap metadata does
 not enable dynamic edits.
 See [the agreement core](dynamic-config-agreement.md) and
 [implementation checklist](dynamic-config-plan.md).
@@ -95,10 +97,10 @@ a peer's generation matches. Initial wrapped heartbeats/state-sync may establish
 that match; queued messages retain the existing bounded transport/backpressure
 rules. The 64-KiB frame limit includes the prefix.
 
-These APIs are not invoked automatically yet. The daemon still refuses persisted
-distributed startup. The local runtime adapter below now implements backend/remap callbacks;
-missing-history catch-up, startup integration and automatic activation
-remain unfinished. Tests cover
+The daemon invokes these APIs for supported already-activated startup recovery.
+The local runtime adapter below implements normal backend/remap callbacks, whose
+running-daemon integration remains unfinished alongside missing-history catch-up
+and automatic activation. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
 and cancellation-before-remap ordering. They do not yet constitute a running
@@ -887,7 +889,8 @@ a quorum-only checkpoint advancing before an earlier publication is observed,
 exact file contents and mode, and cancellation of a stopped projection writer.
 They verify the application/voting hold, recovery fences and unadmitted generation
 remain intact. Projection errors cannot fall back to INI or turn file edits into
-committed definitions. Daemon startup/scheduler integration is still not enabled; there is no wire, catalog format or CLI change.
+committed definitions. The startup manager below now drives this publisher;
+there is no wire or catalog format change.
 
 ## Explicit generation and restart admission handoff
 
@@ -951,9 +954,31 @@ observations. They exercise waiting floors, stale sync, old protocol/instance,
 closed/expired sessions, generation mismatches and missing voters; verify a
 checkpoint cancels admission before applying another target; cover full and
 quorum-only transfer, authority loss and shutdown; and retain promises, serials
-and late completion replies across successful transfer. Daemon startup/scheduler
-wiring and socket-level/lab admission validation remain unfinished. There is no
-wire, catalog-format, public command or release-version change.
+and late completion replies across successful transfer. The daemon integration
+below adds socket-level recovery/admission coverage; lab admission validation
+remains outstanding. There is no wire, catalog-format, public command or
+release-version change.
+
+## Daemon startup manager
+
+`config_manager.c` now prepares supported activated catalogs before listeners,
+then drives the recovery controller and explicit admission from the scheduler.
+Normal indexed resource work and CLI mutations remain fenced until recovery
+transfers ownership. Blocked rounds retry with fresh evidence; terminal failures
+retain fences and stop the daemon. Shutdown stops both configuration transport
+and recovery, retaining borrowed storage until cleanup and writer children exit.
+Legacy INI startup follows its existing path and does not trigger activation.
+
+The real-process integration regression starts two full members with different
+saved pending revisions and a quorum-only member already applied at the latest
+revision. It checks isolated-node fences, saved historical hook cleanup, exclusion
+of edited INI definitions, failed-cleanup blocking and repair retry,
+convergence/admission/placement, and a node restart
+which recreates a missing projection from the journal. This fixture creates
+offline crash-state records through internal APIs; it is not an administrative
+activation procedure. Missing predecessor history and ordinary live definition
+application remain unsupported. Learning new definitions after admission fences
+and stops the daemon for restart recovery until that live path is implemented.
 
 ## Client outcomes
 
