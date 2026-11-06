@@ -27,6 +27,8 @@ start_node node1
 wait_for_socket node1
 node_status_has node1 'vip1 127.0.0.201/32 dev=lo state=stopped owner=-' || die 'did not restore last applied definitions'
 node_status_has node1 'quorum: no' || die 'isolated recovering node has quorum'
+"$LCS" -s "$(node_socket node1)" config export | python3 -c 'import json, sys; assert json.load(sys.stdin)["revision"] == 3'
+"$LCS" -s "$(node_socket node1)" config export applied | python3 -c 'import json, sys; s=json.load(sys.stdin); assert s["revision"] == 2 and s["resources"]["vip1"]["address"] == "127.0.0.201/32"'
 if "$LCS" -s "$(node_socket node1)" resource start vip1 >"$TEST_TMP/mutation.log" 2>&1; then
     die 'recovery allowed a CLI mutation'
 fi

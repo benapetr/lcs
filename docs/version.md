@@ -162,6 +162,25 @@ new clients decode both. These are local diagnostics, not peer readiness or
 agreement evidence. The independent response format changes; peer wire version,
 ordinary local status protocol version and release version remain unchanged.
 
+## Local configuration export protocol
+
+Local Unix-socket message types `CONFIG_EXPORT_REQ` (39) and `CONFIG_EXPORT_CHUNK`
+(40) add a separately versioned read-only interface. They are not peer messages;
+peer wire 5–6, ordinary local status protocol 1004 and the release version remain
+unchanged. An older daemon returns an unsupported-request error.
+
+A format-1 request is three bytes: u16 format and u8 selection (1 committed,
+2 applied). Each response chunk has a 20-byte prefix: u16 format, u8 authority
+(0 INI, 1 JSON), u8 selection, u64 revision, u32 total document bytes and u32 offset,
+followed by nonempty document bytes. INI requires revision zero; JSON requires
+a positive revision within the existing signed-64-bit resource revision limit.
+The 512-KiB document and 64-KiB frame limits apply. Every chunk repeats the same
+request sequence and pinned metadata, with contiguous offsets starting at zero.
+The server closes after the complete document. Unknown formats/selections,
+out-of-range totals/offsets and truncated/inconsistent streams fail. The client
+buffers the bounded complete document before stdout, avoiding partial output on
+transfer failure. This interface carries definitions, not commit/vote authority.
+
 ## Application catalog record format
 
 `application.json` now writes record format 2 with two complete predecessor

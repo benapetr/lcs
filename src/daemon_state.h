@@ -287,6 +287,11 @@ typedef struct
     size_t out_off;
     size_t out_len;
     bool close_after_flush;
+    char *export_document;
+    size_t export_length, export_offset;
+    uint64_t export_revision;
+    uint32_t export_seq;
+    uint8_t export_authority, export_selection;
 } cli_server_runtime_t;
 
 typedef enum

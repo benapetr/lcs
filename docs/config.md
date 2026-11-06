@@ -17,6 +17,9 @@ prepared snapshots and matching members; these observations do not activate
 dynamic management, which is not enabled yet. For activated catalogs, it also
 reports local committed/applied/pending revisions and digests, recovery/admission
 state and cleanup errors. These read-only observations do not authorize edits.
+`lcs config export [committed|applied]` writes the corresponding resource/group
+JSON document from running memory. With INI authority both views describe effective
+INI definitions at revision zero. See [export details](resource-json.md#exporting-definitions).
 
 ## Live resource reload
 

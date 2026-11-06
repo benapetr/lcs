@@ -7,6 +7,7 @@
 #include "config_reload.h"
 #include "config_peer.h"
 #include "config_manager.h"
+#include "config_export_protocol.h"
 #include "log.h"
 #include "move.h"
 #include "peer.h"
@@ -43,7 +44,8 @@ static int cli_server_update_epoll(int epoll_fd, int slot_idx, const cli_server_
         return -1;
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
-    ev.events = EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP;
+    ev.events = EPOLLRDHUP | EPOLLERR | EPOLLHUP;
+    if (!client->close_after_flush) ev.events |= EPOLLIN;
     if (client->out_len > client->out_off)
         ev.events |= EPOLLOUT;
     ev.data.u32 = cli_server_epoll_id(slot_idx);
@@ -54,8 +56,10 @@ static void cli_server_free_buffers(cli_server_runtime_t *client)
 {
     free(client->inbuf);
     free(client->outbuf);
+    free(client->export_document);
     client->inbuf = NULL;
     client->outbuf = NULL;
+    client->export_document = NULL;
 }
 
 static int cli_server_alloc_buffers(cli_server_runtime_t *client)
@@ -315,6 +319,48 @@ static void cli_server_queue_reload(int epoll_fd, int slot_idx, uint32_t seq, ui
     cli_server_queue_simple_response(epoll_fd, slot_idx, LCS_MSG_RELOAD_RESP, seq, status, message);
 }
 
+static int cli_server_queue_export_chunk(int epoll_fd, int slot_idx)
+{
+    cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
+    if (!client->export_document || client->export_offset >= client->export_length) return 0;
+    size_t size = client->export_length - client->export_offset, length;
+    if (size > LCS_MAX_FRAME - LCS_CONFIG_EXPORT_HEADER_SIZE) size = LCS_MAX_FRAME - LCS_CONFIG_EXPORT_HEADER_SIZE;
+    lcs_config_export_chunk_t chunk = {.authority = client->export_authority, .selection = client->export_selection,
+        .revision = client->export_revision, .total = (uint32_t)client->export_length, .offset = (uint32_t)client->export_offset};
+    unsigned char payload[LCS_MAX_FRAME];
+    if (lcs_config_export_chunk_encode(&chunk, client->export_document + client->export_offset, size,
+        payload, sizeof(payload), &length) || cli_server_queue_frame(epoll_fd, slot_idx,
+        LCS_MSG_CONFIG_EXPORT_CHUNK, client->export_seq, payload, (uint32_t)length)) return -1;
+    client->export_offset += size; return 1;
+}
+
+static int cli_server_queue_export(int epoll_fd, int slot_idx, const lcs_frame_header_t *header, const void *payload)
+{
+    uint8_t selection; char error[256];
+    cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
+    if (lcs_config_export_request_decode(payload, header->length, &selection))
+    { cli_server_queue_error(epoll_fd, slot_idx, header->seq, "invalid configuration export request"); return 0; }
+    client->export_selection = selection; client->export_seq = header->seq;
+    if (g_state.resource_generation_enabled)
+    {
+        const lcs_config_value_t *value = selection == LCS_CONFIG_EXPORT_APPLIED ?
+            &g_state.config_runtime.application.applied : &g_state.config_runtime.agreement.committed;
+        if (!value->document || !value->revision || !value->length || value->length > LCS_RESOURCE_DOCUMENT_MAX)
+        { cli_server_queue_error(epoll_fd, slot_idx, header->seq, "distributed snapshot is not ready for export"); return 0; }
+        client->export_document = malloc(value->length);
+        if (client->export_document) memcpy(client->export_document, value->document, value->length);
+        client->export_length = value->length; client->export_revision = value->revision; client->export_authority = 1;
+    }
+    else if (lcs_resource_config_encode(&g_state.cfg, 0, &client->export_document, &client->export_length, error, sizeof(error)))
+    { cli_server_queue_error(epoll_fd, slot_idx, header->seq, error); return 0; }
+    if (!client->export_document)
+    { cli_server_queue_error(epoll_fd, slot_idx, header->seq, "cannot allocate configuration export"); return 0; }
+    /* Fixed deadline and one queued frame bound slow-reader memory/work. Pin a
+     * complete private copy so concurrent learning/remapping cannot mix values. */
+    client->deadline_ms = lcs_now_ms() + 10000u;
+    return cli_server_queue_export_chunk(epoll_fd, slot_idx) < 0 ? -1 : 0;
+}
+
 static void cli_server_queue_config_status(int epoll_fd, int slot_idx, uint32_t seq, uint32_t length)
 {
     lcs_config_status_view_t view;
@@ -339,7 +385,7 @@ static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_
     cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
     if ((g_state.config_runtime.requires_recovery || config_manager_applying() ||
          (g_state.resource_generation_enabled && g_state.config_application_remapping)) &&
-        hdr->type != LCS_MSG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_STATUS_REQ)
+        hdr->type != LCS_MSG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_EXPORT_REQ)
     {
         cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, config_manager_applying() ?
             "resource configuration application is active; local mutations are fenced" :
@@ -348,6 +394,9 @@ static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_
     }
     switch (hdr->type)
     {
+        case LCS_MSG_CONFIG_EXPORT_REQ:
+            if (cli_server_queue_export(epoll_fd, slot_idx, hdr, payload)) return -1;
+            break;
         case LCS_MSG_CONFIG_STATUS_REQ:
             cli_server_queue_config_status(epoll_fd, slot_idx, hdr->seq, hdr->length);
             break;
@@ -432,6 +481,8 @@ static int cli_server_flush_output(int epoll_fd, int slot_idx)
     }
     client->out_off = 0;
     client->out_len = 0;
+    int exported = cli_server_queue_export_chunk(epoll_fd, slot_idx);
+    if (exported) return exported < 0 ? -1 : 0;
     if (client->close_after_flush)
         cli_server_close_slot(epoll_fd, slot_idx, "response sent");
     else if (client->active)
@@ -510,7 +561,7 @@ void cli_server_pump_epoll_event(int epoll_fd, const struct epoll_event *ev)
         cli_server_close_slot(epoll_fd, slot_idx, "write failed");
         return;
     }
-    if (!(ev->events & EPOLLIN) || !client->active)
+    if (!(ev->events & EPOLLIN) || !client->active || client->close_after_flush)
         return;
         
     for (;;)

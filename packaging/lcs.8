@@ -69,6 +69,13 @@ lcs \- command line client for the Lightweight Cluster Service daemon
 .IR SOCKET ]
 .RB [ \-\-json ]
 .B config status
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET ]
+.RB [ \-\-json ]
+.B config export
+.RB [ committed | applied ]
 .SH DESCRIPTION
 .B lcs
 talks to the local
@@ -118,6 +125,17 @@ also report local committed/applied/pending revisions and digests, recovery stat
 admission and blocked errors. Absent pending work and errors are JSON null.
 Admission does not imply current quorum or resource ownership. Supports
 .BR \-\-json .
+.TP
+.B config export [committed|applied]
+Write canonical resource/group JSON to stdout. The default is locally committed
+definitions; applied selects definitions already applied locally. With INI authority,
+both describe effective running definitions at revision zero. Export is read-only
+and available during recovery or blocked application. Each response pins one
+snapshot and supports bounded transfers larger than one frame. Transfer failure
+returns status 1 without partial stdout; invalid syntax returns status 2.
+.B \-\-json
+produces the same document. Static daemon settings and recovery journals are
+managed separately. Validation and import commands remain unavailable.
 .TP
 .B reload
 Asynchronously refresh cached peer DNS addresses and ask the local daemon to

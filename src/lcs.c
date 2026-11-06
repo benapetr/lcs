@@ -4,6 +4,7 @@
 #include "common.h"
 #include "protocol.h"
 #include "config_status_protocol.h"
+#include "config_export_protocol.h"
 #include "util.h"
 
 #include <errno.h>
@@ -50,6 +51,7 @@ static void usage(FILE *out)
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] nrpe\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] reload\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config status\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config export [committed|applied]\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource list\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource move RESOURCE NODE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource start RESOURCE\n");
@@ -693,6 +695,46 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip, bool jso
     return 0;
 }
 
+static int cmd_config_export(const char *socket_path, uint8_t selection)
+{
+    int fd = connect_socket(socket_path);
+    if (fd < 0) return 1;
+    unsigned char payload[LCS_MAX_FRAME]; size_t length;
+    uint32_t seq = lcs_next_seq(), received = 0;
+    char *document = NULL;
+    lcs_config_export_chunk_t first = {0};
+    if (lcs_config_export_request_encode(selection, payload, sizeof(payload), &length) ||
+        lcs_write_frame(fd, LCS_MSG_CONFIG_EXPORT_REQ, seq, payload, (uint32_t)length)) goto invalid;
+    do
+    {
+        lcs_frame_header_t header;
+        if (lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0 || header.seq != seq) goto invalid;
+        if (header.type == LCS_MSG_ERROR)
+        {
+            int32_t status; char message[256];
+            if (lcs_decode_simple_resp(payload, header.length, &status, message, sizeof(message))) goto invalid;
+            fprintf(stderr, "lcs: %s\n", message); free(document); close(fd); return 1;
+        }
+        lcs_config_export_chunk_t chunk; const void *data; size_t size;
+        if (header.type != LCS_MSG_CONFIG_EXPORT_CHUNK ||
+            lcs_config_export_chunk_decode(payload, header.length, &chunk, &data, &size) ||
+            chunk.selection != selection || chunk.offset != received) goto invalid;
+        if (!document)
+        {
+            first = chunk; document = malloc(first.total);
+            if (!document) goto invalid;
+        }
+        if (chunk.total != first.total || chunk.revision != first.revision || chunk.authority != first.authority) goto invalid;
+        memcpy(document + received, data, size); received += (uint32_t)size;
+    } while (received < first.total);
+    close(fd);
+    int failed = fwrite(document, 1, first.total, stdout) != first.total || fflush(stdout) != 0;
+    free(document); return failed ? 1 : 0;
+invalid:
+    fprintf(stderr, "lcs: invalid or incomplete configuration export response\n");
+    free(document); close(fd); return 1;
+}
+
 static int cmd_config_status(const char *socket_path, bool json_output)
 {
     int fd = connect_socket(socket_path);
@@ -1141,6 +1183,16 @@ int main(int argc, char **argv)
     {
         if (optind + 1 == argc && !strcmp(argv[optind], "status"))
             return cmd_config_status(socket_path, json_output);
+        if (optind < argc && !strcmp(argv[optind], "export") && optind + 2 >= argc)
+        {
+            uint8_t selection = LCS_CONFIG_EXPORT_COMMITTED;
+            if (optind + 2 == argc)
+            {
+                if (!strcmp(argv[optind + 1], "applied")) selection = LCS_CONFIG_EXPORT_APPLIED;
+                else if (strcmp(argv[optind + 1], "committed")) { usage(stderr); return 2; }
+            }
+            return cmd_config_export(socket_path, selection);
+        }
         usage(stderr);
         return 2;
     }

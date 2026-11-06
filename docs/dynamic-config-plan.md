@@ -264,8 +264,12 @@ durable distributed configuration protocol.
   through read-only `lcs config status`, including recovery/admission state and
   blocked errors. Keep prepared-peer metadata advisory and preserve legacy format;
   older clients must reject activated diagnostics rather than report INI authority.
-- [ ] Add read-only export and durable request/transaction outcome diagnostics,
-  without treating file edits as commits or reconstructing lost request history.
+- [x] Add read-only `lcs config export [committed|applied]` from effective INI or
+  validated durable in-memory snapshots. Pin each response across learning/remaps,
+  stream bounded chunks beyond one frame, allow recovery/application inspection,
+  and reject incomplete or inconsistent replies without partial stdout.
+- [ ] Add durable request/transaction outcome diagnostics without treating file
+  edits as commits or reconstructing lost request history.
 
 ## 4. Add protocol support and synchronization
 
@@ -364,7 +368,8 @@ Command names below are proposals to finalize before implementation. Existing
   Keep it disconnected from live CLI mutation endpoints until agreement is ready.
 - [ ] Define field replacement, explicit field removal, immutable fields, and
   rejection of invalid group/dependency deletions; avoid implicit cascading deletes.
-- [ ] Add configuration export, validation, and atomic bulk import commands.
+- [ ] Add configuration validation and atomic bulk import commands. Read-only
+  committed/applied export is implemented above.
 - [ ] Support expected-revision checks and idempotent request IDs; expose a
   transaction status command so interrupted clients can determine the outcome.
 - [ ] Return actionable errors for no quorum, unsupported members, revision

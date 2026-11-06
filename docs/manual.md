@@ -16,6 +16,11 @@ For those catalogs, `lcs config status` also shows local durable committed,
 applied and pending revisions/digests, recovery state, admission and cleanup
 errors. Peer entries remain advisory preparation metadata. Dynamic definition
 commands remain unavailable.
+Use `lcs config export` to save locally committed resource/group JSON, or
+`lcs config export applied` for locally applied definitions. With INI authority
+both export effective running definitions at revision zero. Export is read-only
+and available during recovery and blocked application; `--json` gives the same
+document. See [export details](resource-json.md#exporting-definitions).
 After startup recovery, activated nodes apply newly learned definitions live.
 Local mutations and automatic placement pause during that transition while
 backend, hook, lease and peer work continue. Projection/transport failures retain

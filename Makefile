@@ -22,7 +22,7 @@ mandir ?= $(prefix)/share/man
 datadir ?= $(prefix)/share
 localstatedir ?= /var
 
-COMMON_OBJS = src/config.o src/log.o src/protocol.o src/util.o src/source_allowlist.o src/config_status_protocol.o
+COMMON_OBJS = src/config.o src/log.o src/protocol.o src/util.o src/source_allowlist.o src/config_status_protocol.o src/config_export_protocol.o
 LCSD_OBJS = src/lcsd.o src/vip.o src/cluster.o src/peer.o src/lease.o \
             src/resources.o src/group.o src/cli_server.o src/move.o src/metrics.o src/epoll_util.o src/config_reload.o \
             src/scheduler.o src/systemd_service.o src/config_candidate.o src/resource_config.o src/config_store.o src/config_bootstrap.o \

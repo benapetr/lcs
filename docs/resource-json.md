@@ -175,7 +175,7 @@ are JSON `null`. `admitted` means recovery released its fences for normal placem
 it is not a claim that quorum is currently available or that a resource is owned.
 Use ordinary `lcs status` for current quorum/ownership. These diagnostics are
 in-memory observations of validated durable state, without reading or changing
-files. They do not export definitions or provide durable client request outcomes.
+files. Durable client request outcomes remain a separate unfinished interface.
 
 `dynamic_commands` remains false and `activation_ready` remains false: the latter
 does not expose activation authorization, and prepared-peer counts never prove it.
@@ -206,6 +206,32 @@ Even `matching_members == configured_members` does not activate dynamic authorit
 stage. The future activation barrier must confirm readiness explicitly and
 serialize it with reload and storage workers. This command makes no configuration
 changes. Old daemons return an unsupported-command error.
+
+## Exporting definitions
+
+`lcs config export` writes the latest locally committed canonical resource/group
+JSON document to stdout. `lcs config export applied` selects the exact definitions
+already applied locally; `lcs config export committed` is the explicit default.
+For INI authority both selections export effective running definitions as schema 1,
+revision zero. Activated catalogs export schema 2 with revision and incarnation
+identities. `--json` produces the same JSON document, without a status envelope.
+
+Exports remain available without quorum and during startup recovery or blocked
+live application. A committed document can be ahead of applied definitions;
+`config status` reports that difference. Every export pins one complete in-memory
+snapshot at request time, so changes during transfer cannot mix revisions. Separate
+requests can observe later progress. The daemon streams bounded chunks for large
+documents, queues one frame at a time and uses a fixed ten-second connection
+deadline. The client checks sequence, selection, authority, revision, total size
+and contiguous offsets, then writes stdout only after complete receipt. Transfer
+errors return exit status 1; invalid command syntax returns 2.
+
+Export reads effective/validated memory without opening configuration or journal
+files, refreshing a projection, initializing state or submitting a transaction.
+The document contains resource/group definitions; static daemon settings and
+agreement/application recovery records are managed separately. Use shell
+redirection to save it, for example `lcs config export > resources-export.json`.
+Validation and bulk import commands remain unfinished.
 
 ## Schema version 2: backend incarnations
 

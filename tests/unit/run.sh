@@ -23,7 +23,13 @@ RECONCILE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-reconcile.XXXXXX")"
 COORDINATOR_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-coordinator.XXXXXX")"
 FREEZE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-reload-freeze.XXXXXX")"
 CANDIDATE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-candidate.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN" "$ACTIVATION_BIN" "$FREEZE_BIN" "$COORDINATOR_BIN" "$TRANSACTION_BIN" "$RECONCILE_BIN" "$RESOURCE_FRAME_BIN" "$STARTUP_BIN"' EXIT
+EXPORT_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-export.XXXXXX")"
+trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN" "$ACTIVATION_BIN" "$FREEZE_BIN" "$COORDINATOR_BIN" "$TRANSACTION_BIN" "$RECONCILE_BIN" "$RESOURCE_FRAME_BIN" "$STARTUP_BIN" "$EXPORT_BIN"' EXIT
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_export.c" "$ROOT_DIR/src/config_export_protocol.c" \
+    "$ROOT_DIR/src/protocol.c" -o "$EXPORT_BIN"
+"$EXPORT_BIN"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic \

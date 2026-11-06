@@ -61,6 +61,8 @@ typedef enum
     LCS_MSG_CONFIG_TX_END = 36,
     LCS_MSG_RESOURCE_FRAME = 37,
     LCS_MSG_CONFIG_OWNER_BARRIER = 38,
+    LCS_MSG_CONFIG_EXPORT_REQ = 39, /* Local Unix socket only. */
+    LCS_MSG_CONFIG_EXPORT_CHUNK = 40,
 } lcs_msg_type_t;
 
 typedef struct

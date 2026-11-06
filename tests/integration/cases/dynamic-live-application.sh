@@ -48,6 +48,17 @@ assert s["application_state"] == "blocked" and not s["admitted"] and s["error"]
 ' 2>/dev/null
 }
 wait_until 25 'live projection failure keeps application fenced' blocked_projection
+"$LCS" -s "$(node_socket node2)" config export >"$TEST_TMP/committed-export.json"
+"$LCS" -s "$(node_socket node2)" config export applied >"$TEST_TMP/applied-export.json"
+python3 - "$TEST_TMP" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+committed = json.loads((root/'committed-export.json').read_text())
+applied = json.loads((root/'applied-export.json').read_text())
+assert committed['revision'] == 4 and committed['resources']['vip1']['address'] == '127.0.0.203/32'
+assert applied['revision'] == 3 and applied['resources']['vip1']['address'] == '127.0.0.202/32'
+PY
 if "$LCS" -s "$(node_socket node2)" resource stop vip1 >"$TEST_TMP/cli-error.log" 2>&1; then
     die 'live application allowed CLI mutation'
 fi
@@ -100,5 +111,6 @@ for node in node1 node2; do
     grep -Fq 'distributed resource application admitted revision=8' "$TEST_TMP/logs/$node.log" || die 'missing live admission log'
     ! grep -Fq 'distributed resource manager failed:' "$TEST_TMP/logs/$node.log" || die 'live manager failed'
     "$LCS" -s "$(node_socket "$node")" --json status | python3 -c 'import json, sys; assert json.load(sys.stdin)["resources"] == []'
+    "$LCS" -s "$(node_socket "$node")" config export | python3 -c 'import json, sys; s=json.load(sys.stdin); assert s["revision"] == 8 and s["resources"] == {}'
 done
 log 'live replacement, creation, policy update and deletion regression passed'
