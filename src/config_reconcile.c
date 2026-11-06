@@ -25,6 +25,8 @@ static void clear_target(lcs_config_reconcile_t *reconcile)
 
 static int recovery(lcs_config_reconcile_t *reconcile, const char *message)
 {
+    if (reconcile->phase == LCS_CONFIG_RECONCILE_ADMIT && reconcile->ops.cancel_admission)
+        reconcile->ops.cancel_admission(reconcile->context);
     reconcile->phase = LCS_CONFIG_RECONCILE_RECOVERY;
     snprintf(reconcile->error, sizeof(reconcile->error), "%s", message);
     return -1;
@@ -52,7 +54,8 @@ int lcs_config_reconcile_start(lcs_config_reconcile_t *reconcile)
     if (self < 0)
         return -1;
     reconcile->quorum_only = runtime->base->nodes[self].role == LCS_NODE_QUORUM_ONLY;
-    if (!reconcile->ops.install || !reconcile->ops.admit || (!reconcile->quorum_only &&
+    if (!reconcile->ops.install || !reconcile->ops.admit ||
+        (!!reconcile->ops.cancel_admission != !!reconcile->ops.complete_admission) || (!reconcile->quorum_only &&
         (!reconcile->ops.quiesce || !reconcile->ops.drain || !reconcile->ops.owners)))
         return -1;
     clear_target(reconcile);
@@ -148,6 +151,7 @@ int lcs_config_reconcile_process(lcs_config_reconcile_t *reconcile)
     if (reconcile->phase == LCS_CONFIG_RECONCILE_ADMIT &&
         !lcs_config_value_equal(&application->applied, &coordinator->runtime->agreement.committed))
     {
+        if (reconcile->ops.cancel_admission) reconcile->ops.cancel_admission(reconcile->context);
         clear_target(reconcile);
         reconcile->phase = LCS_CONFIG_RECONCILE_BEGIN;
         return 0; /* Keep grants fenced until the latest learned snapshot is installed. */
@@ -161,6 +165,8 @@ int lcs_config_reconcile_process(lcs_config_reconcile_t *reconcile)
     int result = step(reconcile->context, &view, reconcile->error, sizeof(reconcile->error));
     if (result < 0)
     {
+        if (reconcile->phase == LCS_CONFIG_RECONCILE_ADMIT && reconcile->ops.cancel_admission)
+            reconcile->ops.cancel_admission(reconcile->context);
         if (!reconcile->error[0])
             snprintf(reconcile->error, sizeof(reconcile->error), "application adapter blocked; repair the barrier before retrying");
         reconcile->blocked_phase = reconcile->phase;
@@ -177,6 +183,7 @@ int lcs_config_reconcile_process(lcs_config_reconcile_t *reconcile)
             return recovery(reconcile, "configuration changed during admission; keep resource activity fenced");
         coordinator->application_owner = NULL;
         reconcile->phase = LCS_CONFIG_RECONCILE_DONE;
+        if (reconcile->ops.complete_admission) reconcile->ops.complete_admission(reconcile->context);
         return 1;
     }
     reconcile->phase++;
@@ -194,6 +201,9 @@ int lcs_config_reconcile_retry(lcs_config_reconcile_t *reconcile)
 
 void lcs_config_reconcile_stop(lcs_config_reconcile_t *reconcile)
 {
+    if ((reconcile->phase == LCS_CONFIG_RECONCILE_ADMIT ||
+        (reconcile->phase == LCS_CONFIG_RECONCILE_BLOCKED && reconcile->blocked_phase == LCS_CONFIG_RECONCILE_ADMIT)) &&
+        reconcile->ops.cancel_admission) reconcile->ops.cancel_admission(reconcile->context);
     reconcile->phase = LCS_CONFIG_RECONCILE_STOPPED;
     if (reconcile->coordinator)
         lcs_config_coordinator_stop(reconcile->coordinator);

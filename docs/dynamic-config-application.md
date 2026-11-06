@@ -273,6 +273,13 @@ The required nonblocking adapters execute in this order:
 5. After the exact installed target is durably recorded as applied, establish
    generation/restart/lease admission before releasing the hold.
 
+Adapters which enable synchronization before final admission supply paired
+`cancel_admission`/`complete_admission` callbacks. The sequencer cancels before
+discarding an admitted target for newer learning, on admission failure, authority
+loss, or stop. Completion runs only after final durable/current checks and after
+the coordinator application hold is transferred. Single-stage test/custom
+adapters may omit both callbacks; supplying just one is rejected.
+
 Adapters return pending, complete, or blocked. A completed step must maintain its
 guarantees until admission or shutdown. They may not block the lease event loop,
 retain borrowed plan pointers, or reenter/mutate the coordinator or durable
@@ -358,6 +365,26 @@ old stop hooks, dependent post-stop work, failed cleanup, malformed provider
 status, mandatory barriers, sorted remapping, retained ownership/promises,
 replacement identity reset, lease expiry and generation admission. They do not
 yet constitute an end-to-end dynamic-cluster backend transition test.
+
+## Live installation and admission rechecks
+
+The explicit live adapter rechecks latest-learned publication at the final
+table-installation boundary on full and quorum-only members. A decision learned
+while cleanup/owner proof waits must be published even if the saved pending
+target is older. Projection failure blocks before remapping; repair retries
+retain that pending target. Exact installation retries also recheck publication
+without repeating indexed-session cancellation or remapping.
+
+Live generation admission discards cached peer sync/voting flags on entry and
+keeps every resource grant fenced while permitting matching-generation restart
+traffic. It requires fresh online established wire-6 peer instances, exact
+generation metadata, completed synchronization, the restart waiting floor and
+quorum. Cached vote counts, stale sockets, expired observations or mismatched
+generations do not release activity. A cancellation re-fences traffic/voting and
+invalidates synchronization; a retry must synchronize again. Only the sequencer's
+completion callback releases resource fences after transferring its hold.
+These explicit adapters remain disconnected from normal live daemon definition
+updates; the manager still stops on new learning after startup admission.
 
 ## Durable projection publisher
 

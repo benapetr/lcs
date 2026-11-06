@@ -175,6 +175,13 @@ durable distributed configuration protocol.
 - [x] Publish the latest learned schema-2 snapshot to `resources.json` through the
   shared storage worker, with revision-bound completion, retryable projection file
   errors, and a concrete publisher for the explicit local adapter.
+- [x] Recheck latest-learned projection publication at live table installation,
+  including quorum-only nodes and exact retries of older pending targets.
+  Require fresh established matching-generation synchronization and quorum for
+  live admission; fence every grant until the sequencer transfers its hold.
+  Re-fence synchronization on superseding learning, admission failure, authority
+  loss and shutdown. Exercise repair, delayed checkpoints and stale peer state.
+  Normal running-daemon manager integration remains a separate unfinished item.
 - [x] Add internal old-owner proof primitives: exact catalog transition/drain
   scopes, pinned local stop receipts, strict message codecs, and instance-bound
   collection from every full member. No majority, disconnect or timer implies

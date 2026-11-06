@@ -2,6 +2,8 @@
 
 ## Next
 
+- Hardened explicit live definition application before manager integration: recheck latest-learned JSON publication at installation, require fresh matching-generation peer synchronization for admission, and fence all grants until the sequencer transfers its hold. Superseding decisions, failed admission, authority loss and shutdown cancel synchronization and retain fences. Added repair, stale-peer and cancellation regressions; normal live manager wiring remains unfinished.
+
 - Added activated JSON configuration diagnostics to `lcs config status` and `--json`: local committed/applied/pending revisions and digests, recovery/admission state and blocked errors. JSON authority uses a distinct local response format; legacy INI status and peer metadata remain compatible. Dynamic definition commands remain disabled.
 
 - Connected already-activated JSON catalogs to daemon startup and scheduler recovery, including differing pending revisions, historical cleanup, projection repair, exact owner barriers and fresh generation/quorum admission. CLI mutations and normal placement remain fenced during recovery; shutdown retains workers/storage until reaped. Added real three-process recovery/restart coverage. Automatic activation, missing-history recovery and normal live definition commands remain unfinished.

@@ -18,9 +18,10 @@ typedef struct
     void *barrier_context;
     uint64_t attempt, revision;
     char digest[LCS_CONFIG_DIGEST_SIZE];
-    bool bound, installed;
+    bool bound, installed, synchronizing;
     bool managed_projection;
     lcs_config_projection_t projection;
+    lcs_config_owner_network_t *network; /* Optional concrete instance observations. */
 } lcs_config_live_t;
 
 /* Explicit adapter only; no automatic initialization/application is enabled.
@@ -33,6 +34,9 @@ typedef struct
  * digest. Callbacks obey config_reconcile's nonblocking contract.
  * Runtime tables must reflect recovered last-applied ownership/backend state;
  * this live adapter does not discover ownerless leftover backends after restart.
+ * Installation republishes the latest learned projection. Admission enables
+ * fresh matching-generation sync with all resource grants fenced; paired
+ * cancel/complete callbacks retain fences until the sequencer transfers its hold.
  * Keep adapter, reconciler and daemon runtime alive through terminal shutdown. */
 int lcs_config_live_init(lcs_config_live_t *live, int epoll_fd,
                            lcs_config_live_projection_t project,

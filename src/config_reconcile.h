@@ -48,6 +48,10 @@ typedef int (*lcs_config_reconcile_step_t)(void *context, const lcs_config_recon
 typedef struct
 {
     lcs_config_reconcile_step_t quiesce, drain, owners, install, admit;
+    /* Required by adapters which enable synchronization before final admission.
+     * cancel re-fences on superseding learning/failure/stop; complete releases
+     * activity only after the sequencer transfers its application hold. */
+    void (*cancel_admission)(void *context), (*complete_admission)(void *context);
 } lcs_config_reconcile_ops_t;
 
 typedef struct

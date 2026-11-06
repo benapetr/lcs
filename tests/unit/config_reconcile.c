@@ -113,7 +113,7 @@ static int step(void *context, const lcs_config_reconcile_view_t *view, char *er
     return 1;
 }
 
-static const lcs_config_reconcile_ops_t ops = {step, step, step, step, step};
+static const lcs_config_reconcile_ops_t ops = {step, step, step, step, step, NULL, NULL};
 
 static void setup(bool quorum_only)
 {
@@ -335,6 +335,9 @@ static void test_quorum_only_and_missing_adapters(void)
     setup(true);
     lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
     reconcile.ops.quiesce = reconcile.ops.drain = reconcile.ops.owners = NULL;
+    reconcile.ops.complete_admission = lcs_config_live_ops()->complete_admission;
+    assert(lcs_config_reconcile_start(&reconcile) < 0); /* Two-stage callbacks must be paired. */
+    reconcile.ops.complete_admission = NULL;
     forbid_io = true;
     assert(!lcs_config_reconcile_start(&reconcile));
     until(LCS_CONFIG_RECONCILE_DONE);
@@ -475,6 +478,27 @@ static void complete_stopped(size_t index)
     g_state.lease_grants[index].owner_node = -1;
 }
 
+static void live_synchronized(void)
+{
+    g_state.voting_ready = true; g_state.votes_seen = 2;
+    size_t remote = g_state.self_index == 0 ? 1 : 0;
+    peer_runtime_t *peer = &g_state.peers[remote];
+    memset(peer, 0, sizeof(*peer));
+    peer->fd = 17; peer->conn_state = LCS_PEER_ESTABLISHED; peer->instance_id = 101;
+    peer->online = peer->voting_ready = peer->initial_sync_complete = true;
+    peer->protocol_version = LCS_PROTO_FEATURE_RESOURCE_GENERATION;
+    peer->last_seen_ms = lcs_now_ms();
+    peer->resource_generation_known = peer->resource_generation_matches = true;
+    peer->resource_generation = g_state.resource_generation;
+}
+
+static void observe_live_completion(void *context)
+{
+    assert(!coordinator.application_owner && reconcile.phase == LCS_CONFIG_RECONCILE_DONE);
+    assert(g_state.config_application_fenced && g_state.config_application_drain_mask == UINT32_MAX);
+    lcs_config_live_ops()->complete_admission(context);
+}
+
 static void test_live_drain_and_incarnation_remap(void)
 {
     expanded_fixture = true; setup(false); expanded_fixture = false;
@@ -514,6 +538,7 @@ static void test_live_drain_and_incarnation_remap(void)
     assert(lcs_config_live_init(&live, -1, project_live, NULL, NULL) < 0);
     assert(!lcs_config_live_init(&live, -1, project_live, owner_live, NULL));
     lcs_config_reconcile_init(&reconcile, &coordinator, lcs_config_live_ops(), &live);
+    reconcile.ops.complete_admission = observe_live_completion;
     live_mode = true; project_ready = owners_ready = invalid_owner_result = false; forbid_io = true;
     assert(!lcs_config_reconcile_start(&reconcile));
     until(LCS_CONFIG_RECONCILE_QUIESCE);
@@ -546,9 +571,34 @@ static void test_live_drain_and_incarnation_remap(void)
     assert(g_state.resources[2].epoch == 11 && g_state.lease_grants[2].promised_epoch == 51);
     assert(g_state.config_application_drain_mask == 7 && g_state.config_application_remapping);
     until(LCS_CONFIG_RECONCILE_ADMIT);
+    live_synchronized(); /* Even apparently fresh cached flags must be discarded first. */
     assert(!tick() && g_state.resource_generation_admitted && !g_state.config_application_remapping);
-    assert(g_state.config_application_fenced && coordinator.application_owner == &reconcile);
-    g_state.voting_ready = true; g_state.votes_seen = 2;
+    assert(!g_state.peers[1].initial_sync_complete && !g_state.voting_ready);
+    assert(g_state.config_application_fenced && coordinator.application_owner == &reconcile && resource_config_is_fenced(3));
+    for (unsigned fault = 0; fault < 12; fault++)
+    {
+        live_synchronized(); peer_runtime_t *peer = &g_state.peers[1];
+        switch (fault)
+        {
+            case 0: peer->fd = -1; break;
+            case 1: peer->conn_state = LCS_PEER_HELLO_SENT; break;
+            case 2: peer->instance_id = 0; break;
+            case 3: peer->online = false; break;
+            case 4: peer->protocol_version = 5; break;
+            case 5: peer->last_seen_ms = lcs_now_ms() - g_state.cfg.peer_timeout_ms - 1; break;
+            case 6: peer->initial_sync_complete = false; break;
+            case 7: peer->resource_generation_known = false; break;
+            case 8: peer->resource_generation_matches = false; break;
+            case 9: peer->resource_generation.revision++; break;
+            case 10: peer->resource_generation.digest[0] ^= 1; break;
+            case 11: peer->voting_ready = false; break;
+        }
+        assert(!tick() && reconcile.phase == LCS_CONFIG_RECONCILE_ADMIT);
+        assert(g_state.config_application_drain_mask == UINT32_MAX && coordinator.application_owner == &reconcile);
+        assert(g_state.lease_grants[3].promised_epoch == grant.promised_epoch);
+    }
+    live_synchronized(); g_state.voting_not_before_ms = lcs_now_ms() + 1000;
+    assert(!tick()); g_state.voting_not_before_ms = 0;
     until(LCS_CONFIG_RECONCILE_DONE);
     assert(!g_state.config_application_fenced && !g_state.config_application_drain_mask);
     live_mode = false; memset(&g_state, 0, sizeof(g_state));
@@ -751,7 +801,7 @@ static void test_live_managed_projection(bool quorum_only)
     until(LCS_CONFIG_RECONCILE_ADMIT);
     assert(coordinator.completed_projections == 1 && coordinator.completed_applications == 2);
     projection_matches(&bootstrap, &first);
-    assert(!tick()); g_state.voting_ready = true; g_state.votes_seen = 2;
+    assert(!tick()); live_synchronized();
     until(LCS_CONFIG_RECONCILE_DONE);
     live_mode = false; memset(&g_state, 0, sizeof(g_state));
     projection_close(&bootstrap);
@@ -1043,6 +1093,104 @@ static void test_owner_network_exchange(void)
     lcs_config_value_clear(&first); cleanup();
 }
 
+static void test_live_projection_at_install(bool quorum_only)
+{
+    setup(quorum_only);
+    lcs_config_bootstrap_t bootstrap; projection_open(&bootstrap);
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    lcs_config_value_t second = successor(&first, true);
+    memset(&g_state, 0, sizeof(g_state)); g_state.cfg = *runtime.base;
+    g_state.self_index = quorum_only ? 2 : 0; g_state.instance_id = 100; g_state.resources[0].owner_node = -1;
+    generation_cancellations = released_count = 0; generation_reload = false;
+    owners_ready = true; invalid_owner_result = false;
+    lcs_config_live_t live;
+    assert(!lcs_config_live_init_with_projection(&live, -1, &coordinator, &bootstrap, owner_live, NULL));
+    lcs_config_reconcile_init(&reconcile, &coordinator, lcs_config_live_ops(), &live);
+    live_mode = true; forbid_io = true;
+    assert(!lcs_config_reconcile_start(&reconcile)); until(LCS_CONFIG_RECONCILE_INSTALL);
+    /* Seed the old projection even on a quorum-only member, whose INSTALL is
+     * its first projection callback. Then learn a successor while still pending 1. */
+    (void)lcs_config_projection_step(&live.projection, &first, error, sizeof(error));
+    projection_wait();
+    assert(lcs_config_projection_step(&live.projection, &first, error, sizeof(error)) == 1);
+    lcs_config_agreement_job_t checkpoint = {.action = LCS_CONFIG_CHECKPOINT, .ballot = 64, .voters = 3, .value = &second};
+    strcpy(checkpoint.parent_digest, first.digest);
+    assert(!lcs_config_coordinator_start_checkpoint(&coordinator, &checkpoint, error, sizeof(error)));
+    projection_wait();
+    assert(runtime.agreement.committed.revision == 2 && runtime.application.pending.revision == 1);
+    assert(!unlinkat(bootstrap.snapshots.directory_fd, "resources.json", 0));
+    assert(!symlinkat("../agreement.json", bootstrap.snapshots.directory_fd, "resources.json"));
+    assert(!tick() && !live.installed && coordinator.storage.pid > 0);
+    projection_wait();
+    assert(tick() < 0 && reconcile.phase == LCS_CONFIG_RECONCILE_BLOCKED && !live.installed);
+    assert(!generation_cancellations && runtime.application.applied.revision == 0 && !coordinator.failed);
+    assert(!unlinkat(bootstrap.snapshots.directory_fd, "resources.json", 0));
+    assert(!lcs_config_reconcile_retry(&reconcile)); until(LCS_CONFIG_RECONCILE_FINISH);
+    projection_matches(&bootstrap, &second);
+    assert(live.installed && generation_cancellations == 3 && runtime.application.pending.revision == 1);
+    /* An exact install retry rechecks publication but does not close/remap twice. */
+    lcs_config_reconcile_view_t view = {.old_config = &reconcile.configs[0], .target = &reconcile.configs[1],
+        .plan = &reconcile.plan, .value = &reconcile.value, .attempt = reconcile.attempt};
+    assert(lcs_config_live_ops()->install(&live, &view, error, sizeof(error)) == 1 && generation_cancellations == 3);
+    until(LCS_CONFIG_RECONCILE_ADMIT); until(LCS_CONFIG_RECONCILE_BEGIN);
+    until(LCS_CONFIG_RECONCILE_ADMIT); assert(!tick()); live_synchronized(); until(LCS_CONFIG_RECONCILE_DONE);
+    assert(runtime.application.applied.revision == 2 && generation_cancellations == 6);
+    live_mode = false; memset(&g_state, 0, sizeof(g_state));
+    projection_close(&bootstrap); lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
+}
+
+static void test_live_admission_cancellation(unsigned fault)
+{
+    setup(false);
+    lcs_config_value_t first = successor(&runtime.agreement.committed, false); learn(&first);
+    memset(&g_state, 0, sizeof(g_state)); g_state.cfg = *runtime.base;
+    g_state.self_index = 0; g_state.instance_id = 100; g_state.resources[0].owner_node = -1;
+    generation_cancellations = released_count = 0; generation_reload = false;
+    project_ready = owners_ready = true; invalid_owner_result = false;
+    lcs_config_live_t live;
+    assert(!lcs_config_live_init(&live, -1, project_live, owner_live, NULL));
+    lcs_config_reconcile_init(&reconcile, &coordinator, lcs_config_live_ops(), &live);
+    live_mode = true; forbid_io = true;
+    assert(!lcs_config_reconcile_start(&reconcile)); until(LCS_CONFIG_RECONCILE_ADMIT);
+    assert(!tick() && live.synchronizing && g_state.resource_generation_admitted);
+    live_synchronized();
+    lcs_config_value_t second = {0};
+    if (!fault)
+    {
+        second = successor(&first, true);
+        lcs_config_agreement_job_t checkpoint = {.action = LCS_CONFIG_CHECKPOINT, .ballot = 64, .voters = 3, .value = &second};
+        strcpy(checkpoint.parent_digest, first.digest);
+        assert(!lcs_config_coordinator_start_checkpoint(&coordinator, &checkpoint, error, sizeof(error)));
+        until(LCS_CONFIG_RECONCILE_BEGIN);
+    }
+    else if (fault == 1) lcs_config_reconcile_stop(&reconcile);
+    else if (fault == 2)
+    {
+        coordinator.failed = true;
+        assert(tick() < 0 && reconcile.phase == LCS_CONFIG_RECONCILE_RECOVERY);
+    }
+    else
+    {
+        g_state.resource_generation.digest[0] ^= 1;
+        assert(tick() < 0 && reconcile.phase == LCS_CONFIG_RECONCILE_BLOCKED);
+    }
+    assert(!live.synchronizing && !g_state.resource_generation_admitted && !g_state.voting_ready && !g_state.votes_seen);
+    assert(g_state.config_application_fenced && g_state.config_application_remapping &&
+        g_state.config_application_drain_mask == UINT32_MAX && !g_state.peers[1].initial_sync_complete);
+    if (!fault || fault == 3)
+    {
+        if (fault == 3)
+        { g_state.resource_generation.digest[0] ^= 1; assert(!lcs_config_reconcile_retry(&reconcile)); }
+        until(LCS_CONFIG_RECONCILE_ADMIT);
+        assert(!tick() && live.synchronizing && !g_state.voting_ready);
+        live_synchronized(); until(LCS_CONFIG_RECONCILE_DONE);
+        assert(!live.synchronizing && !g_state.config_application_fenced && !coordinator.application_owner);
+        assert(runtime.application.applied.revision == (fault ? 1 : 2));
+    }
+    live_mode = false; memset(&g_state, 0, sizeof(g_state));
+    lcs_config_value_clear(&first); lcs_config_value_clear(&second); cleanup();
+}
+
 static void test_live_owner_network_recheck(void)
 {
     for (unsigned fault = 0; fault < 2; fault++)
@@ -1088,7 +1236,10 @@ static void test_live_owner_network_recheck(void)
             owner_exchange(&bus, instances, lcs_now_ms() + 250);
             assert(!lcs_config_reconcile_retry(&reconcile));
             until(LCS_CONFIG_RECONCILE_ADMIT);
-            assert(!tick()); g_state.voting_ready = true; g_state.votes_seen = 2;
+            assert(!tick()); live_synchronized();
+            bus.nodes[0].instances[1] = 999;
+            assert(!tick() && reconcile.phase == LCS_CONFIG_RECONCILE_ADMIT && g_state.config_application_fenced);
+            bus.nodes[0].instances[1] = 101;
             until(LCS_CONFIG_RECONCILE_DONE);
             assert(live.installed && generation_cancellations == 3);
         }
@@ -1304,6 +1455,9 @@ int main(void)
     test_owner_barrier_proofs();
     test_owner_network_exchange();
     test_live_owner_network_recheck();
+    test_live_projection_at_install(false);
+    test_live_projection_at_install(true);
+    for (unsigned fault = 0; fault < 4; fault++) test_live_admission_cancellation(fault);
     test_owner_receipt_retirement();
     test_owner_release_poisoned_catalog();
     puts("durable configuration reconciliation ordering and safety barriers unit tests passed");

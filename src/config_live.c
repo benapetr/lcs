@@ -46,7 +46,7 @@ static int bind_attempt(lcs_config_live_t *live, const lcs_config_reconcile_view
         snprintf(err, length, "live definitions/attempt differ from durable application catalog");
         return -1;
     }
-    live->bound = true; live->installed = false;
+    live->bound = true; live->installed = live->synchronizing = false;
     live->attempt = view->attempt; live->revision = view->value->revision;
     memcpy(live->digest, view->value->digest, sizeof(live->digest));
     g_state.config_application_fenced = true;
@@ -153,15 +153,12 @@ static int install(void *context, const lcs_config_reconcile_view_t *view, char 
     lcs_config_live_t *live = context;
     if (bind_attempt(live, view, err, length))
         return -1;
+    /* Learning may advance while drain/owner proof waits. Publish the latest
+     * decision again before any table install, including idempotent retries. */
+    int projected = publish_current(live, err, length);
+    if (projected != 1) return projected;
     if (live->installed)
         return definitions_equal(&g_state.cfg, view->target, view->value->revision) ? 1 : -1;
-    /* Quorum-only nodes skip quiesce, so project before installing their table. */
-    if (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_QUORUM_ONLY)
-    {
-        int projected = publish_current(live, err, length);
-        if (projected != 1)
-            return projected;
-    }
     if (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL)
     {
         /* Collection may have completed before a disconnect or cleanup fault.
@@ -225,14 +222,69 @@ static int admit(void *context, const lcs_config_reconcile_view_t *view, char *e
 {
     lcs_config_live_t *live = context;
     if (!live->installed || live->attempt != view->attempt || strcmp(live->digest, view->value->digest) ||
+        !g_state.config_application_fenced ||
         peer_admit_resource_generation())
     { snprintf(err, length, "applied resource generation is not ready for admission"); return -1; }
+    /* Synchronization can make ordinary cluster voting ready before the final
+     * checks below. Fence ALL resource grants until the sequencer completes. */
+    g_state.config_application_drain_mask = UINT32_MAX;
+    if (!live->synchronizing)
+    {
+        g_state.voting_ready = false; g_state.votes_seen = 0;
+        for (size_t i = 0; i < g_state.cfg.node_count; i++)
+        {
+            g_state.peers[i].voting_ready = false;
+            g_state.peers[i].initial_sync_complete = false;
+            g_state.peers[i].resource_generation_matches = false;
+            g_state.peers[i].state_sync_pending = true;
+            g_state.peers[i].next_heartbeat_ms = 0;
+        }
+        live->synchronizing = true;
+    }
     g_state.config_application_remapping = false; /* Allow the new generation's restart state sync. */
-    if (!cluster_local_voting_ready() || !cluster_has_quorum())
+    uint64_t now = lcs_now_ms();
+    uint32_t synchronized = 1, voters = cluster_local_voting_ready() ? 1 : 0;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index) continue;
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED || !peer->instance_id || !peer->online ||
+            (live->network && (live->network->closing || live->network->instances[i] != peer->instance_id)) ||
+            peer->protocol_version < LCS_PROTO_FEATURE_RESOURCE_GENERATION ||
+            now < peer->last_seen_ms || now - peer->last_seen_ms > g_state.cfg.peer_timeout_ms ||
+            !peer->initial_sync_complete || !peer->resource_generation_known || !peer->resource_generation_matches ||
+            !lcs_resource_generation_equal(&peer->resource_generation, &g_state.resource_generation)) continue;
+        synchronized++; if (peer->voting_ready) voters++;
+    }
+    uint32_t needed = (uint32_t)lcs_config_quorum(&g_state.cfg);
+    if (now < g_state.voting_not_before_ms || synchronized < needed || voters < needed ||
+        !cluster_local_voting_ready() || !cluster_has_quorum())
         return 0;
+    return 1;
+}
+
+static void cancel_admission(void *context)
+{
+    lcs_config_live_t *live = context;
+    g_state.config_application_fenced = g_state.config_application_remapping = true;
+    g_state.config_application_drain_mask = UINT32_MAX;
+    g_state.resource_generation_admitted = g_state.voting_ready = false; g_state.votes_seen = 0;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        g_state.peers[i].voting_ready = false;
+        g_state.peers[i].initial_sync_complete = false;
+        g_state.peers[i].resource_generation_matches = false;
+        g_state.peers[i].next_heartbeat_ms = 0;
+    }
+    live->synchronizing = false;
+}
+
+static void complete_admission(void *context)
+{
+    lcs_config_live_t *live = context;
     g_state.config_application_fenced = false;
     g_state.config_application_drain_mask = 0;
-    return 1;
+    live->synchronizing = false;
 }
 
 int lcs_config_live_init(lcs_config_live_t *live, int epoll_fd,
@@ -270,12 +322,13 @@ int lcs_config_live_init_with_owner_network(lcs_config_live_t *live, int epoll_f
             lcs_config_owner_network_step, network))
         return -1;
     live->owner_revoke = lcs_config_owner_network_revoke;
+    live->network = network;
     return 0;
 }
 
 const lcs_config_reconcile_ops_t *lcs_config_live_ops(void)
 {
-    static const lcs_config_reconcile_ops_t ops = {quiesce, drain, owners, install, admit};
+    static const lcs_config_reconcile_ops_t ops = {quiesce, drain, owners, install, admit, cancel_admission, complete_admission};
     return &ops;
 }
 
