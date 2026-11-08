@@ -76,6 +76,14 @@ lcs \- command line client for the Lightweight Cluster Service daemon
 .RB [ \-\-json ]
 .B config export
 .RB [ committed | applied ]
+.br
+.B lcs
+.RB [ \-c
+.IR CONFIG | \-\-config
+.IR CONFIG ]
+.RB [ \-\-json ]
+.B config validate
+.IR FILE | \-
 .SH DESCRIPTION
 .B lcs
 talks to the local
@@ -135,7 +143,24 @@ snapshot and supports bounded transfers larger than one frame. Transfer failure
 returns status 1 without partial stdout; invalid syntax returns status 2.
 .B \-\-json
 produces the same document. Static daemon settings and recovery journals are
-managed separately. Validation and import commands remain unavailable.
+managed separately. Bulk import remains unavailable.
+.TP
+.B config validate FILE|-
+Validate resource/group JSON offline against the static context from
+.B \-c CONFIG
+or
+.BR \-\-config " CONFIG"
+(default /etc/lcs/lcs.conf). A filename of - reads stdin. Input is limited to
+512 KiB. The shared strict parser checks schemas, cluster identity, field bounds,
+incarnations, groups, home nodes and dependencies. No daemon connection, resource
+operation or file write occurs. This establishes document validity, not live
+transaction eligibility or backend/hook availability.
+.B \-\-socket
+is rejected; --config is supported only for this command. Exit status is 0 for
+valid, 1 for validation/input/context errors and 2 for syntax errors.
+.B \-\-json
+reports valid, schema_version, revision, resource_count and group_count on success,
+or valid=false with error on failure. Plain failures go to stderr.
 .TP
 .B reload
 Asynchronously refresh cached peer DNS addresses and ask the local daemon to

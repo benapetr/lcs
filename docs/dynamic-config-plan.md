@@ -368,8 +368,12 @@ Command names below are proposals to finalize before implementation. Existing
   Keep it disconnected from live CLI mutation endpoints until agreement is ready.
 - [ ] Define field replacement, explicit field removal, immutable fields, and
   rejection of invalid group/dependency deletions; avoid implicit cascading deletes.
-- [ ] Add configuration validation and atomic bulk import commands. Read-only
-  committed/applied export is implemented above.
+- [x] Add offline `lcs config validate FILE|-` with selected INI static context,
+  the shared strict JSON/candidate parser, bounded input, schema/incarnation and
+  group/dependency checks, structured results and documented exit codes. Require
+  no daemon connection and perform no writes, activation or resource operations.
+- [ ] Add atomic bulk import through the distributed transaction path. Read-only
+  committed/applied export and offline document validation are implemented above.
 - [ ] Support expected-revision checks and idempotent request IDs; expose a
   transaction status command so interrupted clients can determine the outcome.
 - [ ] Return actionable errors for no quorum, unsupported members, revision

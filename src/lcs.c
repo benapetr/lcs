@@ -52,6 +52,7 @@ static void usage(FILE *out)
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] reload\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config status\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config export [committed|applied]\n");
+    fprintf(out, "       lcs [-c CONFIG|--config CONFIG] [--json] config validate FILE|-\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource list\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource move RESOURCE NODE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource start RESOURCE\n");
@@ -695,6 +696,45 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip, bool jso
     return 0;
 }
 
+static int cmd_config_validate(const char *config_path, const char *input_path, bool json_output)
+{
+    lcs_config_t *configs = calloc(2, sizeof(*configs));
+    char *document = NULL, error[256] = ""; uint64_t revision = 0;
+    size_t length = 0; FILE *input = NULL; bool valid = false;
+    if (!configs) { snprintf(error, sizeof(error), "cannot allocate validation context"); goto result; }
+    if (lcs_config_load(config_path, &configs[0], error, sizeof(error))) goto result;
+    input = !strcmp(input_path, "-") ? stdin : fopen(input_path, "rb");
+    if (!input) { snprintf(error, sizeof(error), "cannot open resource JSON: %s", strerror(errno)); goto result; }
+    document = malloc(LCS_RESOURCE_DOCUMENT_MAX + 1u);
+    if (!document) { snprintf(error, sizeof(error), "cannot allocate resource JSON input"); goto result; }
+    while (length < LCS_RESOURCE_DOCUMENT_MAX + 1u)
+    {
+        size_t count = fread(document + length, 1, LCS_RESOURCE_DOCUMENT_MAX + 1u - length, input);
+        length += count;
+        if (ferror(input)) { snprintf(error, sizeof(error), "cannot read resource JSON input"); goto result; }
+        if (!count) break;
+    }
+    valid = !lcs_resource_config_decode(document, length, &configs[0], &configs[1], &revision, error, sizeof(error));
+result:
+    if (input && input != stdin) fclose(input);
+    if (json_output)
+    {
+        printf("{\"valid\":%s", valid ? "true" : "false");
+        if (valid)
+            printf(",\"schema_version\":%u,\"revision\":%llu,\"resource_count\":%zu,\"group_count\":%zu",
+                configs[1].resource_schema_version, (unsigned long long)revision, configs[1].resource_count, configs[1].group_count);
+        else { printf(",\"error\":"); json_string(stdout, error); }
+        printf("}\n");
+    }
+    else if (valid)
+        printf("Resource configuration is valid: schema=%u revision=%llu resources=%zu groups=%zu\n",
+            configs[1].resource_schema_version, (unsigned long long)revision, configs[1].resource_count, configs[1].group_count);
+    else fprintf(stderr, "lcs: %s\n", error);
+    free(document); free(configs);
+    if (fflush(stdout)) return 1;
+    return valid ? 0 : 1;
+}
+
 static int cmd_config_export(const char *socket_path, uint8_t selection)
 {
     int fd = connect_socket(socket_path);
@@ -1076,24 +1116,31 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
 int main(int argc, char **argv)
 {
     const char *socket_path = LCS_DEFAULT_SOCKET_PATH;
+    const char *config_path = NULL;
+    bool socket_selected = false;
     bool json_output = false;
     bool show_version = false;
     bool no_colors = false;
     int opt;
     static const struct option long_opts[] = {
         { "socket", required_argument, NULL, 's' },
+        { "config", required_argument, NULL, 'c' },
         { "json", no_argument, NULL, 'j' },
         { "no-colors", no_argument, NULL, 1000 },
         { "version", no_argument, NULL, 'V' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
     };
-    while ((opt = getopt_long(argc, argv, "s:jhV", long_opts, NULL)) != -1)
+    while ((opt = getopt_long(argc, argv, "s:c:jhV", long_opts, NULL)) != -1)
     {
         switch (opt)
         {
             case 's':
                 socket_path = optarg;
+                socket_selected = true;
+                break;
+            case 'c':
+                config_path = optarg;
                 break;
             case 'j':
                 json_output = true;
@@ -1135,6 +1182,16 @@ int main(int argc, char **argv)
         return 2;
     }
     const char *cmd = argv[optind++];
+    bool validation_command = !strcmp(cmd, "config") && optind < argc && !strcmp(argv[optind], "validate");
+    if (config_path && !validation_command)
+    { fprintf(stderr, "lcs: --config is only supported for config validate\n"); return 2; }
+    if (validation_command)
+    {
+        if (optind + 2 != argc) { usage(stderr); return 2; }
+        if (socket_selected)
+        { fprintf(stderr, "lcs: config validate is offline; --socket is not supported\n"); return 2; }
+        return cmd_config_validate(config_path ? config_path : LCS_DEFAULT_CONFIG_PATH, argv[optind + 1], json_output);
+    }
 
     /*
      * Temporary compatibility alias for the pre-resource CLI syntax.

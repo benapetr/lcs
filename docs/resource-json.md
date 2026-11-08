@@ -22,6 +22,8 @@ files use mode `0600`. Jansson (MIT license) is the JSON parser; OpenSSL libcryp
 provides SHA-256 for agreement identities and journal checksums. Development
 builds require `libjansson-dev` and `libssl-dev` on Debian/Ubuntu, or
 `jansson-devel` and `openssl-devel` on RPM systems, plus `pkg-config`.
+The CLI also links Jansson for offline validation through the same parser as the
+daemon. The existing LCS package already requires this runtime library.
 
 A custom configuration `/path/node.conf` uses `/path/node.conf.resources.json`
 and `/path/node.conf.state/`. Paths are derived from the resolved INI filename,
@@ -231,7 +233,38 @@ files, refreshing a projection, initializing state or submitting a transaction.
 The document contains resource/group definitions; static daemon settings and
 agreement/application recovery records are managed separately. Use shell
 redirection to save it, for example `lcs config export > resources-export.json`.
-Validation and bulk import commands remain unfinished.
+Offline validation is described below; bulk import remains unfinished.
+
+## Validating a document offline
+
+Run `lcs config validate resources-export.json` to validate resource/group JSON
+against `/etc/lcs/lcs.conf`. For a custom cluster use
+`lcs --config /path/node.conf config validate resources-export.json` (or `-c`).
+Use `-` as the document filename to read stdin, for example
+`lcs -c /path/node.conf --json config validate - < resources-export.json`.
+
+The selected INI file is read through the normal configuration loader and supplies
+the static cluster/node context. Its resource/group arrays are replaced privately
+by the document for validation. The shared parser checks schema 1 and 2, cluster
+identity, revision/incarnation bounds, unknown/duplicate fields, backend options,
+home-node eligibility, group references and dependency validity/cycles. Input is
+bounded to 512 KiB, including when read from stdin. Valid JSON may contain trailing
+whitespace within that bound. The INI file must also pass its normal syntax and
+configuration checks.
+
+This command runs without a daemon connection or quorum. It reads the selected
+files and performs no writes, resource/hook execution, activation or transactions.
+`--socket` is rejected for this offline command; `--config` is scoped to validation.
+Success reports the schema, revision and resource/group counts. JSON output has
+`valid: true`, `schema_version`, `revision`, `resource_count` and `group_count`;
+validation/context/input errors return `valid: false` with `error`. Exit codes are
+0 for a valid document, 1 for validation or input/context errors, and 2 for command
+syntax errors. Plain failures are written to stderr; JSON results go to stdout.
+
+Validation establishes document validity in that static context. It does not
+check a live expected revision, historical incarnation lineage, agreement/quorum,
+backend permissions, hook availability or whether a future import can commit.
+Public definition mutations and bulk import remain unfinished.
 
 ## Schema version 2: backend incarnations
 

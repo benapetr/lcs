@@ -20,6 +20,10 @@ state and cleanup errors. These read-only observations do not authorize edits.
 `lcs config export [committed|applied]` writes the corresponding resource/group
 JSON document from running memory. With INI authority both views describe effective
 INI definitions at revision zero. See [export details](resource-json.md#exporting-definitions).
+`lcs --config /path/node.conf config validate FILE` validates JSON offline using
+that INI file as the static cluster/node context. Use `-` for stdin and `--json`
+for structured results. It neither contacts a daemon nor changes files/resources;
+see [validation details](resource-json.md#validating-a-document-offline).
 
 ## Live resource reload
 

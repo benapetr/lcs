@@ -28,7 +28,7 @@ LCSD_OBJS = src/lcsd.o src/vip.o src/cluster.o src/peer.o src/lease.o \
             src/scheduler.o src/systemd_service.o src/config_candidate.o src/resource_config.o src/config_store.o src/config_bootstrap.o \
             src/config_agreement.o src/config_agreement_worker.o src/config_application.o src/config_transfer.o src/config_runtime.o src/config_peer.o src/config_activation.o src/config_barrier.o src/config_readiness.o src/config_coordinator.o src/config_transaction.o src/config_reconcile.o src/resource_frame.o src/resource_generation.o src/config_live.o src/config_projection.o src/config_owner_barrier.o src/config_owner_network.o src/config_startup.o src/config_recovery.o src/config_recovery_live.o src/config_manager.o \
             $(COMMON_OBJS)
-LCS_OBJS = src/lcs.o $(COMMON_OBJS)
+LCS_OBJS = src/lcs.o src/config_candidate.o src/resource_config.o $(COMMON_OBJS)
 
 .PHONY: all clean install check-json-deps
 
@@ -38,7 +38,7 @@ lcsd: $(LCSD_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LCSD_OBJS) $(LDLIBS) $(JANSSON_LIBS) $(CRYPTO_LIBS)
 
 lcs: $(LCS_OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LCS_OBJS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LCS_OBJS) $(LDLIBS) $(JANSSON_LIBS)
 
 src/%.o: src/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<

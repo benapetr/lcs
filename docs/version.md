@@ -181,6 +181,13 @@ out-of-range totals/offsets and truncated/inconsistent streams fail. The client
 buffers the bounded complete document before stdout, avoiding partial output on
 transfer failure. This interface carries definitions, not commit/vote authority.
 
+## Offline document validation
+
+Offline `lcs config validate` uses the existing schema-1/schema-2 parser and
+selected INI context. It sends no messages and changes no wire, ordinary local
+status, disk-record or release version. The CLI now links the already-required
+Jansson runtime directly, without adding a new package dependency family.
+
 ## Application catalog record format
 
 `application.json` now writes record format 2 with two complete predecessor

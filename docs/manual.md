@@ -21,6 +21,12 @@ Use `lcs config export` to save locally committed resource/group JSON, or
 both export effective running definitions at revision zero. Export is read-only
 and available during recovery and blocked application; `--json` gives the same
 document. See [export details](resource-json.md#exporting-definitions).
+Use `lcs --config /path/node.conf config validate FILE` for offline validation
+against that cluster's static context, or omit `--config` to use `/etc/lcs/lcs.conf`.
+`FILE` may be `-` for stdin; `--json` reports validity, revision and counts or an
+error. This checks document validity without contacting the daemon, running
+resources/hooks or changing state. It does not establish live transaction
+eligibility. See [validation details](resource-json.md#validating-a-document-offline).
 After startup recovery, activated nodes apply newly learned definitions live.
 Local mutations and automatic placement pause during that transition while
 backend, hook, lease and peer work continue. Projection/transport failures retain
