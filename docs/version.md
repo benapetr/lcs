@@ -205,7 +205,12 @@ no wire, CLI, existing-record or release-version change. The transaction
 coordinator has an internal request-storage phase and separate completion counter;
 these are process-local bookkeeping and do not alter durable records or wire
 messages. Coordinator OPEN only recovers existing history; it does not authorize
-first initialization or enable public mutation commands.
+first initialization or enable public mutation commands. The internal proposer
+now requires healthy existing history and persists original request intent before
+PREPARE; its private reservation phase uses request completions separately from
+votes. Known request IDs cannot be submitted again by changing the transport ID.
+This adds no wire fields or disk-format changes; learned-outcome tracking and
+public mutation commands remain unfinished.
 
 ## Offline document validation
 

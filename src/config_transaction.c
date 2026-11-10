@@ -531,6 +531,13 @@ int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
         proposing(proposer) || sync_active(transactions) || transactions->active || transactions->coordinator->storage.pid > 0)
         return -1;
     const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+    const lcs_config_requests_t *history = &transactions->coordinator->runtime->requests;
+    if (!requested->document || !memchr(requested->request_id, 0, sizeof(requested->request_id)) ||
+        !history->store || history->poisoned || history->store != agreement->store || history->base != agreement->base ||
+        lcs_config_requests_find(history, requested->request_id) ||
+        !strcmp(requested->request_id, agreement->committed.request_id) ||
+        (agreement->accepted.document && !strcmp(requested->request_id, agreement->accepted.request_id)))
+        return -1;
     int self = lcs_config_self_index(agreement->base);
     if (self < 0 || agreement->base->nodes[self].role != LCS_NODE_FULL || instances[self] != transactions->instance)
         return -1;
@@ -550,12 +557,17 @@ int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
     proposer->deadline_ms = now_ms + LCS_CONFIG_TRANSFER_TIMEOUT_MS;
     for (size_t i = 0; i < agreement->base->node_count; i++)
         proposer->peers[i].instance = instances[i];
-    proposer->phase = LCS_CONFIG_PROPOSER_PREPARING;
-    if (proposer_job(transactions, LCS_CONFIG_PREPARE))
+    proposer->phase = LCS_CONFIG_PROPOSER_RESERVING;
+    lcs_config_agreement_job_t reservation = { .action = LCS_CONFIG_REQUEST_RESERVE,
+        .revision = proposer->proposal.revision - 1, .value = &proposer->proposal.requested };
+    memcpy(reservation.parent_digest, proposer->proposal.parent_digest, sizeof(reservation.parent_digest));
+    char error[256];
+    if (lcs_config_coordinator_start_requests(transactions->coordinator, &reservation, error, sizeof(error)))
     {
         proposer->phase = LCS_CONFIG_PROPOSER_UNKNOWN;
         return -1;
     }
+    proposer->completion = transactions->coordinator->completed_requests + 1;
     return 0;
 }
 
@@ -753,6 +765,25 @@ static void proposer_process(lcs_config_transactions_t *transactions, uint64_t n
         proposer_phase(proposer, proposer->phase == LCS_CONFIG_PROPOSER_DISTRIBUTING ?
             LCS_CONFIG_PROPOSER_COMPLETE : LCS_CONFIG_PROPOSER_UNKNOWN);
         return; /* Never cancel or roll back a durable write on transport timeout. */
+    }
+    if (proposer->phase == LCS_CONFIG_PROPOSER_RESERVING)
+    {
+        if (coordinator->completed_requests < proposer->completion)
+            return;
+        if (coordinator->completed_requests != proposer->completion ||
+            coordinator->last_request_result != LCS_CONFIG_REQUEST_RECORDED)
+        {
+            proposer_phase(proposer, LCS_CONFIG_PROPOSER_UNKNOWN);
+            return;
+        }
+        proposer_phase(proposer, LCS_CONFIG_PROPOSER_PREPARING);
+    }
+    if (proposer->phase == LCS_CONFIG_PROPOSER_PREPARING && !proposer->completion)
+    {
+        int result = proposer_job(transactions, LCS_CONFIG_PREPARE);
+        if (result < 0)
+            proposer_phase(proposer, LCS_CONFIG_PROPOSER_UNKNOWN);
+        return; /* A busy writer is retried without reserving the identity again. */
     }
     if (proposer->completion)
     {

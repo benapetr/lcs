@@ -150,6 +150,11 @@ durable distributed configuration protocol.
   gate new IDs on voting eligibility and valid successors while allowing known-ID
   checks and learned observations during application lag without releasing fences.
   Do not infer initialization authorization or expose public mutation commands.
+- [x] Reserve the local proposer's original immutable request identity through
+  the coordinator before PREPARE or proposal frames. Require healthy existing
+  history, refuse known IDs even with newer transport IDs, and keep recovered
+  accepted values separate from original intent. Test ordering, capacity, timeout,
+  uncertain writes, shutdown/restart and absence of implicit history initialization.
 - [ ] Integrate coordinated first-initialization authorization, lost-history recovery
   and proposer/acceptor paths before enabling public mutation endpoints. Handle
   missing-history/checkpoint transfer, completed admission acknowledgements and

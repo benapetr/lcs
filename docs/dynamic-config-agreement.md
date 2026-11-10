@@ -377,9 +377,12 @@ reaping/lock rules. No request-status history or client exactly-once semantics a
 introduced by transport request IDs.
 
 The internal network proposer now drives an explicitly submitted snapshot through
-local durable PREPARE, distinct remote promises, local durable ACCEPT, remote
-acceptance quorum, and local durable LEARN. It sends no PREPARE before its own
-promise is durable. Each reply must match the exact request ID, revision, ballot,
+local durable request reservation, local durable PREPARE, distinct remote promises,
+local durable ACCEPT, remote acceptance quorum, and local durable LEARN. It sends
+no proposal frames before the original requested identity and its own promise
+are durable. A healthy opened request journal is required; missing history is
+never initialized by submission. Known request IDs, including IDs already present
+in learned/accepted values, are refused even with a new transport ID. Each reply must match the exact request ID, revision, ballot,
 membership, parent and admitted daemon instance. A promise reporting an accepted
 value counts only after its complete snapshot validates; the highest accepted
 value in the promise quorum takes precedence over the newly requested value.
@@ -392,8 +395,9 @@ a fixed ten-second deadline; backpressure and duplicate frames do not extend it.
 Disconnect invalidates that peer's pending response stream without cancelling a
 durable write. Failure or expiry before local durable learning reports unknown,
 even if a majority may already have accepted the value. A new attempt requires a
-strictly newer process-local request ID and a higher ballot; there is no automatic
-retry or persistent client request-status history. Once local learning succeeds,
+strictly newer process-local transport ID, a fresh persistent request ID and a
+higher ballot. Reusing a reserved ID is a status/recovery case, not authorization
+to submit again. There is no automatic retry or public request-status command. Once local learning succeeds,
 notification timeout cannot erase the known decision. Completion identifies the
 chosen value, which may belong to an earlier recovered request, and never means
 that resources have been applied or all members have received the decision.
@@ -403,7 +407,7 @@ The three-node transport harness drives the actual
 network proposer with independent durable stores, including remote accepted-value
 recovery, duplicate replies, mismatched IDs, deadline expiry and a higher-ballot
 retry. Automatic initialization/activation and dynamic commands remain disabled
-until the activation manager and safe resource application are complete.
+until coordinated initialization, request lifecycle and public mutation handling are complete.
 
 ## Committed checkpoint synchronization
 
@@ -516,8 +520,22 @@ lags or a reconciler holds the application owner. Neither operation releases the
 owner's fence, changes the applied revision or runs a backend. OPEN deliberately
 rejects initialization authorization at the coordinator boundary.
 
-Automatic first-initialization authorization, lost-history/checkpoint recovery
-and proposer/acceptor submission wiring remain unfinished. Callers must keep both
+Local proposer submission now reserves the original requested ID, expected base
+and complete canonical value through the coordinator before PREPARE. The private
+RESERVING phase uses the request-completion counter; subsequent storage phases
+use the vote counter. Failure, capacity exhaustion, mismatched completion or
+reservation timeout cannot start PREPARE or send proposal frames. A timed-out
+writer still runs to completion and retains its durable identity; shutdown keeps
+its handles until cancellation is reaped and restart reloads the journal.
+
+The reservation always fingerprints the originally requested value. Recovering a
+higher accepted value through promises does not overwrite that intent or claim
+that it committed. Recording learned outcomes on proposer/acceptor/checkpoint paths
+is a separate unfinished step. Existing history is not proof of full lifecycle
+readiness, and public mutation commands remain disabled.
+
+Automatic first-initialization authorization, lost-history/checkpoint recovery,
+acceptor identity checks and learned-outcome wiring remain unfinished. Callers must keep both
 handles unchanged until completion, use the same worker for every store writer,
 and explicitly authorize first initialization. An inherited directory-lock descriptor alone cannot serialize
 multiple writer children.

@@ -52,6 +52,7 @@ typedef struct
 typedef enum
 {
     LCS_CONFIG_PROPOSER_IDLE = 0,
+    LCS_CONFIG_PROPOSER_RESERVING,
     LCS_CONFIG_PROPOSER_PREPARING,
     LCS_CONFIG_PROPOSER_PROMISES,
     LCS_CONFIG_PROPOSER_ACCEPTING,
@@ -125,7 +126,11 @@ int lcs_config_transactions_receive(lcs_config_transactions_t *transactions, siz
 /* Explicit internal proposal entry point; does not initialize/activate a cluster.
  * instances contains only admitted wire-6 sessions (zero for unavailable peers),
  * including this daemon's own instance. IDs must strictly increase per daemon.
- * The local PREPARE is persisted before any request is sent. Completion means
+ * A healthy opened request history and an unused request ID are mandatory.
+ * The original requested identity is reserved through the shared coordinator
+ * before local PREPARE; both are durable before any proposal frames are sent.
+ * Known IDs are status/recovery cases, never permission to submit again, even
+ * with a new transport ID. Missing history is not initialized here. Completion means
  * the chosen value was learned locally; it can be a recovered earlier request.
  * UNKNOWN requires a new ballot/recovery, never assumes the request was aborted.
  * No application, CLI mutation, automatic retry or reconnect catch-up here. */

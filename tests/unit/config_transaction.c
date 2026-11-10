@@ -88,6 +88,9 @@ static void setup(void)
         assert(!lcs_config_barrier_seal(&round, error, sizeof(error)));
         assert(!lcs_config_barrier_open(&node->runtime.barrier, &node->runtime.activation, &node->runtime.agreement,
                                          &node->runtime.application, &round, error, sizeof(error)));
+        /* Explicit known-fresh history for proposal tests, not daemon policy. */
+        assert(!lcs_config_requests_recover(&node->runtime.requests, &node->runtime.agreement,
+                                              true, error, sizeof(error)));
         node->runtime.requires_recovery = true;
         lcs_config_coordinator_init(&node->coordinator, &node->runtime, &node->readiness);
         assert(!lcs_config_coordinator_recover(&node->coordinator));
@@ -165,7 +168,7 @@ static void cleanup(void)
         lcs_config_transfer_clear(&node->promise);
         lcs_config_value_clear(&node->recovered);
         lcs_config_runtime_close(&node->runtime);
-        const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json", "lock"};
+        const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json", "requests.json", "lock"};
         for (size_t j = 0; j < sizeof(names) / sizeof(names[0]); j++)
             assert(!unlinkat(node->store.directory_fd, names[j], 0));
         lcs_config_store_close(&node->store);
@@ -583,6 +586,9 @@ static void test_network_proposer(void)
     network_finish(1000);
     assert(!network_errors);
     assert(!strcmp(lcs_config_transactions_selected(&nodes[0].transactions)->request_id, "earlier-request"));
+    const lcs_config_request_record_t *intent = lcs_config_requests_find(&nodes[0].runtime.requests, "new-request");
+    assert(intent && !intent->committed && !strcmp(intent->value_digest, newer.digest));
+    assert(!lcs_config_requests_find(&nodes[0].runtime.requests, "earlier-request"));
     lcs_config_value_clear(&value);
     lcs_config_value_clear(&newer);
     cleanup();
@@ -610,6 +616,8 @@ static void test_network_proposer(void)
     assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 300, &value, 12000) < 0);
     wrong_reply_id = false;
     network_blocked = false;
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 301, &value, 12000) < 0);
+    lcs_config_value_clear(&value); value = candidate("timeout-new-request");
     assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 301, &value, 12000));
     assert(nodes[0].transactions.proposer.proposal.ballot > first_ballot);
     network_finish(12000);
@@ -650,6 +658,106 @@ static void test_network_proposer(void)
     lcs_config_value_clear(&value);
     cleanup();
 
+}
+
+static void test_proposal_reservation_order_and_timeout(void)
+{
+    for (unsigned mode = 0; mode < 3; mode++)
+    {
+        setup(); network_errors = 0;
+        uint64_t instances[LCS_MAX_NODES] = {100, 101, 102};
+        lcs_config_value_t value = candidate("reservation-order");
+        forbid_io = true; stop_sync = 2;
+        assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 600, &value, 1000));
+        await_stopped(&nodes[0]); stop_sync = 0;
+        assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_RESERVING);
+        assert(!nodes[0].runtime.requests.count && !nodes[0].runtime.agreement.promised && !frames);
+        assert(!nodes[0].coordinator.completed_requests && !nodes[0].coordinator.completed_votes);
+        assert(!nodes[1].runtime.agreement.promised && !nodes[2].runtime.agreement.promised);
+        if (mode == 2)
+        {
+            lcs_config_transactions_close(&nodes[0].transactions);
+            lcs_config_coordinator_stop(&nodes[0].coordinator);
+            for (unsigned i = 0; i < 5000 && !lcs_config_coordinator_can_close(&nodes[0].coordinator); i++)
+            { (void)lcs_config_coordinator_process(&nodes[0].coordinator, 1000); usleep(1000); }
+            assert(lcs_config_coordinator_can_close(&nodes[0].coordinator));
+            assert(nodes[0].runtime.requests.poisoned && nodes[0].runtime.agreement.poisoned);
+            assert(!nodes[0].coordinator.completed_requests && !frames);
+            forbid_io = false;
+            lcs_config_runtime_close(&nodes[0].runtime);
+            assert(!lcs_config_runtime_open(&nodes[0].runtime, &nodes[0].store, &config, error, sizeof(error)));
+            assert(lcs_config_requests_find(&nodes[0].runtime.requests, value.request_id));
+            lcs_config_coordinator_init(&nodes[0].coordinator, &nodes[0].runtime, &nodes[0].readiness);
+            assert(!lcs_config_coordinator_recover(&nodes[0].coordinator));
+            lcs_config_transactions_init(&nodes[0].transactions, &nodes[0].coordinator, 100);
+            forbid_io = true;
+            assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 601, &value, 12000) < 0);
+            assert(!nodes[0].runtime.agreement.promised && !frames);
+        }
+        else
+        {
+            if (mode == 1)
+            {
+                network_tick(11000);
+                assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_UNKNOWN && !frames);
+            }
+            assert(!kill(nodes[0].coordinator.storage.pid, SIGCONT));
+            if (!mode) network_finish(1000);
+            else
+            {
+                for (unsigned i = 0; i < 5000 && nodes[0].coordinator.storage.pid; i++) network_tick(11000);
+                assert(!nodes[0].coordinator.storage.pid && !nodes[0].runtime.agreement.promised && !frames);
+                assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_UNKNOWN);
+                assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 601, &value, 12000) < 0);
+            }
+            const lcs_config_request_record_t *record = lcs_config_requests_find(&nodes[0].runtime.requests, value.request_id);
+            assert(record && !strcmp(record->value_digest, value.digest) && !record->committed);
+            assert(nodes[0].coordinator.completed_requests == 1 && !network_errors);
+        }
+        lcs_config_value_clear(&value); cleanup();
+    }
+}
+static void test_proposal_history_admission(void)
+{
+    setup();
+    uint64_t instances[LCS_MAX_NODES] = {100, 101, 102};
+    lcs_config_value_t value = candidate("history-required");
+    lcs_config_requests_t saved = nodes[0].runtime.requests;
+    lcs_config_requests_close(&nodes[0].runtime.requests);
+    forbid_io = true;
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 700, &value, 1000) < 0);
+    assert(!nodes[0].coordinator.storage.pid && !frames);
+    nodes[0].runtime.requests = saved; nodes[0].runtime.requests.poisoned = true;
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 700, &value, 1000) < 0);
+    nodes[0].runtime.requests.poisoned = false;
+    lcs_config_value_clear(&value); value = candidate("bootstrap");
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 700, &value, 1000) < 0);
+    forbid_io = false; lcs_config_value_clear(&value); value = candidate("already-accepted");
+    assert(!lcs_config_agreement_accept(&nodes[0].runtime.agreement,
+        nodes[0].runtime.agreement.committed.digest, 32, &value, error, sizeof(error)));
+    forbid_io = true;
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 700, &value, 1000) < 0);
+    assert(!nodes[0].coordinator.storage.pid && !frames);
+    lcs_config_value_clear(&value); cleanup();
+
+    setup();
+    for (unsigned i = 0; i < LCS_CONFIG_REQUEST_HISTORY_MAX; i++)
+    {
+        char id[32]; snprintf(id, sizeof(id), "full-%u", i); value = candidate(id);
+        assert(!lcs_config_requests_reserve(&nodes[0].runtime.requests, &nodes[0].runtime.agreement, 0,
+            nodes[0].runtime.agreement.committed.digest, &value, error, sizeof(error)));
+        lcs_config_value_clear(&value);
+    }
+    value = candidate("full-0"); forbid_io = true;
+    assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 700, &value, 1000) < 0);
+    lcs_config_value_clear(&value); value = candidate("over-capacity");
+    assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 700, &value, 1000));
+    for (unsigned i = 0; i < 5000 && nodes[0].transactions.proposer.phase != LCS_CONFIG_PROPOSER_UNKNOWN; i++) network_tick(1000);
+    assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_UNKNOWN);
+    assert(!nodes[0].runtime.agreement.promised && !frames && !nodes[0].coordinator.failed);
+    assert(nodes[0].coordinator.completed_requests == 1 && nodes[0].coordinator.last_request_result == LCS_CONFIG_REQUEST_CAPACITY);
+    assert(nodes[0].runtime.requests.count == LCS_CONFIG_REQUEST_HISTORY_MAX);
+    lcs_config_value_clear(&value); cleanup();
 }
 
 static lcs_config_value_t next_value(const lcs_config_value_t *previous, bool present)
@@ -837,6 +945,8 @@ int main(void)
 {
     parent = getpid();
     test_network_proposer();
+    test_proposal_reservation_order_and_timeout();
+    test_proposal_history_admission();
     test_checkpoint_sync();
     test_codecs_and_session_admission();
     test_majority_and_recovery();

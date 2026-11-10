@@ -120,13 +120,18 @@ before lease voting. See [catalog history and compatibility](dynamic-config-appl
 ## Activated startup recovery
 
 The separate [request-fact journal core](dynamic-config-agreement.md#local-durable-request-fact-journal-core)
-supports read-only startup recovery; transaction submission remains unwired.
+supports startup recovery and local proposal reservations; acceptor identity
+checks and learned-outcome recording remain unfinished.
 Startup recovers an existing `requests.json` against the frozen static context
 and rejects corrupt, orphaned or locally contradictory history before listeners
 open. Older catalogs without it retain unavailable request history; startup does
 not create an empty file or infer earlier outcomes. Ordinary operation does not
-create/update `requests.json` yet. Its reservation/commit facts are not final client
-outcomes; public request-status and definition mutation commands remain unfinished.
+automatically initialize `requests.json` yet. Explicit internal proposals require
+healthy existing history and reserve original intent before PREPARE; known IDs
+cannot be resubmitted with a new transport ID. Older catalogs without history
+still support recovery/application but cannot submit new definitions. Its
+reservation/commit facts are not final client outcomes; public request-status
+and definition mutation commands remain unfinished.
 
 Startup now resumes existing schema-2 applied catalogs with valid durable
 all-member readiness. Full members also require retained predecessor history;
