@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_requests.h"
+#include "config_agreement_worker.h"
+#include <signal.h>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -20,10 +22,11 @@ static char directory[96], error[256];
 static unsigned fail_sync;
 static unsigned crash_sync;
 static bool forbid_sync;
+static pid_t forbid_parent;
 int __real_fsync(int fd);
 int __wrap_fsync(int fd)
 {
-    assert(!forbid_sync);
+    assert(!forbid_sync && getpid() != forbid_parent);
     if (crash_sync && !--crash_sync) _exit(__real_fsync(fd) ? 78 : 77);
     if (fail_sync && !--fail_sync) { errno = EIO; return -1; }
     return __real_fsync(fd);
@@ -224,11 +227,87 @@ static void failures_and_capacity(void)
     assert(lcs_config_requests_find(&history, "request-a")->committed && !lcs_config_requests_find(&history, "overflow"));
     struct stat status; assert(!fstatat(store.directory_fd, "requests.json", &status, 0) && (status.st_mode & 0777) == 0600);
 }
-int main(void)
+static int finish_worker(lcs_config_agreement_worker_t *worker, int *operation)
 {
-    setup(); identities_and_decisions(); invalid_records(); failures_and_capacity();
+    int result = 0;
+    for (unsigned i = 0; i < 10000 && !result; i++)
+    {
+        result = lcs_config_agreement_worker_poll(worker, &agreement, operation, error, sizeof(error));
+        if (!result) usleep(1000);
+    }
+    assert(result && !worker->pid);
+    return result;
+}
+static void serialized_worker(void)
+{
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    lcs_config_value_t value = proposal("serialized-request");
+    size_t before = history.count;
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_REQUEST_RESERVE,
+        .revision = agreement.committed.revision, .value = &value };
+    strcpy(job.parent_digest, agreement.committed.digest);
+    assert(lcs_config_agreement_worker_start(&worker, &agreement, &job, error, sizeof(error)) < 0);
+    forbid_parent = getpid();
+    assert(!lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)));
+    assert(history.count == before); /* No publication before durable completion. */
+    lcs_config_agreement_job_t prepare = { .action = LCS_CONFIG_PREPARE };
+    assert(lcs_config_agreement_worker_start(&worker, &agreement, &prepare, error, sizeof(error)) == 1);
+    assert(lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)) == 1);
+    int operation = -99;
+    assert(finish_worker(&worker, &operation) == 1 && operation == LCS_CONFIG_REQUEST_RECORDED);
+    assert(history.count == before + 1 && !history.records[before].committed);
+    assert(!lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)));
+    assert(finish_worker(&worker, &operation) == 1 && operation == LCS_CONFIG_REQUEST_EXISTS);
+    memset(job.parent_digest, 'f', 64); job.parent_digest[64] = 0;
+    assert(!lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)));
+    assert(finish_worker(&worker, &operation) == 1 && operation == LCS_CONFIG_REQUEST_CONFLICT);
+    assert(!history.poisoned && !agreement.poisoned);
+    forbid_parent = 0;
+    learn(&value);
+    job.action = LCS_CONFIG_REQUEST_OBSERVE;
+    forbid_parent = getpid();
+    assert(!lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)));
+    assert(!history.records[before].committed);
+    assert(finish_worker(&worker, &operation) == 1 && operation == LCS_CONFIG_REQUEST_RECORDED);
+    assert(history.records[before].committed);
+    forbid_parent = 0;
+    lcs_config_value_clear(&value);
+    value = proposal("crashed-worker"); job.action = LCS_CONFIG_REQUEST_RESERVE;
+    job.revision = agreement.committed.revision; strcpy(job.parent_digest, agreement.committed.digest); job.value = &value;
+    fail_sync = 1;
+    assert(!lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)));
+    fail_sync = 0;
+    assert(finish_worker(&worker, &operation) < 0 && history.poisoned && agreement.poisoned);
+    assert(history.count == before + 1);
+    lcs_config_agreement_close(&agreement);
+    assert(!lcs_config_agreement_open(&agreement, &store, &base, false, error, sizeof(error)));
+    reopen(); assert(!lcs_config_requests_find(&history, "crashed-worker"));
+    crash_sync = 2; /* Durable rename may have happened, but no complete handoff. */
+    assert(!lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)));
+    crash_sync = 0;
+    assert(finish_worker(&worker, &operation) < 0 && history.poisoned && agreement.poisoned);
+    assert(history.count == before + 1); /* Do not guess a crashed child's outcome. */
+    lcs_config_agreement_close(&agreement);
+    assert(!lcs_config_agreement_open(&agreement, &store, &base, false, error, sizeof(error)));
+    reopen(); assert(lcs_config_requests_find(&history, "crashed-worker"));
+    assert(!lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)));
+    lcs_config_agreement_worker_cancel(&worker, &agreement);
+    if (worker.pid) assert(finish_worker(&worker, &operation) < 0);
+    assert(history.poisoned && agreement.poisoned);
+    lcs_config_agreement_close(&agreement);
+    assert(!lcs_config_agreement_open(&agreement, &store, &base, false, error, sizeof(error)));
+    reopen(); lcs_config_value_clear(&value);
+}
+static void cleanup(void)
+{
     lcs_config_requests_close(&history); lcs_config_agreement_close(&agreement);
     assert(!unlinkat(store.directory_fd, "requests.json", 0)); assert(!unlinkat(store.directory_fd, "agreement.json", 0));
     assert(!unlinkat(store.directory_fd, "lock", 0)); lcs_config_store_close(&store); assert(!rmdir(directory));
-    puts("durable request identity, decision facts, replay and sync-failure unit tests passed"); return 0;
+}
+int main(void)
+{
+    setup(); identities_and_decisions(); invalid_records(); failures_and_capacity(); cleanup();
+    setup(); serialized_worker(); cleanup();
+    puts("durable request identity, decision facts, serialized worker and sync-failure unit tests passed"); return 0;
 }

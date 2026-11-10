@@ -466,10 +466,19 @@ resource application until safe generation/owner adapters are implemented.
 
 `config_requests.c` adds an explicit storage primitive for future request tracking.
 It is not automatically opened or written by the daemon yet, and it does not
-enable request-status or mutation commands. All its writes are synchronous:
-integration must run them through the shared nonblocking storage writer and
-serialize them with agreement/application work. An inherited directory-lock
-descriptor alone cannot serialize multiple writer children.
+enable request-status or mutation commands. The shared nonblocking storage worker
+now supports reservation and learned-decision observation for an explicitly opened
+history. These jobs exclude agreement/application writers on the same worker and
+publish monotonic history only after a complete result and successful child exit.
+The parent performs no journal writes. Logical conflicts/capacity responses leave
+handles usable; uncertain writes, cancellation or incomplete handoff poison both
+history and agreement until the child is reaped and disk state is recovered.
+
+History initialization/recovery at daemon startup and transaction submission are
+still unwired. Callers must keep both handles unchanged until completion, use the
+same worker for every store writer, and explicitly authorize missing-history
+initialization. An inherited directory-lock descriptor alone cannot serialize
+multiple writer children.
 
 The member/membership-bound `requests.json` record contains a checksummed,
 append-only list of observed request identities. Each entry binds the request ID,

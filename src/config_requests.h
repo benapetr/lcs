@@ -25,7 +25,7 @@ typedef struct
 } lcs_config_requests_t;
 
 /* Explicit storage primitive, not automatically initialized by the daemon.
- * Synchronous writes belong in a future serialized storage job shared with
+ * Synchronous writes must use the serialized storage worker shared with
  * agreement, never the lease event loop. Hold the store's exclusive lock
  * throughout handle/worker lifetime; inherited lock FDs do not serialize children.
  * Missing state requires explicit authorization; existing invalid state is never

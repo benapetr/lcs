@@ -75,6 +75,7 @@ static int compare_fd(const void *a, const void *b)
 
 static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
                             lcs_config_application_t *application,
+                    lcs_config_requests_t *requests,
                             const lcs_config_agreement_job_t *job,
                             const lcs_config_runtime_t *initialization, bool allow_initialize,
                             const lcs_config_runtime_t *barrier_runtime,
@@ -154,7 +155,12 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
         lcs_config_runtime_close(&recovered);
         _exit(write_all(pipe_fd, &result, sizeof(result)) ? 1 : 0);
     }
-    if (job->action == LCS_CONFIG_PREPARE)
+    if (job->action == LCS_CONFIG_REQUEST_RESERVE)
+        result.result = lcs_config_requests_reserve(requests, agreement, job->revision,
+            job->parent_digest, job->value, result.error, sizeof(result.error));
+    else if (job->action == LCS_CONFIG_REQUEST_OBSERVE)
+        result.result = lcs_config_requests_observe(requests, agreement, result.error, sizeof(result.error));
+    else if (job->action == LCS_CONFIG_PREPARE)
         result.result = lcs_config_agreement_prepare(agreement, job->revision,
             job->parent_digest, job->ballot, result.error, sizeof(result.error));
     else if (job->action == LCS_CONFIG_ACCEPT)
@@ -189,12 +195,15 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
     else
         result.result = lcs_config_application_finish(application, job->application_digest,
                                                        result.error, sizeof(result.error));
-    result.poisoned = agreement->poisoned || (application && application->poisoned);
+    result.poisoned = agreement->poisoned || (application && application->poisoned) ||
+        (requests && requests->poisoned);
     char *record = NULL;
     size_t length = 0;
     int exported = -1;
     if (!result.poisoned)
-        exported = application ? lcs_config_application_export(application, &record, &length,
+        exported = requests ? lcs_config_requests_export(requests, &record, &length,
+                                                               result.error, sizeof(result.error)) :
+                   application ? lcs_config_application_export(application, &record, &length,
                                                                result.error, sizeof(result.error)) :
                                  lcs_config_agreement_export(agreement, &record, &length,
                                                              result.error, sizeof(result.error));
@@ -214,6 +223,7 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
 static int start(lcs_config_agreement_worker_t *worker,
                     lcs_config_agreement_t *agreement,
                     lcs_config_application_t *application,
+                    lcs_config_requests_t *requests,
                     const lcs_config_agreement_job_t *job,
                     lcs_config_runtime_t *target, lcs_config_runtime_t *candidate,
                     bool allow_initialize,
@@ -222,6 +232,15 @@ static int start(lcs_config_agreement_worker_t *worker,
 {
     if (worker->pid > 0)
         return 1;
+    bool request_job = job && (job->action == LCS_CONFIG_REQUEST_RESERVE ||
+                               job->action == LCS_CONFIG_REQUEST_OBSERVE);
+    if (request_job != (requests != NULL) || (requests &&
+        (requests->poisoned || requests->store != agreement->store || requests->base != agreement->base ||
+         strcmp(requests->member, agreement->member) || strcmp(requests->membership, agreement->membership) ||
+         requests->count > LCS_CONFIG_REQUEST_HISTORY_MAX ||
+         (job->action == LCS_CONFIG_REQUEST_RESERVE && (!job->value ||
+          !memchr(job->parent_digest, 0, sizeof(job->parent_digest)))))))
+        return fail(err, err_len, "invalid request history job or recovery required");
     bool projection_job = job && job->action == LCS_CONFIG_PROJECTION;
     bool application_job = job && (job->action == LCS_CONFIG_APPLICATION_BEGIN ||
                                    job->action == LCS_CONFIG_APPLICATION_FINISH);
@@ -229,7 +248,7 @@ static int start(lcs_config_agreement_worker_t *worker,
         (application && (application->poisoned || application->store != agreement->store ||
          strcmp(application->member, agreement->member) ||
          strcmp(application->membership, agreement->membership))) ||
-        (!application_job && (job->action < LCS_CONFIG_PREPARE || (job->action > LCS_CONFIG_LEARN && job->action != LCS_CONFIG_CHECKPOINT && !projection_job) ||
+        (!application_job && !request_job && (job->action < LCS_CONFIG_PREPARE || (job->action > LCS_CONFIG_LEARN && job->action != LCS_CONFIG_CHECKPOINT && !projection_job) ||
          (job->action != LCS_CONFIG_PREPARE && !job->value))) ||
         (projection_job && (!job->projection || !job->projection->initialization_locked ||
             job->projection->worker_pid > 0 || job->projection->snapshots.directory_fd < 0 ||
@@ -264,10 +283,12 @@ static int start(lcs_config_agreement_worker_t *worker,
         return fail(err, err_len, "cannot fork storage worker");
     }
     if (!child)
-        execute_child(agreement, application, job, candidate, allow_initialize, barrier_runtime, fds[1], parent);
+        execute_child(agreement, application, requests, job, candidate, allow_initialize, barrier_runtime, fds[1], parent);
     close(fds[1]);
     worker->checkpoint = job && job->action == LCS_CONFIG_CHECKPOINT;
     worker->application = application;
+    worker->requests = requests;
+    worker->request_agreement = requests ? agreement : NULL;
     worker->initialization_target = target;
     worker->initialization_candidate = candidate;
     worker->barrier_target = barrier_runtime;
@@ -285,7 +306,7 @@ int lcs_config_agreement_worker_start(lcs_config_agreement_worker_t *worker,
                                       const lcs_config_agreement_job_t *job,
                     char *err, size_t err_len)
 {
-    return start(worker, agreement, NULL, job, NULL, NULL, false, NULL, err, err_len);
+    return start(worker, agreement, NULL, NULL, job, NULL, NULL, false, NULL, err, err_len);
 }
 
 int lcs_config_agreement_worker_start_projection(lcs_config_agreement_worker_t *worker,
@@ -295,7 +316,7 @@ int lcs_config_agreement_worker_start_projection(lcs_config_agreement_worker_t *
 {
     lcs_config_agreement_job_t job = { .action = LCS_CONFIG_PROJECTION,
         .value = &agreement->committed, .projection = bootstrap };
-    return start(worker, agreement, NULL, &job, NULL, NULL, false, NULL, err, err_len);
+    return start(worker, agreement, NULL, NULL, &job, NULL, NULL, false, NULL, err, err_len);
 }
 
 int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t *worker,
@@ -306,7 +327,19 @@ int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t 
 {
     if (!application)
         return fail(err, err_len, "application catalog is required");
-    return start(worker, agreement, application, job, NULL, NULL, false, NULL, err, err_len);
+    return start(worker, agreement, application, NULL, job, NULL, NULL, false, NULL, err, err_len);
+}
+
+int lcs_config_agreement_worker_start_requests(lcs_config_agreement_worker_t *worker,
+                                               lcs_config_agreement_t *agreement,
+                                               lcs_config_requests_t *requests,
+                                               const lcs_config_agreement_job_t *job,
+                                               char *err, size_t err_len)
+{
+    if (!requests || !job || (job->action != LCS_CONFIG_REQUEST_RESERVE &&
+                              job->action != LCS_CONFIG_REQUEST_OBSERVE))
+        return fail(err, err_len, "request history and reserve/observe job are required");
+    return start(worker, agreement, NULL, requests, job, NULL, NULL, false, NULL, err, err_len);
 }
 
 static bool empty_runtime(const lcs_config_runtime_t *runtime)
@@ -367,7 +400,7 @@ int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker
         lcs_config_value_copy(&candidate->application.applied, &candidate->activation.baseline))
         goto out;
     candidate->requires_recovery = true;
-    result = start(worker, &candidate->agreement, NULL, NULL, runtime, candidate,
+    result = start(worker, &candidate->agreement, NULL, NULL, NULL, runtime, candidate,
                      allow_initialize, NULL, err, err_len);
     if (!result)
     {
@@ -402,7 +435,7 @@ int lcs_config_agreement_worker_start_barrier(lcs_config_agreement_worker_t *wor
         strcmp(round->membership, local.membership) || strcmp(round->baseline, local.baseline))
         return fail(err, err_len, "barrier requires complete matching readiness and pristine initialization");
     lcs_config_agreement_job_t job = { .action = LCS_CONFIG_BARRIER, .barrier_round = round };
-    int result = start(worker, &runtime->agreement, NULL, &job, NULL, NULL, false, runtime, err, err_len);
+    int result = start(worker, &runtime->agreement, NULL, NULL, &job, NULL, NULL, false, runtime, err, err_len);
     if (!result)
     {
         lcs_config_barrier_t *candidate = &worker->barrier_candidate;
@@ -434,6 +467,8 @@ static void poison(lcs_config_agreement_worker_t *worker, lcs_config_agreement_t
         return;
     }
     agreement->poisoned = true;
+    if (worker->requests)
+        worker->requests->poisoned = true;
     if (worker->application)
         worker->application->poisoned = true;
 }
@@ -443,6 +478,8 @@ void lcs_config_agreement_worker_cancel(lcs_config_agreement_worker_t *worker,
 {
     if (worker->pid > 0)
     {
+        if (worker->request_agreement)
+            agreement = worker->request_agreement;
         poison(worker, agreement);
         worker->cancelled = true;
         pid_t reaped;
@@ -471,6 +508,8 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
 {
     if (worker->pid <= 0)
         return 0;
+    if (worker->request_agreement && agreement != worker->request_agreement)
+        return fail(err, err_len, "request completion requires the original agreement handle");
     if (worker->initialization_target && agreement != &worker->initialization_target->agreement)
         return fail(err, err_len, "initialization completion requires the original runtime handle");
     if (worker->barrier_target && agreement != &worker->barrier_target->agreement)
@@ -521,9 +560,10 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
     worker_result_t result;
     memcpy(&result, worker->buffer, sizeof(result));
     result.error[sizeof(result.error) - 1] = '\0';
-    if (result.length > (worker->application ? LCS_CONFIG_APPLICATION_MAX : LCS_CONFIG_JOURNAL_MAX) ||
+    if (result.length > (worker->requests ? LCS_CONFIG_REQUEST_RECORD_MAX :
+                         worker->application ? LCS_CONFIG_APPLICATION_MAX : LCS_CONFIG_JOURNAL_MAX) ||
         worker->used != sizeof(result) + result.length ||
-        result.result < -1 || result.result > LCS_CONFIG_STALE)
+        result.result < -1 || result.result > (worker->requests ? LCS_CONFIG_REQUEST_CAPACITY : LCS_CONFIG_STALE))
         goto broken;
     if (result.poisoned)
     {
@@ -557,7 +597,8 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
         return 1;
     }
     const char *record = (const char *)worker->buffer + sizeof(result);
-    int imported = !result.length ? -1 : worker->application ?
+    int imported = !result.length ? -1 : worker->requests ?
+        lcs_config_requests_import(worker->requests, record, result.length, err, err_len) : worker->application ?
         lcs_config_application_import(worker->application, agreement, record, result.length, err, err_len) :
         worker->checkpoint ? lcs_config_agreement_import_checkpoint(agreement, record, result.length, err, err_len) :
         lcs_config_agreement_import(agreement, record, result.length, err, err_len);

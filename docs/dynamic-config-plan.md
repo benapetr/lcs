@@ -130,8 +130,11 @@ durable distributed configuration protocol.
   checksums, retain all observed IDs at bounded capacity, and reject stale worker
   imports. Test restart, process exits, uncertain syncs, corruption and conflicts.
   This records reservation/commit facts, not admission or final client outcomes.
-- [ ] Integrate request history into the serialized storage worker, startup and
-  proposer/acceptor paths before enabling public mutation endpoints. Handle
+- [x] Add request reservation and learned-decision observation jobs to the same
+  serialized storage worker as agreement/catalog work. Publish only after durable
+  child completion; test writer exclusion, retries/conflicts, crashes, cancellation
+  and recovery. History must already be explicitly opened; no daemon auto-creation.
+- [ ] Integrate request history into daemon startup and proposer/acceptor paths before enabling public mutation endpoints. Handle
   missing-history/checkpoint transfer, completed admission acknowledgements and
   deliberate retention/compaction; unrecorded requests remain outcome-unknown.
 - [x] Define full-cluster restart, stale-majority prevention, disk loss, backup

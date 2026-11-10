@@ -4,6 +4,7 @@
 #define LCS_CONFIG_AGREEMENT_WORKER_H
 
 #include "config_application.h"
+#include "config_requests.h"
 #include "config_bootstrap.h"
 #include "config_runtime.h"
 #include <sys/types.h>
@@ -18,6 +19,8 @@ typedef enum
     LCS_CONFIG_BARRIER = 6,
     LCS_CONFIG_CHECKPOINT = 7,
     LCS_CONFIG_PROJECTION = 8,
+    LCS_CONFIG_REQUEST_RESERVE = 9,
+    LCS_CONFIG_REQUEST_OBSERVE = 10,
 } lcs_config_agreement_action_t;
 
 typedef struct
@@ -42,6 +45,8 @@ typedef struct
     bool eof;
     bool cancelled;
     bool checkpoint; /* Selects the explicit monotonic checkpoint import. */
+    lcs_config_requests_t *requests; /* Borrowed until reaped; already explicitly opened. */
+    lcs_config_agreement_t *request_agreement; /* Original handle required for poll/cancel. */
     lcs_config_application_t *application; /* Borrowed until completion/cancellation is reaped. */
     lcs_config_runtime_t *initialization_target; /* Borrowed until reaped. */
     lcs_config_runtime_t *initialization_candidate; /* Private unpublished pristine state. */
@@ -88,6 +93,18 @@ int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t 
                                                   lcs_config_application_t *application,
                                                   const lcs_config_agreement_job_t *job,
                                                   char *err, size_t err_len);
+/* Reserve/observe through the SAME serialized writer. History must already be
+ * explicitly opened and bound to this agreement's store/static base. RESERVE
+ * uses revision/parent_digest as expected base and value as requested successor.
+ * OBSERVE records only the current learned majority decision. Keep both handles
+ * unchanged until reaped. Success publishes only journal facts, not client success.
+ * Uncertain persistence/cancellation poisons both handles; recover after reaping.
+ * This API does not initialize missing history or submit agreement proposals. */
+int lcs_config_agreement_worker_start_requests(lcs_config_agreement_worker_t *worker,
+                                               lcs_config_agreement_t *agreement,
+                                               lcs_config_requests_t *requests,
+                                               const lcs_config_agreement_job_t *job,
+                                               char *err, size_t err_len);
 /* Publish exactly the current learned schema-2 document through the SAME worker.
  * The bootstrap state descriptors must match agreement's exclusively locked store;
  * INI refresh must be permanently excluded and its worker already reaped. Keep
