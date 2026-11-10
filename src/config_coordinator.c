@@ -205,7 +205,10 @@ int lcs_config_coordinator_start_learn(lcs_config_coordinator_t *coordinator,
         return -1;
     int result = lcs_config_agreement_worker_start(&coordinator->storage, &runtime->agreement, job, err, err_len);
     if (!result)
+    {
+        coordinator->record_vote_decision = true;
         coordinator->phase = LCS_CONFIG_COORD_VOTING;
+    }
     return result;
 }
 
@@ -226,7 +229,10 @@ int lcs_config_coordinator_start_checkpoint(lcs_config_coordinator_t *coordinato
         return -1;
     int result = lcs_config_agreement_worker_start(&coordinator->storage, &runtime->agreement, job, err, err_len);
     if (!result)
+    {
+        coordinator->record_vote_decision = true;
         coordinator->phase = LCS_CONFIG_COORD_VOTING;
+    }
     return result;
 }
 
@@ -335,8 +341,10 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
     lcs_config_runtime_t *runtime = coordinator->runtime;
     if (coordinator->phase == LCS_CONFIG_COORD_VOTING || coordinator->phase == LCS_CONFIG_COORD_APPLYING ||
         coordinator->phase == LCS_CONFIG_COORD_PROJECTING || coordinator->phase == LCS_CONFIG_COORD_REQUESTING ||
-        coordinator->phase == LCS_CONFIG_COORD_ACCEPT_RESERVING)
+        coordinator->phase == LCS_CONFIG_COORD_ACCEPT_RESERVING || coordinator->phase == LCS_CONFIG_COORD_OBSERVING)
     {
+        bool observing_job = coordinator->phase == LCS_CONFIG_COORD_OBSERVING;
+        bool decision_job = coordinator->phase == LCS_CONFIG_COORD_VOTING && coordinator->record_vote_decision;
         bool accepting_job = coordinator->phase == LCS_CONFIG_COORD_ACCEPT_RESERVING;
         bool request_job = coordinator->phase == LCS_CONFIG_COORD_REQUESTING;
         bool application_job = coordinator->phase == LCS_CONFIG_COORD_APPLYING;
@@ -352,6 +360,20 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
             coordinator->failed = coordinator->closing = true;
             coordinator->phase = coordinator->storage.pid > 0 ? LCS_CONFIG_COORD_CANCELLING : LCS_CONFIG_COORD_FAILED;
             return coordinator->storage.pid > 0 ? 0 : -1;
+        }
+        if (observing_job)
+        {
+            coordinator->last_request_result = operation;
+            coordinator->completed_requests++;
+            if (operation != LCS_CONFIG_REQUEST_RECORDED && operation != LCS_CONFIG_REQUEST_EXISTS)
+            {
+                runtime->requests.poisoned = true;
+                lcs_config_coordinator_abort(coordinator,
+                    "learned decision is durable but request history conflicts or cannot retain it; recovery required");
+                return -1;
+            }
+            coordinator->phase = LCS_CONFIG_COORD_READY;
+            return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
         }
         if (accepting_job)
         {
@@ -407,6 +429,26 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
         {
             coordinator->last_vote_result = operation;
             coordinator->completed_votes++;
+        }
+        if (decision_job)
+        {
+            coordinator->record_vote_decision = false;
+            /* The consensus completion above is authoritative even if this
+             * separate bookkeeping step fails, expires or is cancelled. */
+            if (operation == LCS_CONFIG_AGREED && runtime->agreement.committed.revision && runtime->requests.store)
+            {
+                lcs_config_agreement_job_t observation = {.action = LCS_CONFIG_REQUEST_OBSERVE};
+                if (coordinator->completed_requests == UINT64_MAX ||
+                    lcs_config_agreement_worker_start_requests(&coordinator->storage, &runtime->agreement,
+                        &runtime->requests, &observation, coordinator->error, sizeof(coordinator->error)))
+                {
+                    lcs_config_coordinator_abort(coordinator,
+                        "learned decision is durable but request observation could not start; recovery required");
+                    return -1;
+                }
+                coordinator->phase = LCS_CONFIG_COORD_OBSERVING;
+                return 0;
+            }
         }
         coordinator->phase = LCS_CONFIG_COORD_READY;
         return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;

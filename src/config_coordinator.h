@@ -16,6 +16,7 @@ typedef enum
     LCS_CONFIG_COORD_PROJECTING,
     LCS_CONFIG_COORD_REQUESTING,
     LCS_CONFIG_COORD_ACCEPT_RESERVING,
+    LCS_CONFIG_COORD_OBSERVING,
     LCS_CONFIG_COORD_CANCELLING,
     LCS_CONFIG_COORD_STOPPED,
     LCS_CONFIG_COORD_FAILED,
@@ -31,6 +32,7 @@ typedef struct
     uint64_t attempt;
     uint64_t completed_votes; /* Process-local completion counter, not durable request history. */
     int last_vote_result;
+    bool record_vote_decision; /* LEARN/checkpoint completion schedules history observation. */
     uint64_t completed_applications;
     int last_application_result;
     uint64_t completed_projections;
@@ -78,7 +80,11 @@ int lcs_config_coordinator_start_vote(lcs_config_coordinator_t *coordinator,
                                        char *err, size_t err_len);
 /* Learn only a validated immediate schema-2 successor with a configured voting
  * majority. A duplicate exact current decision may be acknowledged while local
- * application is behind. Learning never applies backends or enables authority. */
+ * application is behind. Learning never applies backends or enables authority.
+ * Consensus completion advances before separate history observation: bookkeeping
+ * failure cannot erase a durable decision. Existing history is then observed
+ * through the same writer before READY; missing legacy history stays unavailable.
+ * Observation failure fences the coordinator without rolling back consensus. */
 int lcs_config_coordinator_start_learn(lcs_config_coordinator_t *coordinator,
                                        const lcs_config_agreement_job_t *job,
                                        char *err, size_t err_len);

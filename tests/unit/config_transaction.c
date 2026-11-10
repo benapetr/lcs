@@ -147,7 +147,8 @@ static void await_operation(node_t *node, uint64_t previous)
     for (unsigned i = 0; i < 5000; i++)
     {
         tick(node);
-        if ((node->coordinator.completed_votes > previous || node->coordinator.failed) && !node->transactions.active)
+        if ((node->coordinator.completed_votes > previous || node->coordinator.failed) && !node->transactions.active &&
+            node->coordinator.phase != LCS_CONFIG_COORD_OBSERVING)
             return;
         usleep(1000);
     }
@@ -171,6 +172,7 @@ static void cleanup(void)
         const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json", "requests.json", "lock"};
         for (size_t j = 0; j < sizeof(names) / sizeof(names[0]); j++)
             assert(!unlinkat(node->store.directory_fd, names[j], 0));
+        assert(!unlinkat(node->store.directory_fd, ".requests.json.tmp", 0) || errno == ENOENT);
         lcs_config_store_close(&node->store);
         assert(!rmdir(node->directory));
     }
@@ -527,11 +529,12 @@ static void network_finish(uint64_t now)
         network_tick(now);
         if (nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_COMPLETE)
         {
-            bool learned = true;
+            bool learned = nodes[0].coordinator.phase != LCS_CONFIG_COORD_OBSERVING;
             const lcs_config_value_t *selected = lcs_config_transactions_selected(&nodes[0].transactions);
             for (size_t j = 0; j < 3; j++)
                 if (nodes[0].transactions.proposer.proposal.acknowledgements & (UINT32_C(1) << j))
-                    learned = learned && lcs_config_value_equal(&nodes[j].runtime.agreement.committed, selected);
+                    learned = learned && nodes[j].coordinator.phase != LCS_CONFIG_COORD_OBSERVING &&
+                        lcs_config_value_equal(&nodes[j].runtime.agreement.committed, selected);
             if (learned)
                 return;
         }
@@ -589,7 +592,7 @@ static void test_network_proposer(void)
     const lcs_config_request_record_t *intent = lcs_config_requests_find(&nodes[0].runtime.requests, "new-request");
     assert(intent && !intent->committed && !strcmp(intent->value_digest, newer.digest));
     const lcs_config_request_record_t *recovered_intent = lcs_config_requests_find(&nodes[0].runtime.requests, "earlier-request");
-    assert(recovered_intent && !recovered_intent->committed && !strcmp(recovered_intent->value_digest, value.digest));
+    assert(recovered_intent && recovered_intent->committed && !strcmp(recovered_intent->value_digest, value.digest));
     lcs_config_value_clear(&value);
     lcs_config_value_clear(&newer);
     cleanup();
@@ -712,8 +715,8 @@ static void test_proposal_reservation_order_and_timeout(void)
                 assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 601, &value, 12000) < 0);
             }
             const lcs_config_request_record_t *record = lcs_config_requests_find(&nodes[0].runtime.requests, value.request_id);
-            assert(record && !strcmp(record->value_digest, value.digest) && !record->committed);
-            assert(nodes[0].coordinator.completed_requests == (mode ? 1u : 2u) && !network_errors);
+            assert(record && !strcmp(record->value_digest, value.digest) && record->committed == !mode);
+            assert(nodes[0].coordinator.completed_requests == (mode ? 1u : 3u) && !network_errors);
         }
         lcs_config_value_clear(&value); cleanup();
     }
@@ -912,6 +915,135 @@ static void test_accept_cancellation_recovery(void)
     }
 }
 
+static void until_observing(node_t *node)
+{
+    for (unsigned i = 0; i < 5000 && node->coordinator.phase != LCS_CONFIG_COORD_OBSERVING; i++)
+    { assert(lcs_config_coordinator_process(&node->coordinator, 1000) >= 0); usleep(1000); }
+    assert(node->coordinator.phase == LCS_CONFIG_COORD_OBSERVING);
+    assert(node->coordinator.completed_votes == 1 && node->coordinator.last_vote_result == LCS_CONFIG_AGREED);
+}
+static void until_history_finished(node_t *node)
+{
+    for (unsigned i = 0; i < 5000 && node->coordinator.phase == LCS_CONFIG_COORD_OBSERVING; i++)
+    { (void)lcs_config_coordinator_process(&node->coordinator, 1000); usleep(1000); }
+    assert(node->coordinator.phase != LCS_CONFIG_COORD_OBSERVING && !node->coordinator.storage.pid);
+}
+static void test_learned_observation_order(void)
+{
+    for (int boundary = 1; boundary <= 2; boundary++)
+    {
+        setup(); lcs_config_value_t value = candidate("observed-decision");
+        forbid_io = true;
+        assert(!send_value(1, 1, LCS_CONFIG_TRANSFER_LEARN, 3, &value, 32));
+        stop_sync = boundary; until_observing(&nodes[1]); await_stopped(&nodes[1]); stop_sync = 0;
+        assert(lcs_config_value_equal(&nodes[1].runtime.agreement.committed, &value));
+        assert(!nodes[1].runtime.requests.count && !nodes[1].coordinator.completed_requests);
+        assert(!nodes[1].controls && !lcs_config_coordinator_can_vote(&nodes[1].coordinator));
+        lcs_config_transactions_process(&nodes[1].transactions, 1000, receive, &nodes[1]);
+        assert(nodes[1].controls == 1 && nodes[1].received.result == LCS_CONFIG_TX_OK);
+        assert(nodes[1].received.kind == LCS_CONFIG_TX_LEARNED && !nodes[1].runtime.requests.count);
+        assert(!kill(nodes[1].coordinator.storage.pid, SIGCONT)); until_history_finished(&nodes[1]);
+        assert(nodes[1].runtime.requests.count == 1 && nodes[1].runtime.requests.records[0].committed);
+        assert(nodes[1].coordinator.completed_votes == 1 && nodes[1].coordinator.completed_requests == 1);
+        assert(nodes[1].runtime.application.applied.revision == 0);
+        lcs_config_value_clear(&value); cleanup();
+    }
+}
+static void test_learned_observation_failures(void)
+{
+    for (unsigned cancelled = 0; cancelled < 2; cancelled++) for (int boundary = 1; boundary <= 2; boundary++)
+    {
+        setup(); lcs_config_value_t value = candidate("observation-failure");
+        forbid_io = true;
+        assert(!send_value(1, 1, LCS_CONFIG_TRANSFER_LEARN, 3, &value, 32));
+        if (cancelled) stop_sync = boundary;
+        else fail_sync = boundary;
+        until_observing(&nodes[1]); fail_sync = stop_sync = 0;
+        if (cancelled)
+        {
+            await_stopped(&nodes[1]); lcs_config_coordinator_stop(&nodes[1].coordinator);
+            for (unsigned i = 0; i < 5000 && !lcs_config_coordinator_can_close(&nodes[1].coordinator); i++)
+            { (void)lcs_config_coordinator_process(&nodes[1].coordinator, 1000); usleep(1000); }
+            assert(lcs_config_coordinator_can_close(&nodes[1].coordinator));
+        }
+        else { until_history_finished(&nodes[1]); assert(nodes[1].coordinator.failed); }
+        assert(nodes[1].runtime.requests.poisoned);
+        assert(lcs_config_value_equal(&nodes[1].runtime.agreement.committed, &value));
+        assert(!nodes[1].coordinator.completed_requests && !nodes[1].runtime.requests.count);
+        /* Deliberately delay transport completion until AFTER bookkeeping fails. */
+        lcs_config_transactions_process(&nodes[1].transactions, 1000, receive, &nodes[1]);
+        assert(nodes[1].received.result == LCS_CONFIG_TX_OK && nodes[1].controls == 1);
+        assert(!nodes[1].transactions.active && !lcs_config_coordinator_can_vote(&nodes[1].coordinator));
+        forbid_io = false; lcs_config_transactions_close(&nodes[1].transactions);
+        lcs_config_coordinator_stop(&nodes[1].coordinator); lcs_config_runtime_close(&nodes[1].runtime);
+        lcs_config_t *local = malloc(sizeof(*local)); assert(local); *local = config; strcpy(local->self_name, "node1");
+        assert(!lcs_config_runtime_open(&nodes[1].runtime, &nodes[1].store, local, error, sizeof(error))); free(local);
+        assert(nodes[1].runtime.requests.count == (boundary == 2 ? 1u : 0u));
+        lcs_config_coordinator_init(&nodes[1].coordinator, &nodes[1].runtime, &nodes[1].readiness);
+        assert(!lcs_config_coordinator_recover(&nodes[1].coordinator));
+        lcs_config_transactions_init(&nodes[1].transactions, &nodes[1].coordinator, 101);
+        forbid_io = true;
+        assert(!send_value(1, 2, LCS_CONFIG_TRANSFER_LEARN, 3, &value, 32)); await_operation(&nodes[1], 0);
+        assert(nodes[1].received.result == LCS_CONFIG_TX_OK && nodes[1].runtime.requests.records[0].committed);
+        lcs_config_value_clear(&value); cleanup();
+    }
+}
+static void test_learned_observation_rejections(void)
+{
+    for (unsigned mode = 0; mode < 2; mode++)
+    {
+        setup(); lcs_config_value_t value = candidate("learned-identity");
+        if (!mode)
+        {
+            lcs_config_t *bad = malloc(sizeof(*bad)); assert(bad); uint64_t revision;
+            assert(!lcs_resource_config_decode(value.document, value.length, &config, bad, &revision, error, sizeof(error)));
+            strcpy(bad->resources[0].address, "192.0.2.99/32"); char *document; size_t length;
+            assert(!lcs_resource_config_encode(bad, revision, &document, &length, error, sizeof(error))); free(bad);
+            lcs_config_value_t conflict = {0};
+            assert(!lcs_config_value_init(&conflict, &config, value.request_id, document, length, error, sizeof(error))); free(document);
+            assert(!lcs_config_requests_reserve(&nodes[1].runtime.requests, &nodes[1].runtime.agreement, 0,
+                nodes[1].runtime.agreement.committed.digest, &conflict, error, sizeof(error)));
+            lcs_config_value_clear(&conflict);
+        }
+        else for (unsigned i = 0; i < LCS_CONFIG_REQUEST_HISTORY_MAX; i++)
+        {
+            char id[32]; snprintf(id, sizeof(id), "full-%u", i); lcs_config_value_t full = candidate(id);
+            assert(!lcs_config_requests_reserve(&nodes[1].runtime.requests, &nodes[1].runtime.agreement, 0,
+                nodes[1].runtime.agreement.committed.digest, &full, error, sizeof(error)));
+            lcs_config_value_clear(&full);
+        }
+        forbid_io = true;
+        assert(!send_value(1, 1, LCS_CONFIG_TRANSFER_LEARN, 3, &value, 32));
+        until_observing(&nodes[1]); until_history_finished(&nodes[1]);
+        assert(nodes[1].coordinator.failed && nodes[1].runtime.requests.poisoned);
+        assert(nodes[1].coordinator.completed_votes == 1 && nodes[1].coordinator.completed_requests == 1);
+        assert(nodes[1].coordinator.last_request_result == (mode ? LCS_CONFIG_REQUEST_CAPACITY : LCS_CONFIG_REQUEST_CONFLICT));
+        lcs_config_transactions_process(&nodes[1].transactions, 1000, receive, &nodes[1]);
+        assert(nodes[1].received.result == LCS_CONFIG_TX_OK && nodes[1].runtime.agreement.committed.revision == 1);
+        for (size_t i = 0; i < nodes[1].runtime.requests.count; i++) assert(!nodes[1].runtime.requests.records[i].committed);
+        lcs_config_value_clear(&value); cleanup();
+    }
+}
+static void test_proposer_observation_failure_retains_decision(void)
+{
+    setup(); network_errors = 0; uint64_t instances[LCS_MAX_NODES] = {100,101,102};
+    lcs_config_value_t value = candidate("known-despite-observation-failure"); forbid_io = true;
+    assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 950, &value, 1000));
+    for (unsigned i = 0; i < 5000 && nodes[0].transactions.proposer.phase != LCS_CONFIG_PROPOSER_LEARNING; i++) network_tick(1000);
+    assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_LEARNING);
+    fail_sync = 2;
+    for (unsigned i = 0; i < 5000 && nodes[0].coordinator.phase != LCS_CONFIG_COORD_OBSERVING; i++)
+    { assert(lcs_config_coordinator_process(&nodes[0].coordinator, 1000) >= 0); usleep(1000); }
+    assert(nodes[0].coordinator.phase == LCS_CONFIG_COORD_OBSERVING); fail_sync = 0;
+    until_history_finished(&nodes[0]);
+    assert(nodes[0].coordinator.failed && lcs_config_value_equal(&nodes[0].runtime.agreement.committed, &value));
+    lcs_config_transactions_process(&nodes[0].transactions, 11000, network_send, &nodes[0]);
+    assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_COMPLETE);
+    assert(lcs_config_value_equal(lcs_config_transactions_selected(&nodes[0].transactions), &value));
+    assert(!network_errors && nodes[0].runtime.application.applied.revision == 0);
+    lcs_config_value_clear(&value); cleanup();
+}
+
 static lcs_config_value_t next_value(const lcs_config_value_t *previous, bool present)
 {
     lcs_config_t *configs = malloc(3 * sizeof(*configs));
@@ -947,7 +1079,8 @@ static void await_sync(size_t node, uint64_t now)
     {
         network_tick(now);
         lcs_config_sync_phase_t phase = nodes[node].transactions.sync.phase;
-        if (phase == LCS_CONFIG_SYNC_COMPLETE || phase == LCS_CONFIG_SYNC_CURRENT)
+        if ((phase == LCS_CONFIG_SYNC_COMPLETE || phase == LCS_CONFIG_SYNC_CURRENT) &&
+            nodes[node].coordinator.phase != LCS_CONFIG_COORD_OBSERVING)
             return;
         assert(phase != LCS_CONFIG_SYNC_UNKNOWN);
     }
@@ -992,6 +1125,9 @@ static void test_checkpoint_sync(void)
     await_sync(0, 1000);
     assert(!network_errors);
     assert(lcs_config_value_equal(&nodes[0].runtime.agreement.committed, &recreated));
+    const lcs_config_request_record_t *checkpoint_record = lcs_config_requests_find(&nodes[0].runtime.requests, recreated.request_id);
+    assert(checkpoint_record && checkpoint_record->committed);
+    assert(!lcs_config_requests_find(&nodes[0].runtime.requests, removed.request_id)); /* Skipped outcome remains unknown. */
     assert(nodes[0].runtime.agreement.promised == 320 && !nodes[0].runtime.agreement.accepted.document);
     assert(nodes[0].runtime.application.applied.revision == 0);
     assert(lcs_config_value_equal(&nodes[0].runtime.application.pending, &first));
@@ -1054,7 +1190,8 @@ static void test_checkpoint_sync(void)
     lcs_config_transactions_disconnect(&nodes[0].transactions, 1);
     assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_UNKNOWN && nodes[0].coordinator.storage.pid == writer);
     assert(!kill(writer, SIGCONT));
-    for (unsigned i = 0; i < 5000 && !nodes[0].coordinator.completed_votes; i++)
+    for (unsigned i = 0; i < 5000 && (!nodes[0].coordinator.completed_votes ||
+         nodes[0].coordinator.phase == LCS_CONFIG_COORD_OBSERVING); i++)
         network_tick(1000);
     assert(nodes[0].runtime.agreement.committed.revision == 1 && nodes[0].runtime.application.applied.revision == 0);
     assert(nodes[0].transactions.sync.phase == LCS_CONFIG_SYNC_UNKNOWN && !network_errors);
@@ -1103,6 +1240,10 @@ int main(void)
     test_accept_identity_failures();
     test_accept_history_conflicts_and_capacity();
     test_accept_cancellation_recovery();
+    test_learned_observation_order();
+    test_learned_observation_failures();
+    test_learned_observation_rejections();
+    test_proposer_observation_failure_retains_decision();
     test_checkpoint_sync();
     test_codecs_and_session_admission();
     test_majority_and_recovery();

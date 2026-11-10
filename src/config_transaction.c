@@ -360,7 +360,8 @@ static void completed(lcs_config_transactions_t *transactions, uint64_t now_ms)
     if (!transactions->active)
         return;
     lcs_config_coordinator_t *coordinator = transactions->coordinator;
-    bool unknown = coordinator->failed && coordinator->storage.pid <= 0;
+    bool durable = coordinator->completed_votes == transactions->completion;
+    bool unknown = !durable && coordinator->failed && coordinator->storage.pid <= 0;
     if (!unknown && coordinator->completed_votes < transactions->completion)
         return;
     size_t node = transactions->pending_node;
@@ -757,7 +758,7 @@ static void proposer_process(lcs_config_transactions_t *transactions, uint64_t n
     /* Observe a durable local decision even if its completion and the transport
      * deadline arrive in the same scheduler iteration. */
     if (proposer->phase == LCS_CONFIG_PROPOSER_LEARNING && proposer->completion &&
-        !coordinator->failed && coordinator->completed_votes == proposer->completion &&
+        coordinator->completed_votes == proposer->completion &&
         coordinator->last_vote_result == LCS_CONFIG_AGREED)
         proposer_phase(proposer, LCS_CONFIG_PROPOSER_DISTRIBUTING);
     if (now_ms >= proposer->deadline_ms || coordinator->failed || coordinator->closing || proposer->proposal.failed)
@@ -1033,7 +1034,7 @@ static void sync_process(lcs_config_transactions_t *transactions, uint64_t now_m
         return;
     lcs_config_coordinator_t *coordinator = transactions->coordinator;
     if (sync->phase == LCS_CONFIG_SYNC_PERSISTING && coordinator->completed_votes >= sync->completion)
-        sync->phase = coordinator->completed_votes == sync->completion && !coordinator->failed &&
+        sync->phase = coordinator->completed_votes == sync->completion &&
             coordinator->last_vote_result == LCS_CONFIG_AGREED ? LCS_CONFIG_SYNC_COMPLETE : LCS_CONFIG_SYNC_UNKNOWN;
     if (!sync_active(transactions))
         return;

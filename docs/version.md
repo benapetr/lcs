@@ -212,8 +212,12 @@ votes. Known request IDs cannot be submitted again by changing the transport ID.
 ACCEPT now persists/checks the selected identity before persisting acceptance;
 its private coordinator phase does not report a vote or send ACK until the latter
 write completes. Exact protocol retries remain idempotent; conflicts and a full
-history reject new identities. This adds no wire fields or disk-format changes;
-learned-outcome tracking and public mutation commands remain unfinished.
+history reject new identities. Successful LEARN/checkpoint persistence schedules
+observation of the exact current decision when history exists, using a private
+coordinator phase. Consensus completion remains known across observation failure;
+configuration progress is fenced for recovery. Missing history and skipped
+checkpoint outcomes remain unknown. This adds no wire fields or disk-format
+changes; final client outcomes and public mutation commands remain unfinished.
 
 ## Offline document validation
 

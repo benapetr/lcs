@@ -11,6 +11,8 @@ read -r -a fixture_flags <<<"$(pkg-config --cflags --libs jansson libcrypto)"
     "$ROOT_DIR/src/"{config_requests,config_activation,config_barrier,config_agreement,config_application,config_store,config_candidate,resource_config,config,util,source_allowlist}.c \
     "${fixture_flags[@]}" -o "$TEST_TMP/fixture"
 for node in node1 node2 node3; do "$TEST_TMP/fixture" "$(node_config "$node")"; done
+# Track learned outcomes on node1 while preserving missing-history compatibility on node2.
+"$TEST_TMP/fixture" "$(node_config node1)" history
 start_node node1
 start_node node2
 start_node node3
@@ -99,6 +101,13 @@ p = json.loads(Path(root + '.resources.json').read_text())
 a = json.loads(Path(root + '.state/application.json').read_text())
 assert p['revision'] == revision and json.loads(a['applied']['document']) == p and a['pending'] is None
 assert len(p['resources']) == (0 if revision == 8 else 2 if revision in (5, 6) else 1)
+history_path = Path(root + '.state/requests.json')
+if history_path.exists():
+    history = json.loads(history_path.read_text())
+    record = next(r for r in history['requests'] if r['request_id'] == 'recovery-' + str(revision))
+    assert record['committed'] is True and record['base_revision'] == revision - 1
+    assert len(record['value_digest']) == 64
+
 if revision < 8:
     assert p['resources']['vip1']['birth_revision'] == 4
 if revision == 6:

@@ -549,12 +549,29 @@ a separate status/recovery case and cannot be resubmitted by changing transport 
 
 The proposer reservation fingerprints the originally requested value. Recovering
 a higher accepted value through promises adds/checks its separate selected-value
-identity without overwriting original intent or claiming that it committed. Recording learned outcomes on proposer/acceptor/checkpoint paths
-is a separate unfinished step. Existing history is not proof of full lifecycle
-readiness, and public mutation commands remain disabled.
+identity without overwriting original intent or claiming that it committed.
+
+Successful LEARN and checkpoint persistence now schedule observation of the exact
+current learned request when history exists. The coordinator publishes consensus
+completion first, then holds an OBSERVING phase on the same writer until history
+records/retains that decision. This includes local proposer learning, remote LEARN,
+duplicate learned decisions and checkpoint catch-up. Missing legacy history stays
+unavailable and is not initialized by a learned message. A checkpoint gap records
+only its latest proven outcome, never invented results for skipped revisions.
+
+Consensus replies and proposer/checkpoint completion mean that the decision was
+learned durably; they do not wait for or imply history durability, application or
+client success. If observation fails or is cancelled, a known decision cannot
+become aborted/unknown merely because bookkeeping failed. The coordinator fences
+further configuration work and requires recovery; the durable agreement remains
+the source of the learned decision. Conflicting identities or insufficient space
+for a previously unseen learned request also fence progress without rolling the
+decision back. An exact duplicate LEARN can finish missing observation after a
+healthy disk recovery. Existing history is not proof of full lifecycle readiness,
+and public mutation commands remain disabled.
 
 Automatic first-initialization authorization, lost-history/checkpoint recovery,
-learned-outcome wiring and full client lifecycle handling remain unfinished.
+full client lifecycle handling, retention and admission acknowledgements remain unfinished.
 Callers must keep both handles unchanged until completion, use the same worker
 for every store writer, and explicitly authorize first initialization. An inherited
 directory-lock descriptor alone cannot serialize multiple writer children.

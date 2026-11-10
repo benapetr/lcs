@@ -160,6 +160,12 @@ durable distributed configuration protocol.
   history, reject immutable-ID conflicts and capacity exhaustion without accepting,
   and send positive ACK only after acceptance completes. Preserve exact protocol
   retries/recovery and test both writes' sync boundaries, failures and cancellation.
+- [x] Observe successful LEARN/checkpoint decisions through the same writer when
+  request history exists. Keep consensus completion separate from bookkeeping,
+  preserve known decisions across observation failures, and fence configuration
+  progress until observation completes or recovery is required. Record only the
+  exact current proven outcome across checkpoint gaps; never initialize missing
+  legacy history or report committed facts as application/client success.
 - [ ] Integrate coordinated first-initialization authorization, lost-history recovery
   and proposer/acceptor paths before enabling public mutation endpoints. Handle
   missing-history/checkpoint transfer, completed admission acknowledgements and

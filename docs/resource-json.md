@@ -121,7 +121,11 @@ before lease voting. See [catalog history and compatibility](dynamic-config-appl
 
 The separate [request-fact journal core](dynamic-config-agreement.md#local-durable-request-fact-journal-core)
 supports startup recovery, local proposal reservations and acceptor identity
-checks. Learned-outcome recording remains unfinished.
+checks. Successful LEARN/checkpoint writes also record their exact current outcome
+when history exists; checkpoint gaps do not invent skipped request outcomes.
+Consensus completion is separate from history durability, backend admission and
+client success. Observation failure fences configuration progress for recovery
+without undoing a learned decision.
 Startup recovers an existing `requests.json` against the frozen static context
 and rejects corrupt, orphaned or locally contradictory history before listeners
 open. Older catalogs without it retain unavailable request history; startup does

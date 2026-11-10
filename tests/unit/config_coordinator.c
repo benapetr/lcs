@@ -402,14 +402,14 @@ static void test_request_metadata_gates_and_completions(void)
     coordinator.application_owner = &owner;
     assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
     await_request_ready();
-    assert(coordinator.completed_requests == 5 && !coordinator.last_request_result && runtime.requests.records[0].committed);
+    assert(coordinator.completed_requests == 6 && coordinator.last_request_result == LCS_CONFIG_REQUEST_EXISTS && runtime.requests.records[0].committed);
     assert(coordinator.completed_votes == 1 && !coordinator.completed_applications && !coordinator.completed_projections);
     assert(runtime.application.applied.revision == 0 && coordinator.application_owner == &owner);
     job.action = LCS_CONFIG_REQUEST_RESERVE;
     strcpy(job.parent_digest, vote.parent_digest);
     assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
     await_request_ready();
-    assert(coordinator.completed_requests == 6 && coordinator.last_request_result == LCS_CONFIG_REQUEST_EXISTS);
+    assert(coordinator.completed_requests == 7 && coordinator.last_request_result == LCS_CONFIG_REQUEST_EXISTS);
     assert(!lcs_config_coordinator_can_vote(&coordinator));
     lcs_config_value_clear(&value); cleanup();
 }
