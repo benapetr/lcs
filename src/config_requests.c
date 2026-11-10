@@ -56,6 +56,30 @@ const lcs_config_request_record_t *lcs_config_requests_find(const lcs_config_req
     for (size_t i = 0; i < history->count; i++) if (!strcmp(history->records[i].id, id)) return &history->records[i];
     return NULL;
 }
+int lcs_config_requests_query(const lcs_config_requests_t *history, const char *id, lcs_config_request_view_t *view)
+{
+    if (!id || strnlen(id, LCS_CONFIG_REQUEST_MAX + 1) > LCS_CONFIG_REQUEST_MAX || !lcs_valid_name(id) || !view) return -1;
+    lcs_config_request_view_t next = {0}; strcpy(next.id, id);
+    if (history && (history->poisoned || history->count > LCS_CONFIG_REQUEST_HISTORY_MAX ||
+        (!!history->store != !!history->base) || (!history->store && history->count)))
+        next.history = LCS_CONFIG_HISTORY_RECOVERY;
+    else if (history && history->store && history->base)
+    {
+        next.history = LCS_CONFIG_HISTORY_AVAILABLE;
+        const lcs_config_request_record_t *record = lcs_config_requests_find(history, id);
+        if (record)
+        {
+            if (!record_valid(record)) next.history = LCS_CONFIG_HISTORY_RECOVERY;
+            else
+            {
+                next.state = record->committed ? LCS_CONFIG_REQUEST_COMMITTED : LCS_CONFIG_REQUEST_RESERVED;
+                next.base_revision = record->base_revision;
+                strcpy(next.base_digest, record->base_digest); strcpy(next.value_digest, record->value_digest);
+            }
+        }
+    }
+    *view = next; return 0;
+}
 int lcs_config_requests_export(const lcs_config_requests_t *history, char **document, size_t *length, char *err, size_t err_len)
 {
     if (!history->store || !history->base || history->poisoned || history->count > LCS_CONFIG_REQUEST_HISTORY_MAX)

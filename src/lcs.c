@@ -5,6 +5,7 @@
 #include "protocol.h"
 #include "config_status_protocol.h"
 #include "config_export_protocol.h"
+#include "config_request_status_protocol.h"
 #include "util.h"
 
 #include <errno.h>
@@ -51,6 +52,7 @@ static void usage(FILE *out)
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] nrpe\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] reload\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config status\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config request-status ID\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config export [committed|applied]\n");
     fprintf(out, "       lcs [-c CONFIG|--config CONFIG] [--json] config validate FILE|-\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource list\n");
@@ -775,6 +777,52 @@ invalid:
     free(document); close(fd); return 1;
 }
 
+static int cmd_config_request_status(const char *socket_path, const char *id, bool json_output)
+{
+    unsigned char payload[LCS_MAX_FRAME]; size_t length;
+    if (lcs_config_request_id_encode(id, payload, sizeof(payload), &length))
+    { fprintf(stderr, "lcs: invalid request ID (use 1-63 letters, digits, underscores, dots or hyphens)\n"); return 2; }
+    int fd = connect_socket(socket_path); if (fd < 0) return 1;
+    uint32_t seq = lcs_next_seq(); lcs_frame_header_t header;
+    int failed = lcs_write_frame(fd, LCS_MSG_CONFIG_REQUEST_STATUS_REQ, seq, payload, (uint32_t)length) ||
+        lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0;
+    close(fd);
+    if (failed) { fprintf(stderr, "lcs: request-status query failed: %s\n", lcs_protocol_error()); return 1; }
+    if (header.seq != seq) { fprintf(stderr, "lcs: mismatched request-status response\n"); return 1; }
+    if (header.type == LCS_MSG_ERROR)
+    {
+        int32_t status; char message[256];
+        if (!lcs_decode_simple_resp(payload, header.length, &status, message, sizeof(message))) fprintf(stderr, "lcs: %s\n", message);
+        else fprintf(stderr, "lcs: invalid request-status error\n");
+        return 1;
+    }
+    lcs_config_request_view_t view;
+    if (header.type != LCS_MSG_CONFIG_REQUEST_STATUS_RESP ||
+        lcs_config_request_view_decode(payload, header.length, &view) || strcmp(view.id, id))
+    { fprintf(stderr, "lcs: invalid request-status response\n"); return 1; }
+    const char *state = view.state == LCS_CONFIG_REQUEST_COMMITTED ? "committed" :
+        view.state == LCS_CONFIG_REQUEST_RESERVED ? "reserved" : "unknown";
+    const char *history = view.history == LCS_CONFIG_HISTORY_AVAILABLE ? "available" :
+        view.history == LCS_CONFIG_HISTORY_RECOVERY ? "recovery-required" : "unavailable";
+    if (json_output)
+    {
+        printf("{\"scope\":\"local\",\"request_id\":"); json_string(stdout, view.id);
+        printf(",\"history\":\"%s\",\"state\":\"%s\",\"base_revision\":", history, state);
+        if (view.state) printf("%llu,\"value_revision\":%llu,\"base_digest\":\"%s\",\"value_digest\":\"%s\"",
+            (unsigned long long)view.base_revision, (unsigned long long)(view.base_revision + 1), view.base_digest, view.value_digest);
+        else printf("null,\"value_revision\":null,\"base_digest\":null,\"value_digest\":null");
+        puts("}");
+    }
+    else
+    {
+        printf("request: %s\nscope: local\nhistory: %s\nstate: %s%s\n", view.id, history, state,
+            view.state == LCS_CONFIG_REQUEST_RESERVED ? " (outcome unknown)" : "");
+        if (view.state) printf("expected base: %llu %s\nvalue: %llu %s\n",
+            (unsigned long long)view.base_revision, view.base_digest, (unsigned long long)(view.base_revision + 1), view.value_digest);
+    }
+    return fflush(stdout) ? 1 : 0;
+}
+
 static int cmd_config_status(const char *socket_path, bool json_output)
 {
     int fd = connect_socket(socket_path);
@@ -1238,6 +1286,8 @@ int main(int argc, char **argv)
     }
     if (strcmp(cmd, "config") == 0)
     {
+        if (optind + 2 == argc && !strcmp(argv[optind], "request-status"))
+            return cmd_config_request_status(socket_path, argv[optind + 1], json_output);
         if (optind + 1 == argc && !strcmp(argv[optind], "status"))
             return cmd_config_status(socket_path, json_output);
         if (optind < argc && !strcmp(argv[optind], "export") && optind + 2 >= argc)

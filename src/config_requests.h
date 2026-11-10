@@ -24,6 +24,20 @@ typedef struct
     bool poisoned;
 } lcs_config_requests_t;
 
+enum { LCS_CONFIG_HISTORY_UNAVAILABLE = 0, LCS_CONFIG_HISTORY_AVAILABLE = 1, LCS_CONFIG_HISTORY_RECOVERY = 2 };
+enum { LCS_CONFIG_REQUEST_UNKNOWN = 0, LCS_CONFIG_REQUEST_RESERVED = 1, LCS_CONFIG_REQUEST_COMMITTED = 2 };
+typedef struct
+{
+    uint8_t history, state;
+    char id[LCS_CONFIG_REQUEST_MAX + 1];
+    uint64_t base_revision;
+    char base_digest[LCS_CONFIG_DIGEST_SIZE], value_digest[LCS_CONFIG_DIGEST_SIZE];
+} lcs_config_request_view_t;
+/* Published local journal facts only: no I/O, authority, application inference,
+ * initialization or permission to retry. Unknown never proves rejection/abort.
+ * Reserved-only records leave their eventual outcome unknown. */
+int lcs_config_requests_query(const lcs_config_requests_t *history, const char *id, lcs_config_request_view_t *view);
+
 /* Explicit storage primitive, not automatically initialized by the daemon.
  * Synchronous writes must use the serialized storage worker shared with
  * agreement, never the lease event loop. Hold the store's exclusive lock

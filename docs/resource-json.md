@@ -135,8 +135,8 @@ healthy existing history and reserve original intent before PREPARE; known IDs
 cannot be resubmitted with a new transport ID. ACCEPT also requires healthy
 history and persists/checks its selected identity before acceptance and ACK. Older catalogs without history
 still support recovery/application but cannot submit new definitions. Its
-reservation/commit facts are not final client outcomes; public request-status
-and definition mutation commands remain unfinished.
+reservation/commit facts are not final client outcomes; final client outcome
+tracking and definition mutation commands remain unfinished.
 
 Startup now resumes existing schema-2 applied catalogs with valid durable
 all-member readiness. Full members also require retained predecessor history;
@@ -227,6 +227,35 @@ Even `matching_members == configured_members` does not activate dynamic authorit
 stage. The future activation barrier must confirm readiness explicitly and
 serialize it with reload and storage workers. This command makes no configuration
 changes. Old daemons return an unsupported-command error.
+
+## Inspecting a request's local facts
+
+`lcs config request-status ID` (also with `--json`) reads published local request
+history from daemon memory. It works during startup recovery, blocked application
+and configuration transitions, without querying peers, opening files, initializing
+history, running resources or retrying proposals. IDs contain 1–63 letters, digits,
+underscores, dots or hyphens.
+
+The response has `scope: local`, a `history` state (`available`, `unavailable`, or
+`recovery-required`) and a request `state`:
+
+- `committed`: the journal records that exact request's learned consensus decision.
+- `reserved`: its immutable expected base and value were recorded; its eventual
+  outcome is unknown to this journal, including while observation is pending.
+- `unknown`: there is no usable published record. Missing history, checkpoint
+  gaps and poisoned history do not establish rejection or abort.
+
+Known records include `base_revision`, `value_revision`, `base_digest` and
+`value_digest`; unknown records return JSON null for these fields. Unavailable or
+poisoned history never exposes fingerprints as current facts. Unknown/reserved
+states do not authorize request-ID reuse or resubmission. Committed does not mean
+resources were applied, admission was acknowledged, or the client operation
+finished successfully. This command does not provide those final outcomes.
+
+Exit status 0 means the local query succeeded, including an unknown result;
+1 means a connection, daemon or protocol error; 2 means invalid arguments.
+Older daemons reject the new local query as unsupported. Definition mutations
+and automatic first initialization remain disabled.
 
 ## Exporting definitions
 

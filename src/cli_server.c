@@ -8,6 +8,7 @@
 #include "config_peer.h"
 #include "config_manager.h"
 #include "config_export_protocol.h"
+#include "config_request_status_protocol.h"
 #include "log.h"
 #include "move.h"
 #include "peer.h"
@@ -380,12 +381,25 @@ static void cli_server_queue_config_status(int epoll_fd, int slot_idx, uint32_t 
     cli_server_queue_frame(epoll_fd, slot_idx, LCS_MSG_CONFIG_STATUS_RESP, seq, payload, (uint32_t)encoded);
 }
 
+static void cli_server_queue_request_status(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr,
+                                              const unsigned char *payload)
+{
+    char id[LCS_CONFIG_REQUEST_MAX + 1]; lcs_config_request_view_t view;
+    unsigned char response[LCS_CONFIG_REQUEST_STATUS_SIZE]; size_t length;
+    if (lcs_config_request_id_decode(payload, hdr->length, id) ||
+        lcs_config_requests_query(&g_state.config_runtime.requests, id, &view) ||
+        lcs_config_request_view_encode(&view, response, sizeof(response), &length))
+    { cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, "invalid configuration request-status query"); return; }
+    cli_server_queue_frame(epoll_fd, slot_idx, LCS_MSG_CONFIG_REQUEST_STATUS_RESP, hdr->seq, response, (uint32_t)length);
+}
+
 static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
 {
     cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
     if ((g_state.config_runtime.requires_recovery || config_manager_applying() ||
          (g_state.resource_generation_enabled && g_state.config_application_remapping)) &&
-        hdr->type != LCS_MSG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_EXPORT_REQ)
+        hdr->type != LCS_MSG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_EXPORT_REQ &&
+        hdr->type != LCS_MSG_CONFIG_REQUEST_STATUS_REQ)
     {
         cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, config_manager_applying() ?
             "resource configuration application is active; local mutations are fenced" :
@@ -394,6 +408,9 @@ static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_
     }
     switch (hdr->type)
     {
+        case LCS_MSG_CONFIG_REQUEST_STATUS_REQ:
+            cli_server_queue_request_status(epoll_fd, slot_idx, hdr, payload);
+            break;
         case LCS_MSG_CONFIG_EXPORT_REQ:
             if (cli_server_queue_export(epoll_fd, slot_idx, hdr, payload)) return -1;
             break;

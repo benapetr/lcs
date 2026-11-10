@@ -314,8 +314,13 @@ durable distributed configuration protocol.
   validated durable in-memory snapshots. Pin each response across learning/remaps,
   stream bounded chunks beyond one frame, allow recovery/application inspection,
   and reject incomplete or inconsistent replies without partial stdout.
-- [ ] Add durable request/transaction outcome diagnostics without treating file
-  edits as commits or reconstructing lost request history.
+- [x] Add read-only local request-fact diagnostics via `lcs config request-status
+  ID` and `--json`. Expose reservation/commit facts with explicit unknown and
+  unavailable/recovery-required history states, without disk I/O, inferred
+  checkpoint-gap outcomes, automatic initialization or claims of client success.
+- [ ] Extend request diagnostics to final admission acknowledgements/client
+  outcomes after that lifecycle is implemented; retain unknown results where
+  durable proof is unavailable.
 
 ## 4. Add protocol support and synchronization
 

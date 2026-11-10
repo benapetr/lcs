@@ -12,7 +12,8 @@ static char error[256];
 int main(int argc, char **argv)
 {
     bool advance = argc == 3 && !strcmp(argv[2], "advance");
-    bool history = argc == 3 && !strcmp(argv[2], "history");
+    bool reserved = argc == 3 && !strcmp(argv[2], "reserved");
+    bool history = reserved || (argc == 3 && !strcmp(argv[2], "history"));
     if (argc != 2 && !advance && !history) return 2;
     lcs_config_t *cfg = calloc(5, sizeof(*cfg));
     if (!cfg) return 1;
@@ -32,6 +33,19 @@ int main(int argc, char **argv)
         lcs_config_requests_t requests = {0};
         CHECK(lcs_config_requests_open(&requests, &store, &cfg[1], true, error, sizeof(error)));
         CHECK(lcs_config_requests_observe(&requests, &agreement, error, sizeof(error)));
+        if (reserved)
+        {
+            uint64_t previous; char *document; size_t length;
+            CHECK(lcs_resource_config_decode(agreement.committed.document, agreement.committed.length,
+                &cfg[1], &cfg[2], &previous, error, sizeof(error)));
+            CHECK(lcs_resource_config_assign_identities(&cfg[2], previous, &cfg[2], &cfg[3], error, sizeof(error)));
+            CHECK(lcs_resource_config_encode(&cfg[3], previous + 1, &document, &length, error, sizeof(error)));
+            lcs_config_value_t pending = {0};
+            CHECK(lcs_config_value_init(&pending, &cfg[1], "pending-request", document, length, error, sizeof(error)));
+            CHECK(lcs_config_requests_reserve(&requests, &agreement, previous, agreement.committed.digest,
+                &pending, error, sizeof(error)));
+            lcs_config_value_clear(&pending); free(document);
+        }
         lcs_config_requests_close(&requests);
         goto done;
     }

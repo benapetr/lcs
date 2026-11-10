@@ -17,6 +17,11 @@ prepared snapshots and matching members; these observations do not activate
 dynamic management, which is not enabled yet. For activated catalogs, it also
 reports local committed/applied/pending revisions and digests, recovery/admission
 state and cleanup errors. These read-only observations do not authorize edits.
+`lcs config request-status ID` (also with `--json`) reads published local request
+facts during normal operation or recovery. Missing/poisoned history and unrecorded
+outcomes remain unknown; a committed fact does not establish application or final
+client success. It does not initialize files or retry requests. See
+[request facts](resource-json.md#inspecting-a-requests-local-facts).
 `lcs config export [committed|applied]` writes the corresponding resource/group
 JSON document from running memory. With INI authority both views describe effective
 INI definitions at revision zero. See [export details](resource-json.md#exporting-definitions).

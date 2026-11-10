@@ -23,7 +23,7 @@ for node in node1 node2 node3; do
     # Recover existing history on two members; the older catalog on node2 has
     # no request journal and must not acquire fabricated empty history.
     if [[ "$node" != node2 ]]; then
-        "$TEST_TMP/fixture" "$(node_config "$node")" history
+        "$TEST_TMP/fixture" "$(node_config "$node")" "$(if [[ "$node" == node1 ]]; then echo reserved; else echo history; fi)"
         cp "$(node_config "$node").state/requests.json" "$TEST_TMP/$node-requests.json"
     fi
     # Activated resource definitions must come from the journal, never edited INI.
@@ -43,6 +43,24 @@ start_node node1
 wait_for_socket node1
 node_status_has node1 'vip1 127.0.0.201/32 dev=lo state=stopped owner=-' || die 'did not restore last applied definitions'
 node_status_has node1 'quorum: no' || die 'isolated recovering node has quorum'
+"$LCS" -s "$(node_socket node1)" --json config request-status recovery-3 | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+assert s["scope"] == "local" and s["history"] == "available" and s["state"] == "committed"
+assert s["base_revision"] == 2 and s["value_revision"] == 3 and len(s["value_digest"]) == 64
+assert "applied" not in s and "success" not in s
+'
+"$LCS" -s "$(node_socket node1)" --json config request-status pending-request | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+assert s["state"] == "reserved" and s["base_revision"] == 3 and s["value_revision"] == 4
+'
+"$LCS" -s "$(node_socket node1)" --json config request-status unknown-request | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+assert s["state"] == "unknown" and s["history"] == "available" and s["base_revision"] is None
+'
+
 "$LCS" -s "$(node_socket node1)" config export | python3 -c 'import json, sys; assert json.load(sys.stdin)["revision"] == 3'
 "$LCS" -s "$(node_socket node1)" config export applied | python3 -c 'import json, sys; s=json.load(sys.stdin); assert s["revision"] == 2 and s["resources"]["vip1"]["address"] == "127.0.0.201/32"'
 if "$LCS" -s "$(node_socket node1)" resource start vip1 >"$TEST_TMP/mutation.log" 2>&1; then

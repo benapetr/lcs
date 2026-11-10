@@ -459,6 +459,30 @@ static void request_open_refuses_promise(void)
     /* Restore the known pre-promise empty fixture explicitly for cleanup. */
     assert(!lcs_config_requests_open(&history, &store, &base, true, error, sizeof(error)));
 }
+static void query_facts(void)
+{
+    lcs_config_request_view_t view;
+    forbid_sync = true;
+    assert(!lcs_config_requests_query(NULL, "missing", &view) && view.history == LCS_CONFIG_HISTORY_UNAVAILABLE);
+    assert(lcs_config_requests_query(&history, "bad/id", &view) < 0);
+    assert(!lcs_config_requests_query(&history, "missing", &view) && view.history == LCS_CONFIG_HISTORY_AVAILABLE && !view.state);
+    forbid_sync = false;
+    lcs_config_value_t value = proposal("query-fact"); assert(!reserve(&value));
+    forbid_sync = true;
+    assert(!lcs_config_requests_query(&history, value.request_id, &view) && view.state == LCS_CONFIG_REQUEST_RESERVED);
+    assert(!strcmp(view.value_digest, value.digest) && view.base_revision == 0);
+    forbid_sync = false; learn(&value); forbid_sync = true;
+    /* A learned decision that has not reached this journal is not fabricated. */
+    assert(!lcs_config_requests_query(&history, value.request_id, &view) && view.state == LCS_CONFIG_REQUEST_RESERVED);
+    forbid_sync = false; assert(!lcs_config_requests_observe(&history, &agreement, error, sizeof(error))); forbid_sync = true;
+    assert(!lcs_config_requests_query(&history, value.request_id, &view) && view.state == LCS_CONFIG_REQUEST_COMMITTED);
+    history.poisoned = true;
+    assert(!lcs_config_requests_query(&history, value.request_id, &view) && view.history == LCS_CONFIG_HISTORY_RECOVERY && !view.state);
+    assert(!view.base_revision && !*view.base_digest && !*view.value_digest);
+    history.poisoned = false; forbid_sync = false; reopen(); forbid_sync = true;
+    assert(!lcs_config_requests_query(&history, value.request_id, &view) && view.state == LCS_CONFIG_REQUEST_COMMITTED);
+    forbid_sync = false; lcs_config_value_clear(&value);
+}
 static void cleanup(void)
 {
     lcs_config_requests_close(&history); lcs_config_agreement_close(&agreement);
@@ -470,6 +494,7 @@ int main(void)
     setup(); identities_and_decisions(); invalid_records(); failures_and_capacity(); cleanup();
     setup(); serialized_worker(); cleanup();
     setup(); runtime_recovery(); cleanup();
+    setup(); query_facts(); cleanup();
     setup(); request_open_worker(); cleanup();
     setup(); request_open_refuses_promise(); cleanup();
     for (unsigned mode = 0; mode < 5; mode++) { setup(); request_open_failure(mode); cleanup(); }

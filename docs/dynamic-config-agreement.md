@@ -374,7 +374,7 @@ specific coordinator operation; an unexpected completion or uncertain persistenc
 cannot produce a positive vote. Outcome-unknown is reported separately from
 rejection and must not be interpreted as an abort. Recovery retains any visible
 promise/decision before another attempt. Shutdown keeps the previous coordinator
-reaping/lock rules. No request-status history or client exactly-once semantics are
+reaping/lock rules. No final client outcome or client exactly-once semantics are
 introduced by transport request IDs.
 
 The internal network proposer now drives an explicitly submitted snapshot through
@@ -398,7 +398,8 @@ durable write. Failure or expiry before local durable learning reports unknown,
 even if a majority may already have accepted the value. A new attempt requires a
 strictly newer process-local transport ID, a fresh persistent request ID and a
 higher ballot. Reusing a reserved ID is a status/recovery case, not authorization
-to submit again. There is no automatic retry or public request-status command. Once local learning succeeds,
+to submit again. There is no automatic retry; the read-only local `config request-status` command
+reports journal facts, not final client success. Once local learning succeeds,
 notification timeout cannot erase the known decision. Completion identifies the
 chosen value, which may belong to an earlier recovered request, and never means
 that resources have been applied or all members have received the decision.
@@ -469,9 +470,12 @@ resource application until safe generation/owner adapters are implemented.
 
 ## Local durable request-fact journal core
 
-`config_requests.c` adds an explicit storage primitive for future request tracking.
+`config_requests.c` provides an explicit storage primitive for durable local request facts.
 The daemon recovers an existing journal before opening listeners; it does not
-automatically create or update it, or enable request-status or mutation commands.
+automatically initialize it or enable mutation commands. The read-only local
+`config request-status ID` query exposes published reservation/commit facts, with
+explicit unknown and unavailable/recovery-required history states. It performs no
+disk I/O or proposal retry and does not claim application or client success.
 The shared nonblocking storage worker now supports reservation and learned-decision observation for an explicitly opened
 history. These jobs exclude agreement/application writers on the same worker and
 publish monotonic history only after a complete result and successful child exit.

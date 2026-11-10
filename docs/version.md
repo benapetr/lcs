@@ -219,6 +219,25 @@ configuration progress is fenced for recovery. Missing history and skipped
 checkpoint outcomes remain unknown. This adds no wire fields or disk-format
 changes; final client outcomes and public mutation commands remain unfinished.
 
+## Local request-fact query
+
+`lcs config request-status ID` uses additive Unix-socket message types 41/42 with
+payload format 1. The request is u16 format plus a canonical zero-padded 64-byte
+request ID (66 bytes). The response is u16 format, u8 history, u8 request state,
+64-byte ID, u64 expected base revision and two 65-byte canonical digest strings
+(206 bytes). History values 0/1/2 mean unavailable/available/recovery-required;
+request states 0/1/2 mean unknown/reserved/committed. Known states require available
+history, a base revision below the resource maximum and lowercase SHA-256 digests.
+Unknown states require zero revision and empty canonical digest fields. Truncation,
+trailing bytes, invalid states/IDs/digests and nonzero padding are rejected.
+
+The client also checks response sequence and request-ID correlation before output.
+JSON uses null revision/digest fields for unknown records and always marks the
+scope local. Exit 0 means a valid query response, including unknown; it does not
+mean a client mutation succeeded. Older daemons report unsupported requests.
+Ordinary local status protocol 1004, peer wire versions, journal/resource schemas
+and the release version are unchanged. There is no peer request-status endpoint.
+
 ## Offline document validation
 
 Offline `lcs config validate` uses the existing schema-1/schema-2 parser and
