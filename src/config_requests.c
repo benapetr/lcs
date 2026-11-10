@@ -44,6 +44,7 @@ static bool record_valid(const lcs_config_request_record_t *record)
 {
     return memchr(record->id, 0, sizeof(record->id)) && lcs_valid_name(record->id) &&
         (!record->applied || record->committed) &&
+        (!record->client_digest[0] || digest_valid(record->client_digest)) &&
         record->base_revision < LCS_RESOURCE_REVISION_MAX && digest_valid(record->base_digest) && digest_valid(record->value_digest);
 }
 static bool same_identity(const lcs_config_request_record_t *a, const lcs_config_request_record_t *b)
@@ -85,7 +86,7 @@ int lcs_config_requests_export(const lcs_config_requests_t *history, char **docu
 {
     if (!history->store || !history->base || history->poisoned || history->count > LCS_CONFIG_REQUEST_HISTORY_MAX)
         return fail(err, err_len, "unavailable/poisoned history requires recovery");
-    json_t *root = json_pack("{s:i,s:s,s:s}", "record_version", 2, "member", history->member, "membership", history->membership);
+    json_t *root = json_pack("{s:i,s:s,s:s}", "record_version", 3, "member", history->member, "membership", history->membership);
     json_t *records = json_array(); int result = -1; char *text = NULL, digest[LCS_CONFIG_DIGEST_SIZE];
     if (!root || !records) goto done;
     for (size_t i = 0; i < history->count; i++)
@@ -93,9 +94,9 @@ int lcs_config_requests_export(const lcs_config_requests_t *history, char **docu
         const lcs_config_request_record_t *r = &history->records[i];
         if (!record_valid(r)) goto done;
         for (size_t j = 0; j < i; j++) if (!strcmp(r->id, history->records[j].id)) goto done;
-        if (json_array_append_new(records, json_pack("{s:s,s:I,s:s,s:s,s:b,s:b}", "request_id", r->id,
+        if (json_array_append_new(records, json_pack("{s:s,s:I,s:s,s:s,s:b,s:b,s:s}", "request_id", r->id,
             "base_revision", (json_int_t)r->base_revision, "base_digest", r->base_digest,
-            "value_digest", r->value_digest, "committed", r->committed, "applied", r->applied))) goto done;
+            "value_digest", r->value_digest, "committed", r->committed, "applied", r->applied, "client_digest", r->client_digest))) goto done;
     }
     if (json_object_set(root, "requests", records) || checksum(root, digest) ||
         json_object_set_new(root, "checksum", json_string(digest))) goto done;
@@ -111,6 +112,7 @@ static int load(lcs_config_requests_t *history, const char *document, size_t len
     const char *const keys[] = {"record_version", "member", "membership", "requests", "checksum", NULL};
     const char *const old_keys[] = {"request_id", "base_revision", "base_digest", "value_digest", "committed", NULL};
     const char *const entry_keys[] = {"request_id", "base_revision", "base_digest", "value_digest", "committed", "applied", NULL};
+    const char *const client_keys[] = {"request_id", "base_revision", "base_digest", "value_digest", "committed", "applied", "client_digest", NULL};
     if (!length || length > LCS_CONFIG_REQUEST_RECORD_MAX) return fail(err, err_len, "invalid history size");
     json_error_t error; json_t *root = json_loadb(document, length, JSON_REJECT_DUPLICATES, &error);
     int result = -1; char expected[LCS_CONFIG_DIGEST_SIZE], actual[LCS_CONFIG_DIGEST_SIZE];
@@ -118,7 +120,7 @@ static int load(lcs_config_requests_t *history, const char *document, size_t len
     const char *hash = string_value(root, "checksum"), *member = string_value(root, "member"), *membership = string_value(root, "membership");
     json_t *version = json_object_get(root, "record_version"), *records = json_object_get(root, "requests");
     if (!hash || !digest_valid(hash) || !member || strcmp(member, history->member) || !membership ||
-        strcmp(membership, history->membership) || !json_is_integer(version) || (json_integer_value(version) != 1 && json_integer_value(version) != 2) ||
+        strcmp(membership, history->membership) || !json_is_integer(version) || (json_integer_value(version) < 1 || json_integer_value(version) > 3) ||
         !json_is_array(records) || json_array_size(records) > LCS_CONFIG_REQUEST_HISTORY_MAX) goto done;
     strcpy(expected, hash); json_object_del(root, "checksum");
     if (checksum(root, actual) || strcmp(expected, actual)) goto done;
@@ -128,12 +130,16 @@ static int load(lcs_config_requests_t *history, const char *document, size_t len
         const char *id = string_value(entry, "request_id"), *base = string_value(entry, "base_digest"), *value = string_value(entry, "value_digest");
         json_t *applied = json_object_get(entry, "applied");
         bool legacy = json_integer_value(version) == 1;
-        if (!keys_valid(entry, legacy ? old_keys : entry_keys) ||
+        bool client_format = json_integer_value(version) == 3;
+        const char *client = client_format ? string_value(entry, "client_digest") : "";
+        if (!keys_valid(entry, legacy ? old_keys : client_format ? client_keys : entry_keys) ||
+            !client || (*client && !digest_valid(client)) ||
             (!legacy && (!json_is_boolean(applied) || (json_is_true(applied) && !json_is_true(chosen)))) || !id || strlen(id) > LCS_CONFIG_REQUEST_MAX || !lcs_valid_name(id) ||
             !base || !digest_valid(base) || !value || !digest_valid(value) || !json_is_integer(revision) ||
             json_integer_value(revision) < 0 || json_integer_value(revision) >= LCS_RESOURCE_REVISION_MAX || !json_is_boolean(chosen)) goto done;
         if (lcs_config_requests_find(history, id)) goto done;
         lcs_config_request_record_t *r = &history->records[history->count++];
+        strcpy(r->client_digest, client);
         strcpy(r->id, id); strcpy(r->base_digest, base); strcpy(r->value_digest, value);
         r->base_revision = (uint64_t)json_integer_value(revision); r->committed = json_is_true(chosen); r->applied = !legacy && json_is_true(applied);
     }
@@ -182,6 +188,7 @@ int lcs_config_requests_import(lcs_config_requests_t *history, const char *docum
     if (!result && next->count < history->count) result = -1;
     for (size_t i = 0; !result && i < history->count; i++)
         if (!same_identity(&next->records[i], &history->records[i]) ||
+            strcmp(next->records[i].client_digest, history->records[i].client_digest) ||
             (history->records[i].committed && !next->records[i].committed) ||
             (history->records[i].applied && !next->records[i].applied)) result = -1;
     if (!result) *history = *next;
@@ -259,6 +266,8 @@ static int record(lcs_config_requests_t *history, const lcs_config_request_recor
     if (existing)
     {
         lcs_config_request_record_t *r = &next->records[(size_t)(existing - history->records)];
+        /* Learning/admission carries no client evidence. Preserve the origin
+         * fingerprint (or its absence) rather than copying the new record. */
         r->committed |= request->committed; r->applied |= request->applied;
     }
     else next->records[next->count++] = *request;
@@ -267,11 +276,13 @@ static int record(lcs_config_requests_t *history, const lcs_config_request_recor
     else history->poisoned = true;
     free(next); return result;
 }
-int lcs_config_requests_reserve(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
-                                  uint64_t expected_revision, const char *expected_digest,
-                                  const lcs_config_value_t *requested, char *err, size_t err_len)
+int lcs_config_requests_reserve_client(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
+                                         uint64_t expected_revision, const char *expected_digest,
+                                         const lcs_config_value_t *requested, const char *client_digest,
+                                         char *err, size_t err_len)
 {
-    if (!bound(history, agreement) || !expected_digest || !digest_valid(expected_digest) ||
+    if (!client_digest || (*client_digest && !digest_valid(client_digest)) ||
+        !bound(history, agreement) || !expected_digest || !digest_valid(expected_digest) ||
         expected_revision >= LCS_RESOURCE_REVISION_MAX || !requested || !requested->document ||
         requested->revision != expected_revision + 1)
         return fail(err, err_len, "valid immutable request and matching healthy agreement required");
@@ -282,13 +293,51 @@ int lcs_config_requests_reserve(lcs_config_requests_t *history, const lcs_config
     const lcs_config_request_record_t *existing = lcs_config_requests_find(history, requested->request_id);
     if (existing)
         return existing->base_revision == expected_revision && !strcmp(existing->base_digest, expected_digest) &&
-            !strcmp(existing->value_digest, requested->digest) ?
+            !strcmp(existing->value_digest, requested->digest) &&
+            (!*client_digest || !strcmp(existing->client_digest, client_digest)) ?
             LCS_CONFIG_REQUEST_EXISTS : LCS_CONFIG_REQUEST_CONFLICT;
     if (expected_revision != agreement->committed.revision || strcmp(expected_digest, agreement->committed.digest))
         return fail(err, err_len, "request requires the current exact base revision/digest");
     lcs_config_request_record_t request = {.base_revision = agreement->committed.revision};
+    strcpy(request.client_digest, client_digest);
     strcpy(request.id, requested->request_id); strcpy(request.base_digest, agreement->committed.digest); strcpy(request.value_digest, requested->digest);
     return record(history, &request, err, err_len);
+}
+int lcs_config_requests_reserve(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
+                                  uint64_t expected_revision, const char *expected_digest,
+                                  const lcs_config_value_t *requested, char *err, size_t err_len)
+{
+    return lcs_config_requests_reserve_client(history, agreement, expected_revision, expected_digest,
+                                                requested, "", err, err_len);
+}
+int lcs_config_requests_client_digest(const lcs_config_t *base, const char *id,
+                                        uint64_t expected_revision, const char *expected_digest,
+                                        int argc, const char *const *argv,
+                                        char digest[LCS_CONFIG_DIGEST_SIZE], char *err, size_t err_len)
+{
+    char membership[LCS_CONFIG_DIGEST_SIZE];
+    if (!base || !id || strnlen(id, LCS_CONFIG_REQUEST_MAX + 1) > LCS_CONFIG_REQUEST_MAX ||
+        !lcs_valid_name(id) || !expected_digest || !digest_valid(expected_digest) ||
+        expected_revision >= LCS_RESOURCE_REVISION_MAX || argc < 1 || argc > 128 || !argv || !digest ||
+        lcs_config_agreement_membership(base, membership))
+        return fail(err, err_len, "invalid client descriptor context");
+    json_t *root = json_pack("{s:i,s:s,s:s,s:I,s:s}", "descriptor_version", 1,
+        "request_id", id, "membership", membership, "base_revision", (json_int_t)expected_revision,
+        "base_digest", expected_digest);
+    json_t *arguments = json_array(); int result = -1; size_t bytes = 0;
+    if (!root || !arguments) goto done;
+    for (int i = 0; i < argc; i++)
+    {
+        if (!argv[i]) goto done;
+        size_t length = strnlen(argv[i], 65536 - bytes);
+        if (length >= 65536 - bytes) goto done;
+        bytes += length + 1;
+        if (json_array_append_new(arguments, json_stringn(argv[i], length))) goto done;
+    }
+    if (!json_object_set(root, "argv", arguments)) result = checksum(root, digest);
+done:
+    json_decref(root); json_decref(arguments);
+    return result ? fail(err, err_len, "invalid or oversized client descriptor") : 0;
 }
 int lcs_config_requests_observe(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement, char *err, size_t err_len)
 {

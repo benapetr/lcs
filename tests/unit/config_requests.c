@@ -151,11 +151,11 @@ static void invalid_records(void)
         assert(!strcmp(scratch->records[0].value_digest, history.records[0].value_digest));
         free(document); json_decref(root);
     }
-    for (unsigned mode = 0; mode < 16; mode++)
+    for (unsigned mode = 0; mode < 20; mode++)
     {
         json_error_t parser; json_t *root = json_loadb(original, length, 0, &parser); assert(root);
         json_t *records = json_object_get(root, "requests"), *entry = json_array_get(records, 0);
-        if (mode == 0) json_object_set_new(root, "record_version", json_integer(3));
+        if (mode == 0) json_object_set_new(root, "record_version", json_integer(4));
         if (mode == 1) json_object_set_new(root, "unknown", json_true());
         if (mode == 2) json_array_append(records, entry);
         if (mode == 3) json_object_set_new(entry, "request_id", json_string("bad/id"));
@@ -170,6 +170,10 @@ static void invalid_records(void)
         if (mode == 13) { json_object_set_new(entry, "committed", json_false()); json_object_set_new(entry, "applied", json_true()); }
         if (mode == 14) json_object_set_new(entry, "applied", json_integer(1));
         if (mode == 15) json_object_del(entry, "applied");
+        if (mode == 16) json_object_del(entry, "client_digest");
+        if (mode == 17) json_object_set_new(entry, "client_digest", json_string("bad"));
+        if (mode == 18) json_object_set_new(entry, "client_digest", json_integer(0));
+        if (mode == 19) json_object_set_new(entry, "client_digest", json_stringn("a\0b", 3));
         rewrite(root);
         if (mode == 12) json_object_set_new(root, "checksum", json_string("bad"));
         char *document = json_dumps(root, JSON_SORT_KEYS | JSON_COMPACT); assert(document); json_decref(root);
@@ -537,7 +541,8 @@ static void applied_outcomes(void)
     assert(!lcs_config_requests_export(&history, &document, &length, error, sizeof(error)));
     json_error_t parse; json_t *root = json_loadb(document, length, 0, &parse); assert(root); free(document);
     json_object_set_new(root, "record_version", json_integer(1));
-    json_object_del(json_array_get(json_object_get(root, "requests"), 0), "applied"); rewrite(root);
+    json_object_del(json_array_get(json_object_get(root, "requests"), 0), "applied");
+    json_object_del(json_array_get(json_object_get(root, "requests"), 0), "client_digest"); rewrite(root);
     document = json_dumps(root, JSON_SORT_KEYS | JSON_COMPACT); assert(document); json_decref(root);
     assert(!lcs_config_store_write(&store, "requests.json", document, strlen(document), error, sizeof(error)));
     free(document); reopen();
@@ -562,6 +567,80 @@ static void applied_sync_failure(unsigned boundary)
     lcs_config_value_clear(&value); lcs_config_application_close(&application);
     assert(!unlinkat(store.directory_fd, "application.json", 0));
 }
+static void client_descriptors(void)
+{
+    const char *args[] = {"resource", "update", "public", "address=192.0.2.11/32"};
+    char first[65], again[65], changed[65], parent[65]; strcpy(parent, agreement.committed.digest);
+    assert(!lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 4, args, first, error, sizeof(error)));
+    assert(!lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 4, args, again, error, sizeof(error)));
+    assert(!strcmp(first, again));
+    args[3] = "address=192.0.2.12/32";
+    assert(!lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 4, args, changed, error, sizeof(error)));
+    assert(strcmp(first, changed));
+    assert(!lcs_config_requests_client_digest(&base, "different-id", 0, parent, 4, args, again, error, sizeof(error)));
+    assert(strcmp(changed, again));
+    assert(!lcs_config_requests_client_digest(&base, "client-edit", 1, parent, 4, args, again, error, sizeof(error)));
+    assert(strcmp(changed, again));
+    char huge[65537]; memset(huge, 'a', sizeof(huge)); huge[65536] = 0;
+    const char *large[] = {huge}, *invalid[] = {NULL};
+    assert(lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 1, large, again, error, sizeof(error)) < 0);
+    assert(lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 1, invalid, again, error, sizeof(error)) < 0);
+    assert(lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 129, args, again, error, sizeof(error)) < 0);
+    lcs_config_value_t value = proposal("client-edit");
+    assert(!lcs_config_requests_reserve_client(&history, &agreement, 0, parent, &value, first, error, sizeof(error)));
+    reopen(); assert(!strcmp(history.records[0].client_digest, first));
+    forbid_sync = true;
+    assert(lcs_config_requests_reserve_client(&history, &agreement, 0, parent, &value, first, error, sizeof(error)) == LCS_CONFIG_REQUEST_EXISTS);
+    assert(lcs_config_requests_reserve_client(&history, &agreement, 0, parent, &value, changed, error, sizeof(error)) == LCS_CONFIG_REQUEST_CONFLICT);
+    assert(lcs_config_requests_reserve_client(&history, &agreement, 0, parent, &value, "invalid", error, sizeof(error)) < 0);
+    assert(reserve(&value) == LCS_CONFIG_REQUEST_EXISTS); forbid_sync = false;
+    learn(&value); assert(!lcs_config_requests_observe(&history, &agreement, error, sizeof(error)));
+    reopen(); assert(history.records[0].committed && !strcmp(history.records[0].client_digest, first));
+    forbid_sync = true;
+    assert(lcs_config_requests_reserve_client(&history, &agreement, 0, parent, &value, first, error, sizeof(error)) == LCS_CONFIG_REQUEST_EXISTS);
+    forbid_sync = false;
+    /* Existing peer/legacy intent cannot acquire invented client evidence. */
+    lcs_config_value_t peer = proposal("peer-edit"); assert(!reserve(&peer));
+    forbid_sync = true;
+    assert(lcs_config_requests_reserve_client(&history, &agreement, 1, agreement.committed.digest, &peer, first, error, sizeof(error)) == LCS_CONFIG_REQUEST_CONFLICT);
+    forbid_sync = false;
+    char *document; size_t length;
+    assert(!lcs_config_requests_export(&history, &document, &length, error, sizeof(error)));
+    json_error_t parse; json_t *root = json_loadb(document, length, 0, &parse); assert(root); free(document);
+    /* A checksummed worker handoff cannot replace or erase descriptor evidence. */
+    for (unsigned mode = 0; mode < 3; mode++)
+    {
+        json_t *copy = json_deep_copy(root); assert(copy);
+        json_t *entries = json_object_get(copy, "requests");
+        json_object_set_new(json_array_get(entries, mode == 2 ? 1 : 0), "client_digest",
+            json_string(mode == 0 ? "" : changed)); rewrite(copy);
+        document = json_dumps(copy, JSON_SORT_KEYS | JSON_COMPACT); assert(document); json_decref(copy);
+        lcs_config_requests_t *mirror = malloc(sizeof(*mirror)); assert(mirror); *mirror = history;
+        assert(lcs_config_requests_import(mirror, document, strlen(document), error, sizeof(error)) < 0 && mirror->poisoned);
+        assert(!strcmp(mirror->records[0].client_digest, first)); free(mirror); free(document);
+    }
+    json_decref(root); lcs_config_value_clear(&value); lcs_config_value_clear(&peer);
+}
+static void legacy_client_unknown(void)
+{
+    lcs_config_value_t value = proposal("legacy-client"); assert(!reserve(&value));
+    for (unsigned version = 1; version <= 2; version++)
+    {
+        char *document; size_t length;
+        assert(!lcs_config_requests_export(&history, &document, &length, error, sizeof(error)));
+        json_error_t parse; json_t *root = json_loadb(document, length, 0, &parse); assert(root); free(document);
+        json_object_set_new(root, "record_version", json_integer(version));
+        json_t *entry = json_array_get(json_object_get(root, "requests"), 0);
+        json_object_del(entry, "client_digest"); if (version == 1) json_object_del(entry, "applied");
+        rewrite(root); document = json_dumps(root, JSON_SORT_KEYS | JSON_COMPACT); assert(document); json_decref(root);
+        assert(!lcs_config_store_write(&store, "requests.json", document, strlen(document), error, sizeof(error)));
+        forbid_sync = true; reopen(); assert(!history.records[0].client_digest[0]); forbid_sync = false;
+        char *after; size_t after_length;
+        assert(!lcs_config_store_read(&store, "requests.json", &after, &after_length, LCS_CONFIG_REQUEST_RECORD_MAX, error, sizeof(error)));
+        assert(after_length == strlen(document) && !memcmp(after, document, after_length)); free(after); free(document);
+    }
+    lcs_config_value_clear(&value);
+}
 static void cleanup(void)
 {
     lcs_config_requests_close(&history); lcs_config_agreement_close(&agreement);
@@ -574,6 +653,8 @@ int main(void)
     setup(); serialized_worker(); cleanup();
     setup(); runtime_recovery(); cleanup();
     setup(); query_facts(); cleanup();
+    setup(); client_descriptors(); cleanup();
+    setup(); legacy_client_unknown(); cleanup();
     setup(); applied_outcomes(); cleanup();
     for (unsigned boundary = 1; boundary <= 2; boundary++) { setup(); applied_sync_failure(boundary); cleanup(); }
     setup(); request_open_worker(); cleanup();

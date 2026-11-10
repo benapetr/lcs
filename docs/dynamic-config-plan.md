@@ -323,6 +323,13 @@ durable distributed configuration protocol.
   and later revisions, read older journals without inventing admission, and expose
   `applied` through local request status. Reject catalog rollback and do not infer
   completion from FINISH, current-catalog shortcuts or superseded attempts.
+- [x] Persist the originating client descriptor atomically with original request
+  intent before PREPARE. Bind exact ordered arguments, request ID, static
+  membership and normalized expected base; retain the fingerprint across learning,
+  restart and admission. Read older journals without inventing client evidence,
+  reject descriptor replacement/attachment through worker imports, and exercise
+  reservation timeout/cancellation/recovery. This is internal submission support;
+  public mutation/wait endpoints remain unfinished.
 - [ ] Extend request diagnostics to complete distributed client outcomes after that lifecycle is implemented; retain unknown results where
   durable proof is unavailable.
 

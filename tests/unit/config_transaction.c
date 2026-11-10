@@ -672,7 +672,8 @@ static void test_proposal_reservation_order_and_timeout(void)
         uint64_t instances[LCS_MAX_NODES] = {100, 101, 102};
         lcs_config_value_t value = candidate("reservation-order");
         forbid_io = true; stop_sync = 2;
-        assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 600, &value, 1000));
+        const char descriptor[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert(!lcs_config_transactions_propose_client(&nodes[0].transactions, instances, 600, &value, descriptor, 1000));
         await_stopped(&nodes[0]); stop_sync = 0;
         assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_RESERVING);
         assert(!nodes[0].runtime.requests.count && !nodes[0].runtime.agreement.promised && !frames);
@@ -691,6 +692,7 @@ static void test_proposal_reservation_order_and_timeout(void)
             lcs_config_runtime_close(&nodes[0].runtime);
             assert(!lcs_config_runtime_open(&nodes[0].runtime, &nodes[0].store, &config, error, sizeof(error)));
             assert(lcs_config_requests_find(&nodes[0].runtime.requests, value.request_id));
+            assert(!strcmp(lcs_config_requests_find(&nodes[0].runtime.requests, value.request_id)->client_digest, descriptor));
             lcs_config_coordinator_init(&nodes[0].coordinator, &nodes[0].runtime, &nodes[0].readiness);
             assert(!lcs_config_coordinator_recover(&nodes[0].coordinator));
             lcs_config_transactions_init(&nodes[0].transactions, &nodes[0].coordinator, 100);
@@ -716,6 +718,7 @@ static void test_proposal_reservation_order_and_timeout(void)
             }
             const lcs_config_request_record_t *record = lcs_config_requests_find(&nodes[0].runtime.requests, value.request_id);
             assert(record && !strcmp(record->value_digest, value.digest) && record->committed == !mode);
+            assert(!strcmp(record->client_digest, descriptor));
             assert(nodes[0].coordinator.completed_requests == (mode ? 1u : 3u) && !network_errors);
         }
         lcs_config_value_clear(&value); cleanup();

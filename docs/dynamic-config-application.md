@@ -1050,6 +1050,32 @@ admission. On quorum-only members it proves metadata admission, not backend work
 The complete client response/wait lifecycle and definition mutation commands still
 need integration; ordinary unknown/reserved facts remain conservative.
 
+## Originating client descriptors
+
+The internal origin submission API can seal a client descriptor in the same
+`requests.json` write as its original request identity, before PREPARE. Descriptor
+format 1 hashes sorted, compact, ASCII-escaped JSON containing `descriptor_version`,
+`request_id`, static `membership`, integer `base_revision`, `base_digest` and the
+exact ordered `argv` array. Arguments are bounded to 128 entries and 64 KiB total
+UTF-8 argument bytes including terminators. Empty argument strings are preserved;
+argument reordering produces a different descriptor even if the edit is equivalent.
+
+A retry with an omitted expected base must use the known request's original base
+when calculating its descriptor, rather than the latest learned revision. The
+stored value fingerprint alone cannot reconstruct a command after its base has
+advanced. Descriptor and value fingerprints must both match when reserving an
+already-known client request. This check does not authorize another proposal.
+
+Descriptors are local origin evidence, not peer messages or consensus proofs.
+Peer reservations, learned-only records and journals from formats 1/2 have no
+client descriptor. Existing records cannot acquire one retroactively. A future
+mutation endpoint receiving a retry without matching origin evidence must retain
+an unknown result and direct the client to status/origin lookup; it cannot assume
+that the arguments match or resubmit them. Learning/admission updates preserve an
+origin descriptor, and worker imports cannot change, erase or attach one to an
+existing identity. Record format 3 adds this evidence without changing peer wire
+versions. Public mutation commands and their wait/result handling remain pending.
+
 ## Client outcomes
 
 Every mutation carries an idempotent request ID and expected base revision/digest.

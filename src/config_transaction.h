@@ -137,6 +137,14 @@ int lcs_config_transactions_receive(lcs_config_transactions_t *transactions, siz
 int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
                                      const uint64_t instances[LCS_MAX_NODES],
                                      uint64_t id, const lcs_config_value_t *requested, uint64_t now_ms);
+/* Origin submission variant: reserve a canonical client descriptor digest in
+ * the SAME durable write as original intent, before PREPARE. Empty retains the
+ * internal/peer behavior. This evidence stays local; it is not sent to peers.
+ * Known IDs still require status lookup, never another proposal. */
+int lcs_config_transactions_propose_client(lcs_config_transactions_t *transactions,
+                                            const uint64_t instances[LCS_MAX_NODES],
+                                            uint64_t id, const lcs_config_value_t *requested,
+                                            const char *client_digest, uint64_t now_ms);
 /* Selected phase-two value; a decision is known only in DISTRIBUTING/COMPLETE. */
 const lcs_config_value_t *lcs_config_transactions_selected(const lcs_config_transactions_t *transactions);
 /* Pull one admitted peer's latest committed checkpoint, including revision gaps.

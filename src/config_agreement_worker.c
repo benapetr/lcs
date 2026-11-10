@@ -192,8 +192,8 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
         result.result = lcs_config_requests_apply(requests, agreement, job->admission_catalog, job->admission,
                                                     result.error, sizeof(result.error));
     else if (job->action == LCS_CONFIG_REQUEST_RESERVE)
-        result.result = lcs_config_requests_reserve(requests, agreement, job->revision,
-            job->parent_digest, job->value, result.error, sizeof(result.error));
+        result.result = lcs_config_requests_reserve_client(requests, agreement, job->revision,
+            job->parent_digest, job->value, job->client_digest, result.error, sizeof(result.error));
     else if (job->action == LCS_CONFIG_REQUEST_OBSERVE)
         result.result = lcs_config_requests_observe(requests, agreement, result.error, sizeof(result.error));
     else if (job->action == LCS_CONFIG_PREPARE)
@@ -276,7 +276,8 @@ static int start(lcs_config_agreement_worker_t *worker,
          strcmp(requests->member, agreement->member) || strcmp(requests->membership, agreement->membership) ||
          requests->count > LCS_CONFIG_REQUEST_HISTORY_MAX ||
          (job->action == LCS_CONFIG_REQUEST_RESERVE && (!job->value ||
-          !memchr(job->parent_digest, 0, sizeof(job->parent_digest)))))))
+          !memchr(job->parent_digest, 0, sizeof(job->parent_digest)) ||
+          !memchr(job->client_digest, 0, sizeof(job->client_digest)))))))
         return fail(err, err_len, "invalid request history job or recovery required");
     bool projection_job = job && job->action == LCS_CONFIG_PROJECTION;
     bool application_job = job && (job->action == LCS_CONFIG_APPLICATION_BEGIN ||

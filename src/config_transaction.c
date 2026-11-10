@@ -522,10 +522,15 @@ static int proposer_job(lcs_config_transactions_t *transactions, lcs_config_agre
     return result;
 }
 
-int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
-                                     const uint64_t instances[LCS_MAX_NODES],
-                                     uint64_t id, const lcs_config_value_t *requested, uint64_t now_ms)
+int lcs_config_transactions_propose_client(lcs_config_transactions_t *transactions,
+                                            const uint64_t instances[LCS_MAX_NODES],
+                                            uint64_t id, const lcs_config_value_t *requested,
+                                            const char *client_digest, uint64_t now_ms)
 {
+    if (!client_digest || (client_digest[0] && strnlen(client_digest, LCS_CONFIG_DIGEST_SIZE) != 64)) return -1;
+    for (size_t i = 0; client_digest[i]; i++)
+        if (!((client_digest[i] >= '0' && client_digest[i] <= '9') ||
+              (client_digest[i] >= 'a' && client_digest[i] <= 'f'))) return -1;
     lcs_config_network_proposal_t *proposer = &transactions->proposer;
     if (!instances || !requested || !transactions->instance || !id || id <= proposer->id ||
         now_ms > UINT64_MAX - LCS_CONFIG_TRANSFER_TIMEOUT_MS || !eligible(transactions) ||
@@ -561,6 +566,7 @@ int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
     proposer->phase = LCS_CONFIG_PROPOSER_RESERVING;
     lcs_config_agreement_job_t reservation = { .action = LCS_CONFIG_REQUEST_RESERVE,
         .revision = proposer->proposal.revision - 1, .value = &proposer->proposal.requested };
+    strcpy(reservation.client_digest, client_digest);
     memcpy(reservation.parent_digest, proposer->proposal.parent_digest, sizeof(reservation.parent_digest));
     char error[256];
     if (lcs_config_coordinator_start_requests(transactions->coordinator, &reservation, error, sizeof(error)))
@@ -570,6 +576,13 @@ int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
     }
     proposer->completion = transactions->coordinator->completed_requests + 1;
     return 0;
+}
+
+int lcs_config_transactions_propose(lcs_config_transactions_t *transactions,
+                                     const uint64_t instances[LCS_MAX_NODES],
+                                     uint64_t id, const lcs_config_value_t *requested, uint64_t now_ms)
+{
+    return lcs_config_transactions_propose_client(transactions, instances, id, requested, "", now_ms);
 }
 
 static bool matches(const lcs_config_transactions_t *transactions, size_t node, const lcs_config_tx_control_t *control)

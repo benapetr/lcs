@@ -31,6 +31,7 @@ typedef struct
     const lcs_config_application_t *admission_catalog; /* Borrowed until start returns. */
     const lcs_config_request_admission_t *admission; /* Trusted sealed same-process receipt. */
     bool initialize_requests; /* Explicit pristine-only authorization for OPEN. */
+    char client_digest[LCS_CONFIG_DIGEST_SIZE]; /* Origin descriptor for RESERVE; empty for peer intent. */
     uint64_t revision;
     char parent_digest[LCS_CONFIG_DIGEST_SIZE];
     uint64_t ballot;

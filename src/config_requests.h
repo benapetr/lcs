@@ -12,6 +12,7 @@ typedef struct
     char id[LCS_CONFIG_REQUEST_MAX + 1];
     uint64_t base_revision;
     char base_digest[LCS_CONFIG_DIGEST_SIZE], value_digest[LCS_CONFIG_DIGEST_SIZE];
+    char client_digest[LCS_CONFIG_DIGEST_SIZE]; /* Empty unless reserved by the originating client. */
     bool committed; /* Exact locally learned decision. */
     bool applied; /* Historical local admission completed, never inferred from FINISH. */
 } lcs_config_request_record_t;
@@ -67,6 +68,22 @@ const lcs_config_request_record_t *lcs_config_requests_find(const lcs_config_req
 int lcs_config_requests_reserve(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
                                   uint64_t expected_revision, const char *expected_digest,
                                   const lcs_config_value_t *requested, char *err, size_t err_len);
+/* Origin-only variant: persist the canonical client descriptor digest atomically
+ * with NEW intent. Nonempty digests are immutable, including their absence on
+ * existing peer/legacy records: never attach invented client evidence later.
+ * Exact matching retries return EXISTS, not permission to propose again. */
+int lcs_config_requests_reserve_client(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
+                                         uint64_t expected_revision, const char *expected_digest,
+                                         const lcs_config_value_t *requested, const char *client_digest,
+                                         char *err, size_t err_len);
+/* Hash exact ordered argv, request ID, static membership and normalized expected
+ * base. Callers must resolve an omitted base to the original stored base for a
+ * known ID, never to a later current revision. No journal I/O or retry authority.
+ * Bounds: 128 arguments, 64 KiB total argument bytes including terminators. */
+int lcs_config_requests_client_digest(const lcs_config_t *base, const char *id,
+                                        uint64_t expected_revision, const char *expected_digest,
+                                        int argc, const char *const *argv,
+                                        char digest[LCS_CONFIG_DIGEST_SIZE], char *err, size_t err_len);
 /* Only the current exact learned majority decision can become committed. No
  * acceptance/promise, revision comparison or timer proves commitment/admission. */
 int lcs_config_requests_observe(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
@@ -88,7 +105,8 @@ int lcs_config_requests_apply(lcs_config_requests_t *history, const lcs_config_a
 int lcs_config_requests_check_application(const lcs_config_requests_t *history,
                                             const lcs_config_application_t *application, char *err, size_t err_len);
 /* Same-host worker handoff, not network evidence. Import may append immutable
- * identities and advance committed bits; it cannot drop/reorder/regress history. */
+ * identities and advance committed/applied bits; it cannot drop/reorder/regress
+ * history or change an existing descriptor, including its absence. */
 int lcs_config_requests_export(const lcs_config_requests_t *history, char **document, size_t *length, char *err, size_t err_len);
 int lcs_config_requests_import(lcs_config_requests_t *history, const char *document, size_t length, char *err, size_t err_len);
 #endif

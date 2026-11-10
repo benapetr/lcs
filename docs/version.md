@@ -184,12 +184,15 @@ transfer failure. This interface carries definitions, not commit/vote authority.
 ## Request-fact journal record format
 
 The explicit `config_requests` core writes a private
-`requests.json` with record formats 1/2: `record_version`, local `member`, canonical
+`requests.json` with record formats 1/2/3: `record_version`, local `member`, canonical
 `membership`, a `requests` array and SHA-256 `checksum`. Entries contain
 `request_id`, integer `base_revision`, canonical `base_digest`/`value_digest`
 and boolean `committed`. Format 2 adds required boolean `applied`, which can only
-be true when committed is true. Readers accept format 1 with admission unknown
-(false) without rewriting it; subsequent legitimate writes use format 2.
+be true when committed is true. Format 3 adds required `client_digest`: either an
+empty string (client descriptor unknown) or a lowercase SHA-256 fingerprint.
+Readers accept formats 1/2 without inventing client evidence, and format 1 with
+admission unknown (false), without rewriting on read. Subsequent legitimate writes
+use format 3. A descriptor, including its absence, is immutable once recorded.
 IDs/base/value identities are immutable; worker imports may only append identities
 or advance committed/applied bits. The record is bounded to
 128 identities and 128 KiB with no automatic eviction. Existing/corrupt history
@@ -204,7 +207,7 @@ history can be created only with first-initialization authorization at pristine
 revision zero without promises/acceptances/learning. Pristine state alone is not
 authorization to recreate lost reservations. These are local reservation/decision
 and admission facts, not peer ownership evidence or cluster-wide client outcomes.
-Record format 2 and applied-response format 2 are deliberate additions; ordinary
+Record format 3 and applied-response format 2 are deliberate additions; ordinary
 local status, peer wire versions and release version stay unchanged. The transaction
 coordinator has an internal request-storage phase and separate completion counter;
 these are process-local bookkeeping and do not alter durable records or wire
