@@ -499,6 +499,31 @@ static void test_initialization_worker_refuses_existing_history(void)
     }
 }
 
+static void test_initialization_refuses_orphan_request_history(void)
+{
+    initialize();
+    assert(!lcs_config_store_write(&store, "requests.json", "{}", 2, error, sizeof(error)));
+    lcs_config_bootstrap_t bootstrap = bootstrap_for_test();
+    lcs_config_runtime_t runtime = {0};
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    forbid_parent_io = true;
+    assert(!lcs_config_agreement_worker_start_initialization(&worker, &runtime, &bootstrap,
+                                                            &config, true, error, sizeof(error)));
+    assert(await_initialization(&worker, &runtime) == -1);
+    forbid_parent_io = false;
+    assert(!runtime.base && runtime.agreement.poisoned);
+    assert(faccessat(store.directory_fd, "activation.json", F_OK, 0) == -1);
+    assert(faccessat(store.directory_fd, "agreement.json", F_OK, 0) == -1);
+    char *record; size_t length;
+    assert(!lcs_config_store_read(&store, "requests.json", &record, &length,
+                                  LCS_CONFIG_REQUEST_RECORD_MAX, error, sizeof(error)));
+    assert(length == 2 && !memcmp(record, "{}", 2)); free(record);
+    lcs_config_runtime_close(&runtime);
+    assert(!unlinkat(store.directory_fd, "requests.json", 0));
+    cleanup();
+}
+
 static lcs_config_barrier_round_t complete_barrier(const lcs_config_activation_t *intent,
                                                    const lcs_config_agreement_t *journal,
                                                    const lcs_config_application_t *catalog)
@@ -747,6 +772,7 @@ int main(void)
     test_initialization_worker_sync_failures();
     test_initialization_worker_cancel_and_stale();
     test_initialization_worker_refuses_existing_history();
+    test_initialization_refuses_orphan_request_history();
     test_all_member_barrier();
     test_barrier_limits_and_missing_history();
     test_barrier_worker();

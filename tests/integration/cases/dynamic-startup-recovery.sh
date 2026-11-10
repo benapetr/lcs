@@ -15,13 +15,29 @@ export LCS_RECOVERY_TRACE="$TEST_TMP/cleanup.trace"
 read -r -a fixture_flags <<<"$(pkg-config --cflags --libs jansson libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
     "$SCRIPT_DIR/../helpers/config_recovery_fixture.c" \
-    "$ROOT_DIR/src/"{config_activation,config_barrier,config_agreement,config_application,config_store,config_candidate,resource_config,config,util,source_allowlist}.c \
+    "$ROOT_DIR/src/"{config_requests,config_activation,config_barrier,config_agreement,config_application,config_store,config_candidate,resource_config,config,util,source_allowlist}.c \
     "${fixture_flags[@]}" -o "$TEST_TMP/fixture"
 for node in node1 node2 node3; do
     printf 'pre_stop = %s\npost_stop = %s\n' "$TEST_TMP/stop-hook" "$TEST_TMP/stop-hook" >>"$(node_config "$node")"
     "$TEST_TMP/fixture" "$(node_config "$node")"
+    # Recover existing history on two members; the older catalog on node2 has
+    # no request journal and must not acquire fabricated empty history.
+    if [[ "$node" != node2 ]]; then
+        "$TEST_TMP/fixture" "$(node_config "$node")" history
+        cp "$(node_config "$node").state/requests.json" "$TEST_TMP/$node-requests.json"
+    fi
     # Activated resource definitions must come from the journal, never edited INI.
     sed -i 's|127.0.0.200/32|127.0.0.203/32|' "$(node_config "$node")"
+done
+for node in node1 node3; do
+    # Corruption must fail before opening a Unix listener, without resetting history.
+    printf '{}\n' >"$(node_config "$node").state/requests.json"
+    if LCS_VIP_DRY_RUN=1 "$LCSD" -c "$(node_config "$node")" --no-syslog --no-timestamp >"$TEST_TMP/$node-invalid-history.log" 2>&1; then
+        die 'daemon accepted corrupt request history'
+    fi
+    [[ ! -S "$(node_socket "$node")" ]] || die 'listener opened with corrupt request history'
+    grep -Fq 'request history' "$TEST_TMP/$node-invalid-history.log" || die 'missing request recovery diagnostic'
+    cp "$TEST_TMP/$node-requests.json" "$(node_config "$node").state/requests.json"
 done
 start_node node1
 wait_for_socket node1
@@ -104,4 +120,9 @@ wait_until 35 'node2 admission after restart with missing projection' admitted n
 wait_for_quorum node2
 node_status_has node2 'vip1 127.0.0.202/32 dev=lo' || die 'restart loaded stale INI definitions'
 [[ -f "$(node_config node2).resources.json" ]] || die 'restart did not restore projection'
+
+for node in node1 node3; do
+    cmp "$TEST_TMP/$node-requests.json" "$(node_config "$node").state/requests.json" || die 'startup rewrote request history'
+done
+[[ ! -e "$(node_config node2).state/requests.json" ]] || die 'startup fabricated missing request history'
 log 'activated daemon recovery and restart regression passed'

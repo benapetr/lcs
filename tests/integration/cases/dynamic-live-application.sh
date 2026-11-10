@@ -8,7 +8,7 @@ prepare_cluster
 read -r -a fixture_flags <<<"$(pkg-config --cflags --libs jansson libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
     "$SCRIPT_DIR/../helpers/config_recovery_fixture.c" \
-    "$ROOT_DIR/src/"{config_activation,config_barrier,config_agreement,config_application,config_store,config_candidate,resource_config,config,util,source_allowlist}.c \
+    "$ROOT_DIR/src/"{config_requests,config_activation,config_barrier,config_agreement,config_application,config_store,config_candidate,resource_config,config,util,source_allowlist}.c \
     "${fixture_flags[@]}" -o "$TEST_TMP/fixture"
 for node in node1 node2 node3; do "$TEST_TMP/fixture" "$(node_config "$node")"; done
 start_node node1

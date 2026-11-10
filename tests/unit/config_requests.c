@@ -299,6 +299,73 @@ static void serialized_worker(void)
     assert(!lcs_config_agreement_open(&agreement, &store, &base, false, error, sizeof(error)));
     reopen(); lcs_config_value_clear(&value);
 }
+static void runtime_recovery(void)
+{
+    lcs_config_application_t application = {0};
+    lcs_config_runtime_t runtime = {0};
+    assert(!lcs_config_application_open(&application, &agreement, true, error, sizeof(error)));
+    lcs_config_value_t value = proposal("recovered-request");
+    assert(!reserve(&value)); learn(&value);
+    /* Crash after LEARN but before observation: do not invent a committed bit. */
+    forbid_sync = true;
+    assert(!lcs_config_runtime_open(&runtime, &store, &base, error, sizeof(error)));
+    assert(runtime.requires_recovery && runtime.requests.count == 1 && !runtime.requests.records[0].committed);
+    assert(runtime.requests.base == runtime.base && runtime.requests.store == &store);
+    lcs_config_runtime_close(&runtime); forbid_sync = false;
+    assert(!lcs_config_requests_observe(&history, &agreement, error, sizeof(error)));
+    lcs_config_value_clear(&value); value = proposal("accepted-request");
+    assert(!reserve(&value));
+    assert(!lcs_config_agreement_accept(&agreement, agreement.committed.digest, 64, &value, error, sizeof(error)));
+    char *original; size_t length;
+    assert(!lcs_config_requests_export(&history, &original, &length, error, sizeof(error)));
+    forbid_sync = true;
+    assert(!lcs_config_runtime_open(&runtime, &store, &base, error, sizeof(error)));
+    assert(runtime.requests.count == 2 && runtime.requests.records[0].committed && !runtime.requests.records[1].committed);
+    lcs_config_runtime_close(&runtime); forbid_sync = false;
+    for (unsigned mode = 0; mode < 5; mode++)
+    {
+        lcs_config_requests_t *bad = malloc(sizeof(*bad)); assert(bad); *bad = history;
+        if (mode == 0) bad->records[1].base_revision++;
+        if (mode == 1) memset(bad->records[1].base_digest, 'f', 64);
+        if (mode == 2) memset(bad->records[1].value_digest, 'f', 64);
+        if (mode == 3) memset(bad->records[0].value_digest, 'f', 64);
+        if (mode == 4) bad->records[1].committed = true;
+        char *document; size_t size;
+        assert(!lcs_config_requests_export(bad, &document, &size, error, sizeof(error))); free(bad);
+        assert(!lcs_config_store_write(&store, "requests.json", document, size, error, sizeof(error)));
+        forbid_sync = true;
+        assert(lcs_config_runtime_open(&runtime, &store, &base, error, sizeof(error)) < 0);
+        assert(strstr(error, "contradict") && !runtime.base && !runtime.requests.store);
+        forbid_sync = false;
+        char *after; size_t after_size;
+        assert(!lcs_config_store_read(&store, "requests.json", &after, &after_size, LCS_CONFIG_REQUEST_RECORD_MAX, error, sizeof(error)));
+        assert(size == after_size && !memcmp(document, after, size)); free(document); free(after);
+    }
+    assert(!lcs_config_store_write(&store, "requests.json", "{}", 2, error, sizeof(error)));
+    forbid_sync = true;
+    assert(lcs_config_runtime_open(&runtime, &store, &base, error, sizeof(error)) < 0 && !runtime.base);
+    forbid_sync = false;
+    assert(!lcs_config_store_write(&store, "requests.json", original, length, error, sizeof(error))); free(original);
+    assert(!renameat(store.directory_fd, "requests.json", store.directory_fd, "requests.saved"));
+    forbid_sync = true;
+    assert(!lcs_config_runtime_open(&runtime, &store, &base, error, sizeof(error)));
+    assert(runtime.requires_recovery && !runtime.requests.store); lcs_config_runtime_close(&runtime);
+    assert(faccessat(store.directory_fd, "requests.json", F_OK, 0) < 0 && errno == ENOENT);
+    forbid_sync = false;
+    assert(!symlinkat("requests.saved", store.directory_fd, "requests.json"));
+    assert(lcs_config_runtime_open(&runtime, &store, &base, error, sizeof(error)) < 0);
+    assert(!unlinkat(store.directory_fd, "requests.json", 0));
+    assert(!renameat(store.directory_fd, "requests.saved", store.directory_fd, "requests.json"));
+    assert(!renameat(store.directory_fd, "agreement.json", store.directory_fd, "agreement.saved"));
+    assert(!renameat(store.directory_fd, "application.json", store.directory_fd, "application.saved"));
+    forbid_sync = true;
+    assert(lcs_config_runtime_open(&runtime, &store, &base, error, sizeof(error)) < 0 && strstr(error, "orphan"));
+    forbid_sync = false;
+    assert(!renameat(store.directory_fd, "agreement.saved", store.directory_fd, "agreement.json"));
+    assert(!renameat(store.directory_fd, "application.saved", store.directory_fd, "application.json"));
+    lcs_config_value_clear(&value); lcs_config_application_close(&application);
+    assert(!unlinkat(store.directory_fd, "application.json", 0));
+}
 static void cleanup(void)
 {
     lcs_config_requests_close(&history); lcs_config_agreement_close(&agreement);
@@ -309,5 +376,6 @@ int main(void)
 {
     setup(); identities_and_decisions(); invalid_records(); failures_and_capacity(); cleanup();
     setup(); serialized_worker(); cleanup();
+    setup(); runtime_recovery(); cleanup();
     puts("durable request identity, decision facts, serialized worker and sync-failure unit tests passed"); return 0;
 }

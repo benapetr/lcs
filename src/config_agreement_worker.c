@@ -134,7 +134,12 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
         int missing_barrier = lcs_config_store_read(agreement->store, "barrier.json",
             &barrier_record, &barrier_length, LCS_CONFIG_BARRIER_MAX, result.error, sizeof(result.error));
         free(barrier_record);
-        if (!recovered.base || missing_barrier != 1 ||
+        char *request_record = NULL;
+        size_t request_length;
+        int missing_requests = lcs_config_store_read(agreement->store, "requests.json",
+            &request_record, &request_length, LCS_CONFIG_REQUEST_RECORD_MAX, result.error, sizeof(result.error));
+        free(request_record);
+        if (!recovered.base || missing_barrier != 1 || missing_requests != 1 ||
             lcs_config_activation_open(&recovered.activation, agreement->store,
                 initialization->base, recovered.base, allow_initialize,
                 result.error, sizeof(result.error)) ||
@@ -344,7 +349,8 @@ int lcs_config_agreement_worker_start_requests(lcs_config_agreement_worker_t *wo
 
 static bool empty_runtime(const lcs_config_runtime_t *runtime)
 {
-    return !runtime->base && !runtime->barrier.store && !runtime->barrier.poisoned &&
+    return !runtime->requests.store && !runtime->requests.base && !runtime->requests.count &&
+        !runtime->requests.poisoned && !runtime->base && !runtime->barrier.store && !runtime->barrier.poisoned &&
         !runtime->agreement.store && !runtime->application.store &&
         !runtime->activation.store && !runtime->agreement.committed.document &&
         !runtime->agreement.accepted.document && !runtime->application.applied.document &&

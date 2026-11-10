@@ -4,6 +4,7 @@
 #define LCS_CONFIG_RUNTIME_H
 
 #include "config_barrier.h"
+#include "config_requests.h"
 
 /* Daemon-owned recovery boundary. The base copy remains immutable while durable
  * handles are open, even when the live INI resource arrays are reloaded. Opening
@@ -17,13 +18,16 @@ typedef struct
     lcs_config_application_t application;
     lcs_config_activation_t activation;
     lcs_config_barrier_t barrier;
+    lcs_config_requests_t requests; /* Existing journal only; absent means outcomes unknown. */
     bool requires_recovery;
 } lcs_config_runtime_t;
 
 /* Call after locking storage, before bootstrap refresh or opening listeners.
- * Missing both records means legacy mode. Partial/corrupt/foreign records fail.
- * Valid records are retained for activation-aware recovery; the current legacy-mode
- * daemon refuses to run them until that protocol/application path is integrated. */
+ * No distributed records means legacy mode; orphan request history never does.
+ * Existing request history is recovered without writes against the frozen base.
+ * Missing history remains unavailable for mutation/retry authorization, preserving
+ * upgrade compatibility for older catalogs without inventing empty history.
+ * Partial/corrupt/foreign or contradictory records fail before listeners open. */
 int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                              lcs_config_store_t *store, const lcs_config_t *cfg,
                              char *err, size_t err_len);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Test-only interrupted activated-state generator. Not an activation command. */
 #include "config_barrier.h"
+#include "config_requests.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +12,8 @@ static char error[256];
 int main(int argc, char **argv)
 {
     bool advance = argc == 3 && !strcmp(argv[2], "advance");
-    if (argc != 2 && !advance) return 2;
+    bool history = argc == 3 && !strcmp(argv[2], "history");
+    if (argc != 2 && !advance && !history) return 2;
     lcs_config_t *cfg = calloc(5, sizeof(*cfg));
     if (!cfg) return 1;
     CHECK(lcs_config_load(argv[1], &cfg[0], error, sizeof(error)));
@@ -23,8 +25,16 @@ int main(int argc, char **argv)
     lcs_config_barrier_round_t round = {0};
     lcs_config_barrier_t barrier = {0};
     CHECK(lcs_config_store_open(&store, directory, error, sizeof(error)));
-    CHECK(lcs_config_activation_open(&activation, &store, &cfg[0], &cfg[1], true, error, sizeof(error)));
+    CHECK(lcs_config_activation_open(&activation, &store, &cfg[0], &cfg[1], !history, error, sizeof(error)));
     CHECK(lcs_config_activation_resume(&activation, &agreement, &application, error, sizeof(error)));
+    if (history)
+    {
+        lcs_config_requests_t requests = {0};
+        CHECK(lcs_config_requests_open(&requests, &store, &cfg[1], true, error, sizeof(error)));
+        CHECK(lcs_config_requests_observe(&requests, &agreement, error, sizeof(error)));
+        lcs_config_requests_close(&requests);
+        goto done;
+    }
     if (advance)
     {
         /* A stopped quorum-only fixture relays a pre-decided checkpoint when
@@ -77,6 +87,7 @@ int main(int argc, char **argv)
         }
         lcs_config_value_clear(&value); free(document);
     }
+done:
     lcs_config_barrier_close(&barrier);
     lcs_config_application_close(&application);
     lcs_config_agreement_close(&agreement);

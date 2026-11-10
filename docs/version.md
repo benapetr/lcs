@@ -190,10 +190,12 @@ The explicit `config_requests` core writes a private
 and boolean `committed`. IDs/base/value identities are immutable; worker imports
 may only append identities or advance committed bits. The record is bounded to
 128 identities and 128 KiB with no automatic eviction. Existing/corrupt history
-is never replaced by initialization. The daemon does not create/read this record
-until startup and transaction integration is implemented. Reservation and decision
-observation have explicit jobs on the shared storage worker; they do not yet run
-automatically in the daemon. These are local
+is never replaced by initialization. Startup reads an existing record against the
+frozen base and rejects orphaned, unsafe, corrupt, foreign or locally contradictory
+history. Older catalogs with no record remain readable with history unavailable;
+startup does not create empty history or infer missed outcomes. Reservation and
+decision observation have explicit jobs on the shared storage worker; initialization
+and transaction submission do not yet run automatically in the daemon. These are local
 reservation/decision facts, not peer evidence or final client outcomes. There is
 no wire, CLI, existing-record or release-version change.
 

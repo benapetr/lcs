@@ -465,18 +465,29 @@ resource application until safe generation/owner adapters are implemented.
 ## Local durable request-fact journal core
 
 `config_requests.c` adds an explicit storage primitive for future request tracking.
-It is not automatically opened or written by the daemon yet, and it does not
-enable request-status or mutation commands. The shared nonblocking storage worker
-now supports reservation and learned-decision observation for an explicitly opened
+The daemon recovers an existing journal before opening listeners; it does not
+automatically create or update it, or enable request-status or mutation commands.
+The shared nonblocking storage worker now supports reservation and learned-decision observation for an explicitly opened
 history. These jobs exclude agreement/application writers on the same worker and
 publish monotonic history only after a complete result and successful child exit.
 The parent performs no journal writes. Logical conflicts/capacity responses leave
 handles usable; uncertain writes, cancellation or incomplete handoff poison both
 history and agreement until the child is reaped and disk state is recovered.
 
-History initialization/recovery at daemon startup and transaction submission are
-still unwired. Callers must keep both handles unchanged until completion, use the
-same worker for every store writer, and explicitly authorize missing-history
+Startup recovery binds existing history to the frozen static base, rejects
+unsafe/corrupt/foreign files and orphan history without agreement/application
+state, and checks facts against the current learned and accepted values. A
+journal ahead of the learned state, a mismatched current decision, or an accepted
+value reusing an immutable identity fails startup without rewriting the history.
+Older entries behind checkpoint gaps cannot be verified from the current value
+alone; recovery retains them without inventing missed outcomes. A crash after
+learning but before history observation does not silently upgrade a reserved bit.
+
+Older catalogs without `requests.json` remain recoverable, with history unavailable.
+Recovery never creates an empty file or authorizes identifier reuse from absence.
+Missing-history initialization, checkpoint-history recovery and transaction
+submission are still unwired. Callers must keep both handles unchanged until
+completion, use the same worker for every store writer, and explicitly authorize missing-history
 initialization. An inherited directory-lock descriptor alone cannot serialize
 multiple writer children.
 
@@ -501,7 +512,7 @@ missed request outcomes from a higher revision number alone.
 The core currently holds 128 identities with a 128-KiB record bound. It never
 evicts an observed ID: capacity refuses new entries while exact retries remain
 readable/idempotent. This is an internal storage bound, not a limit imposed on
-current daemon operation; the daemon does not use this file yet. Before exposing
+current daemon operation; transaction submission does not use this file yet. Before exposing
 mutation commands, retention/compaction and missing-history behavior must be
 integrated explicitly rather than silently forgetting identifiers.
 

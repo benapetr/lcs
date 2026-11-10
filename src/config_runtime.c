@@ -8,12 +8,53 @@
 
 void lcs_config_runtime_close(lcs_config_runtime_t *runtime)
 {
+    lcs_config_requests_close(&runtime->requests);
     lcs_config_barrier_close(&runtime->barrier);
     lcs_config_application_close(&runtime->application);
     lcs_config_agreement_close(&runtime->agreement);
     lcs_config_activation_close(&runtime->activation);
     free(runtime->base);
     memset(runtime, 0, sizeof(*runtime));
+}
+
+/* Old catalogs predate request tracking. Missing history is unknown, never a
+ * new empty history. A present journal must agree with all locally verifiable
+ * facts; historical checkpoint gaps cannot reconstruct unobserved decisions. */
+static int recover_requests(lcs_config_runtime_t *runtime, lcs_config_store_t *store,
+                              int missing, char *err, size_t err_len)
+{
+    if (missing)
+        return 0;
+    if (lcs_config_requests_open(&runtime->requests, store, runtime->base, false, err, err_len))
+        return -1;
+    const lcs_config_agreement_t *agreement = &runtime->agreement;
+    for (size_t i = 0; i < runtime->requests.count; i++)
+    {
+        const lcs_config_request_record_t *r = &runtime->requests.records[i];
+        const lcs_config_value_t *committed = &agreement->committed;
+        bool current_id = !strcmp(r->id, committed->request_id);
+        if (r->base_revision > committed->revision ||
+            (r->base_revision == committed->revision &&
+             (r->committed || strcmp(r->base_digest, committed->digest))) ||
+            ((current_id || (r->committed && r->base_revision + 1 == committed->revision)) &&
+             (r->base_revision + 1 != committed->revision ||
+              strcmp(r->id, committed->request_id) || strcmp(r->base_digest, agreement->parent_digest) ||
+              strcmp(r->value_digest, committed->digest))))
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: request history contradicts the learned journal; recovery required");
+            return -1;
+        }
+        if (agreement->accepted.document && !strcmp(r->id, agreement->accepted.request_id) &&
+            (r->base_revision != committed->revision || strcmp(r->base_digest, committed->digest) ||
+             strcmp(r->value_digest, agreement->accepted.digest)))
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: accepted request contradicts its immutable identity; recovery required");
+            return -1;
+        }
+    }
+    return 0;
 }
 
 int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
@@ -25,6 +66,12 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
      * malformed or unsafe file is not evidence of a never-initialized node. */
     char *record = NULL;
     size_t length;
+    int requests = lcs_config_store_read(store, "requests.json", &record, &length,
+                                          LCS_CONFIG_REQUEST_RECORD_MAX, err, err_len);
+    free(record);
+    record = NULL;
+    if (requests < 0)
+        return -1;
     int barrier = lcs_config_store_read(store, "barrier.json", &record, &length,
                                         LCS_CONFIG_BARRIER_MAX, err, err_len);
     free(record);
@@ -60,6 +107,8 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
         if (!result && !barrier)
             result = lcs_config_barrier_open(&runtime->barrier, &runtime->activation,
                 &runtime->agreement, &runtime->application, NULL, err, err_len);
+        if (!result)
+            result = recover_requests(runtime, store, requests, err, err_len);
         if (result)
         {
             lcs_config_runtime_close(runtime);
@@ -86,7 +135,15 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
     if (catalog < 0)
         return -1;
     if (journal == 1 && catalog == 1)
+    {
+        if (!requests)
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: orphan request history without agreement/application state; recovery required");
+            return -1;
+        }
         return 0;
+    }
     runtime->base = malloc(sizeof(*runtime->base));
     if (!runtime->base)
     {
@@ -98,7 +155,8 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
     if (lcs_config_agreement_open(&runtime->agreement, store, runtime->base,
                                   false, err, err_len) ||
         lcs_config_application_open(&runtime->application, &runtime->agreement,
-                                    false, err, err_len))
+                                    false, err, err_len) ||
+        recover_requests(runtime, store, requests, err, err_len))
     {
         lcs_config_runtime_close(runtime);
         return -1;
