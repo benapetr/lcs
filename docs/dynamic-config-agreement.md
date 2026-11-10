@@ -598,10 +598,25 @@ rejection outcomes: an absent entry, a reserved-only entry or an unobserved
 intermediate decision remains uncertain. Checkpoint gaps cannot reconstruct
 missed request outcomes from a higher revision number alone.
 
+After actual local application admission and its final handoff, the manager now
+persists an `applied` receipt through the same writer. Its trusted same-process
+receipt binds the exact attempt/revision/digest; the storage job also requires a
+healthy caught-up applied catalog without pending work and the exact learned
+majority decision. FINISH, timers, higher revisions and already-current shortcuts
+cannot authorize a receipt. Missing history remains missing. Interrupted writes
+retain ordinary poisoning/reaping rules and never rewrite a known decision.
+
+Request record format 2 adds a monotonic `applied` boolean (which requires
+`committed`). Format 1 remains readable with unknown admission, without read-time
+rewriting or inference from the catalog. Imports cannot regress either bit.
+Recovery rejects receipts ahead of or conflicting with the durable applied
+catalog. Historical local admission is distinct from current resource health,
+all-peer acknowledgement and the unfinished full client wait/response lifecycle.
+
 The core currently holds 128 identities with a 128-KiB record bound. It never
 evicts an observed ID: capacity refuses new entries while exact retries remain
 readable/idempotent. This is an internal storage bound, not a limit imposed on
-current daemon operation; transaction submission does not use this file yet. Before exposing
+current legacy INI operation. Explicit activated transactions use this bound. Before exposing
 mutation commands, retention/compaction and missing-history behavior must be
 integrated explicitly rather than silently forgetting identifiers.
 
@@ -610,7 +625,7 @@ foreign existing state is never reset. A newly initialized empty record says
 nothing about earlier requests. Atomic replacement uses private mode 0600,
 file sync, rename and directory sync. Write uncertainty poisons the handle until
 disk reopen. Worker export/import is same-host state transfer only; import can
-append entries or advance committed bits, but cannot truncate, reorder, change
+append entries or advance committed/applied bits, but cannot truncate, reorder, change
 identities or regress confirmed decisions. Invalid or regressive imports poison the handle
 without replacing its last in-memory records.
 

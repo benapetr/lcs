@@ -146,7 +146,11 @@ Read published local request facts from daemon memory, also available with
 .BR \-\-json .
 History is available, unavailable, or recovery-required. A committed request has
 an exact recorded consensus decision; it does not imply resource application or
-final client success. A reserved request's eventual outcome is unknown. Unknown
+final client success. An applied request additionally records completed local
+configuration admission, persisted after the handoff. It is historical completion,
+not current resource health or an acknowledgement from every peer. Quorum-only
+members record metadata admission, never backend execution. A reserved request's
+eventual outcome is unknown. Unknown
 is not rejection, abort or permission to reuse its ID. The query performs no file
 I/O, peer query, initialization or proposal retry and remains available during
 recovery and application transitions. IDs use 1-63 letters, digits, underscores,

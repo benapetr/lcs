@@ -291,11 +291,20 @@ int lcs_config_coordinator_start_requests(lcs_config_coordinator_t *coordinator,
         coordinator->phase != LCS_CONFIG_COORD_READY || !job ||
         coordinator->completed_requests == UINT64_MAX ||
         (job->action != LCS_CONFIG_REQUEST_OPEN && job->action != LCS_CONFIG_REQUEST_RESERVE &&
-         job->action != LCS_CONFIG_REQUEST_OBSERVE) || job->initialize_requests)
+         job->action != LCS_CONFIG_REQUEST_OBSERVE && job->action != LCS_CONFIG_REQUEST_APPLY) || job->initialize_requests)
         return -1;
     lcs_config_runtime_t *runtime = coordinator->runtime;
     if (!lcs_config_barrier_valid(&runtime->barrier, &runtime->activation,
                                     &runtime->agreement, &runtime->application))
+        return -1;
+    if (job->action == LCS_CONFIG_REQUEST_APPLY &&
+        (coordinator->application_owner || job->admission_catalog != &runtime->application ||
+         !job->admission || !job->admission->issuer || !job->admission->attempt ||
+         job->admission->revision != runtime->agreement.committed.revision ||
+         !memchr(job->admission->digest, 0, sizeof(job->admission->digest)) ||
+         strcmp(job->admission->digest, runtime->agreement.committed.digest) ||
+         runtime->application.pending.document ||
+         !lcs_config_value_equal(&runtime->application.applied, &runtime->agreement.committed)))
         return -1;
     if (job->action == LCS_CONFIG_REQUEST_RESERVE)
     {
@@ -402,6 +411,14 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
         }
         if (request_job)
         {
+            if (runtime->requests.store &&
+                lcs_config_requests_check_application(&runtime->requests, &runtime->application,
+                    coordinator->error, sizeof(coordinator->error)))
+            {
+                runtime->requests.poisoned = true;
+                lcs_config_coordinator_abort(coordinator, "request outcome contradicts applied catalog; recovery required");
+                return -1;
+            }
             coordinator->last_request_result = operation;
             coordinator->completed_requests++;
         }

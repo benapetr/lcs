@@ -21,6 +21,7 @@ static void clear_target(lcs_config_reconcile_t *reconcile)
     lcs_config_value_clear(&reconcile->value);
     memset(&reconcile->plan, 0, sizeof(reconcile->plan));
     reconcile->completion = 0;
+    reconcile->admission_completed = false;
 }
 
 static int recovery(lcs_config_reconcile_t *reconcile, const char *message)
@@ -184,9 +185,25 @@ int lcs_config_reconcile_process(lcs_config_reconcile_t *reconcile)
         coordinator->application_owner = NULL;
         reconcile->phase = LCS_CONFIG_RECONCILE_DONE;
         if (reconcile->ops.complete_admission) reconcile->ops.complete_admission(reconcile->context);
+        reconcile->admission_completed = true;
         return 1;
     }
     reconcile->phase++;
+    return 0;
+}
+
+int lcs_config_reconcile_admission_receipt(const lcs_config_reconcile_t *reconcile,
+                                            lcs_config_request_admission_t *receipt)
+{
+    if (!receipt || !healthy(reconcile) || reconcile->phase != LCS_CONFIG_RECONCILE_DONE ||
+        !reconcile->admission_completed || !reconcile->attempt || !reconcile->value.revision ||
+        reconcile->coordinator->application_owner || reconcile->coordinator->phase != LCS_CONFIG_COORD_READY ||
+        reconcile->coordinator->storage.pid > 0 || reconcile->coordinator->runtime->application.pending.document ||
+        !lcs_config_value_equal(&reconcile->value, &reconcile->coordinator->runtime->application.applied) ||
+        !lcs_config_value_equal(&reconcile->value, &reconcile->coordinator->runtime->agreement.committed)) return -1;
+    *receipt = (lcs_config_request_admission_t){.issuer = reconcile, .attempt = reconcile->attempt,
+        .revision = reconcile->value.revision};
+    memcpy(receipt->digest, reconcile->value.digest, sizeof(receipt->digest));
     return 0;
 }
 

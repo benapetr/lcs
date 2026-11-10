@@ -17,9 +17,11 @@ applied and pending revisions/digests, recovery state, admission and cleanup
 errors. Peer entries remain advisory preparation metadata. Dynamic definition
 commands remain unavailable.
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
-inspect a request's published local reservation/commit facts. `committed` means
+inspect a request's published local reservation/commit/admission facts. `committed` means
 its consensus decision was recorded, not resource application or final client
-success. `reserved` leaves its eventual outcome unknown; `unknown` is not rejection,
+success. `applied` records that this node actually completed configuration admission
+and persisted its receipt; it is historical completion, not current resource health
+or an acknowledgement from every peer. `reserved` leaves its eventual outcome unknown; `unknown` is not rejection,
 abort or permission to reuse the ID. Missing/poisoned history is identified
 explicitly. This read-only query remains available during recovery and transitions;
 see [request facts](resource-json.md#inspecting-a-requests-local-facts).

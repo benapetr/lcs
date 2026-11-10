@@ -112,6 +112,8 @@ int lcs_config_coordinator_start_projection(lcs_config_coordinator_t *coordinato
  * new ID requires voting eligibility and a valid dynamic successor. Known IDs
  * can return EXISTS/CONFLICT while application lags; that never resubmits them.
  * OBSERVE records the current learned decision even during application recovery.
+ * APPLY requires an exact completed-admission receipt and caught-up catalog with
+ * no application owner; it records historical local admission, not current health.
  * A durable barrier is mandatory for every action. Completion uses its own
  * counter/result and never claims voting, application, admission or client success.
  * Failure/cancellation retains ordinary poisoning and child-reaping rules. */

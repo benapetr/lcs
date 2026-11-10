@@ -140,7 +140,14 @@ node_status_has node2 'vip1 127.0.0.202/32 dev=lo' || die 'restart loaded stale 
 [[ -f "$(node_config node2).resources.json" ]] || die 'restart did not restore projection'
 
 for node in node1 node3; do
-    cmp "$TEST_TMP/$node-requests.json" "$(node_config "$node").state/requests.json" || die 'startup rewrote request history'
+    python3 - "$TEST_TMP/$node-requests.json" "$(node_config "$node").state/requests.json" <<'PYTEST'
+import json, sys
+old, new = (json.load(open(p)) for p in sys.argv[1:])
+assert old['requests'][0]['applied'] is False and new['requests'][0]['applied'] is True
+new['requests'][0]['applied'] = False
+assert old['requests'] == new['requests']
+PYTEST
+    "$LCS" -s "$(node_socket "$node")" --json config request-status recovery-3 | python3 -c 'import json,sys; assert json.load(sys.stdin)["state"] == "applied"'
 done
 [[ ! -e "$(node_config node2).state/requests.json" ]] || die 'startup fabricated missing request history'
 log 'activated daemon recovery and restart regression passed'

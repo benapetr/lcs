@@ -22,11 +22,14 @@ typedef enum
     LCS_CONFIG_REQUEST_RESERVE = 9,
     LCS_CONFIG_REQUEST_OBSERVE = 10,
     LCS_CONFIG_REQUEST_OPEN = 11,
+    LCS_CONFIG_REQUEST_APPLY = 12,
 } lcs_config_agreement_action_t;
 
 typedef struct
 {
     lcs_config_agreement_action_t action;
+    const lcs_config_application_t *admission_catalog; /* Borrowed until start returns. */
+    const lcs_config_request_admission_t *admission; /* Trusted sealed same-process receipt. */
     bool initialize_requests; /* Explicit pristine-only authorization for OPEN. */
     uint64_t revision;
     char parent_digest[LCS_CONFIG_DIGEST_SIZE];
@@ -113,8 +116,10 @@ int lcs_config_agreement_worker_open_requests(lcs_config_agreement_worker_t *wor
 /* Reserve/observe through the SAME serialized writer. History must already be
  * explicitly opened and bound to this agreement's store/static base. RESERVE
  * uses revision/parent_digest as expected base and value as requested successor.
- * OBSERVE records only the current learned majority decision. Keep both handles
- * unchanged until reaped. Success publishes only journal facts, not client success.
+ * OBSERVE records only the current learned majority decision. APPLY records an
+ * exact completed-admission receipt using the borrowed admission catalog; it never
+ * infers completion from catalog FINISH. Keep all handles/catalogs unchanged
+ * until reaped. Success publishes only journal facts, not client success.
  * Uncertain persistence/cancellation poisons both handles; recover after reaping.
  * This API does not initialize missing history or submit agreement proposals. */
 int lcs_config_agreement_worker_start_requests(lcs_config_agreement_worker_t *worker,

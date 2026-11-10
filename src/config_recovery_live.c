@@ -284,6 +284,22 @@ static void complete_admission(void *context)
     live->synchronizing = false; live->admitted = true;
 }
 
+int lcs_config_recovery_live_admission_receipt(const lcs_config_recovery_live_t *live,
+                                                lcs_config_request_admission_t *receipt)
+{
+    if (!live || !receipt || !live->prepared || !live->admitted || !live->attempt || !live->recovery ||
+        live->recovery->phase != LCS_CONFIG_RECOVERY_COMPLETE || live->recovery->attempt != live->attempt ||
+        live->recovery->coordinator != &g_state.config_coordinator || g_state.config_coordinator.failed ||
+        g_state.config_coordinator.closing || g_state.config_coordinator.application_owner ||
+        g_state.config_coordinator.phase != LCS_CONFIG_COORD_READY || g_state.config_coordinator.storage.pid > 0 ||
+        g_state.config_runtime.application.pending.document ||
+        !lcs_config_value_equal(&g_state.config_runtime.application.applied, &g_state.config_runtime.agreement.committed) ||
+        strcmp(live->digest, g_state.config_runtime.application.applied.digest)) return -1;
+    *receipt = (lcs_config_request_admission_t){.issuer = live, .attempt = live->attempt,
+        .revision = g_state.config_runtime.application.applied.revision};
+    memcpy(receipt->digest, live->digest, sizeof(receipt->digest)); return 0;
+}
+
 int lcs_config_recovery_live_begin_admission(lcs_config_recovery_live_t *live, char *err, size_t err_len)
 {
     if (!live || !live->prepared || live->admitted || live->synchronizing || !live->recovery ||

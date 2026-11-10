@@ -1028,6 +1028,28 @@ The same case with `LCS_IT_RESTART_DURING_APPLICATION=1` stops a full member whi
 its projection is blocked, then verifies pending-catalog restart recovery against
 the other full member's retained live owner receipt.
 
+## Durable local admission receipts
+
+After an actual live ADMIT callback and final sequencer handoff, the reconciler
+can issue a same-process receipt bound to its exact attempt, revision and complete
+value digest. Startup recovery issues the equivalent receipt only after its own
+fresh generation/restart/quorum admission finishes. FINISH and already-current
+catalog shortcuts cannot issue these receipts. A newer value or blocked/stopped
+attempt cannot borrow another attempt's completion.
+
+The daemon manager persists this receipt through the same request-history writer
+before reporting its application cycle complete. A crash before that publication
+leaves the request's admission outcome unknown; a crash after durable publication
+retains a true historical completion fact. Later resource failure, restart cleanup
+or a newer configuration does not undo that earlier fact. Request history whose
+admission lies ahead of, or conflicts with, its applied catalog fails recovery.
+
+`lcs config request-status ID` can report `applied` for this local receipt. It does
+not claim current resource availability or that every peer acknowledged final
+admission. On quorum-only members it proves metadata admission, not backend work.
+The complete client response/wait lifecycle and definition mutation commands still
+need integration; ordinary unknown/reserved facts remain conservative.
+
 ## Client outcomes
 
 Every mutation carries an idempotent request ID and expected base revision/digest.

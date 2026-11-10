@@ -259,6 +259,8 @@ static void test_order_and_blocked_barriers(void)
     wait_owners = false; wait_admit = true;
     until(LCS_CONFIG_RECONCILE_ADMIT);
     assert(installed == 1 && runtime.application.applied.revision == 1 && !runtime.application.pending.document);
+    lcs_config_request_admission_t receipt;
+    assert(lcs_config_reconcile_admission_receipt(&reconcile, &receipt) < 0);
     assert(coordinator.completed_votes == 0 && coordinator.completed_applications == 2);
     assert(!lcs_config_coordinator_can_vote(&coordinator));
     assert(!tick() && !admitted);
@@ -269,6 +271,8 @@ static void test_order_and_blocked_barriers(void)
     assert(!lcs_config_reconcile_retry(&reconcile));
     until(LCS_CONFIG_RECONCILE_DONE);
     assert(admitted == 1 && lcs_config_coordinator_can_vote(&coordinator));
+    assert(!lcs_config_reconcile_admission_receipt(&reconcile, &receipt));
+    assert(receipt.attempt == reconcile.attempt && !strcmp(receipt.digest, first.digest));
     assert(count == 5);
     const unsigned expected[] = {LCS_CONFIG_RECONCILE_QUIESCE, LCS_CONFIG_RECONCILE_DRAIN,
         LCS_CONFIG_RECONCILE_OWNERS, LCS_CONFIG_RECONCILE_INSTALL, LCS_CONFIG_RECONCILE_ADMIT};
@@ -276,6 +280,7 @@ static void test_order_and_blocked_barriers(void)
         assert(steps[i] == expected[i]);
     assert(!lcs_config_reconcile_start(&reconcile)); /* Already current: no storage/backend work. */
     assert(reconcile.phase == LCS_CONFIG_RECONCILE_DONE && count == 5);
+    assert(lcs_config_reconcile_admission_receipt(&reconcile, &receipt) < 0);
     lcs_config_value_clear(&first); cleanup();
 }
 

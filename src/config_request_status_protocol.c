@@ -21,7 +21,7 @@ static int fixed(lcs_buf_reader_t *reader, char *out, size_t width)
 }
 static bool valid(const lcs_config_request_view_t *view)
 {
-    if (!name_valid(view->id) || view->history > LCS_CONFIG_HISTORY_RECOVERY || view->state > LCS_CONFIG_REQUEST_COMMITTED) return false;
+    if (!name_valid(view->id) || view->history > LCS_CONFIG_HISTORY_RECOVERY || view->state > LCS_CONFIG_REQUEST_APPLIED) return false;
     if (view->state == LCS_CONFIG_REQUEST_UNKNOWN)
         return !view->base_revision && !memcmp(view->base_digest, (char[65]){0}, 65) &&
             !memcmp(view->value_digest, (char[65]){0}, 65);
@@ -48,7 +48,7 @@ int lcs_config_request_view_encode(const lcs_config_request_view_t *view, void *
 {
     if (!valid(view)) return -1;
     lcs_buf_writer_t writer; lcs_buf_writer_init(&writer, payload, cap);
-    if (lcs_buf_put_u16(&writer, LCS_CONFIG_REQUEST_STATUS_FORMAT) || lcs_buf_put_u8(&writer, view->history) ||
+    if (lcs_buf_put_u16(&writer, view->state == LCS_CONFIG_REQUEST_APPLIED ? LCS_CONFIG_REQUEST_STATUS_APPLIED_FORMAT : LCS_CONFIG_REQUEST_STATUS_FORMAT) || lcs_buf_put_u8(&writer, view->history) ||
         lcs_buf_put_u8(&writer, view->state) || lcs_buf_put_fixed_string(&writer, view->id, sizeof(view->id)) ||
         lcs_buf_put_u64(&writer, view->base_revision) ||
         lcs_buf_put_fixed_string(&writer, view->base_digest, sizeof(view->base_digest)) ||
@@ -59,10 +59,10 @@ int lcs_config_request_view_decode(const void *payload, size_t length, lcs_confi
 {
     lcs_buf_reader_t reader; lcs_buf_reader_init(&reader, payload, length);
     uint16_t format; lcs_config_request_view_t value = {0};
-    if (lcs_buf_get_u16(&reader, &format) || format != LCS_CONFIG_REQUEST_STATUS_FORMAT ||
+    if (lcs_buf_get_u16(&reader, &format) || (format != LCS_CONFIG_REQUEST_STATUS_FORMAT && format != LCS_CONFIG_REQUEST_STATUS_APPLIED_FORMAT) ||
         lcs_buf_get_u8(&reader, &value.history) || lcs_buf_get_u8(&reader, &value.state) ||
         fixed(&reader, value.id, sizeof(value.id)) || lcs_buf_get_u64(&reader, &value.base_revision) ||
         fixed(&reader, value.base_digest, sizeof(value.base_digest)) ||
-        fixed(&reader, value.value_digest, sizeof(value.value_digest)) || reader.off != reader.len || !valid(&value)) return -1;
+        fixed(&reader, value.value_digest, sizeof(value.value_digest)) || reader.off != reader.len || !valid(&value) || (value.state == LCS_CONFIG_REQUEST_APPLIED && format != LCS_CONFIG_REQUEST_STATUS_APPLIED_FORMAT)) return -1;
     *view = value; return 0;
 }

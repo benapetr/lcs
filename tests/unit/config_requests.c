@@ -151,11 +151,11 @@ static void invalid_records(void)
         assert(!strcmp(scratch->records[0].value_digest, history.records[0].value_digest));
         free(document); json_decref(root);
     }
-    for (unsigned mode = 0; mode < 13; mode++)
+    for (unsigned mode = 0; mode < 16; mode++)
     {
         json_error_t parser; json_t *root = json_loadb(original, length, 0, &parser); assert(root);
         json_t *records = json_object_get(root, "requests"), *entry = json_array_get(records, 0);
-        if (mode == 0) json_object_set_new(root, "record_version", json_integer(2));
+        if (mode == 0) json_object_set_new(root, "record_version", json_integer(3));
         if (mode == 1) json_object_set_new(root, "unknown", json_true());
         if (mode == 2) json_array_append(records, entry);
         if (mode == 3) json_object_set_new(entry, "request_id", json_string("bad/id"));
@@ -167,6 +167,9 @@ static void invalid_records(void)
         if (mode == 9) json_object_set_new(root, "membership", json_string("foreign"));
         if (mode == 10) for (size_t i = 0; i < LCS_CONFIG_REQUEST_HISTORY_MAX; i++) json_array_append(records, entry);
         if (mode == 11) json_object_del(entry, "value_digest");
+        if (mode == 13) { json_object_set_new(entry, "committed", json_false()); json_object_set_new(entry, "applied", json_true()); }
+        if (mode == 14) json_object_set_new(entry, "applied", json_integer(1));
+        if (mode == 15) json_object_del(entry, "applied");
         rewrite(root);
         if (mode == 12) json_object_set_new(root, "checksum", json_string("bad"));
         char *document = json_dumps(root, JSON_SORT_KEYS | JSON_COMPACT); assert(document); json_decref(root);
@@ -483,6 +486,82 @@ static void query_facts(void)
     assert(!lcs_config_requests_query(&history, value.request_id, &view) && view.state == LCS_CONFIG_REQUEST_COMMITTED);
     forbid_sync = false; lcs_config_value_clear(&value);
 }
+static void applied_outcomes(void)
+{
+    lcs_config_application_t application = {0};
+    assert(!lcs_config_application_open(&application, &agreement, true, error, sizeof(error)));
+    char *old_catalog; size_t old_length;
+    assert(!lcs_config_application_export(&application, &old_catalog, &old_length, error, sizeof(error)));
+    lcs_config_value_t value = proposal("admitted-request"); assert(!reserve(&value)); learn(&value);
+    assert(!lcs_config_requests_observe(&history, &agreement, error, sizeof(error)));
+    lcs_config_request_admission_t receipt = {.issuer = &application, .attempt = 1, .revision = 1};
+    strcpy(receipt.digest, value.digest);
+    assert(lcs_config_requests_apply(&history, &agreement, &application, &receipt, error, sizeof(error)) < 0);
+    assert(!lcs_config_application_begin(&application, &agreement, error, sizeof(error)));
+    assert(lcs_config_requests_apply(&history, &agreement, &application, &receipt, error, sizeof(error)) < 0);
+    assert(!lcs_config_application_finish(&application, value.digest, error, sizeof(error)));
+    receipt.attempt = 0;
+    assert(lcs_config_requests_apply(&history, &agreement, &application, &receipt, error, sizeof(error)) < 0);
+    receipt.attempt = 1;
+    char *before; size_t before_length;
+    assert(!lcs_config_requests_export(&history, &before, &before_length, error, sizeof(error)));
+    lcs_config_agreement_worker_t worker; lcs_config_agreement_worker_init(&worker);
+    lcs_config_agreement_job_t job = {.action = LCS_CONFIG_REQUEST_APPLY,
+        .admission_catalog = &application, .admission = &receipt};
+    forbid_parent = getpid();
+    assert(!lcs_config_agreement_worker_start_requests(&worker, &agreement, &history, &job, error, sizeof(error)));
+    assert(!history.records[0].applied); int operation;
+    assert(finish_worker(&worker, &operation) == 1 && !operation && history.records[0].applied);
+    forbid_parent = 0;
+    lcs_config_requests_t *mirror = malloc(sizeof(*mirror)); assert(mirror); *mirror = history;
+    assert(lcs_config_requests_import(mirror, before, before_length, error, sizeof(error)) < 0 && mirror->poisoned);
+    free(mirror); free(before);
+    forbid_sync = true;
+    assert(lcs_config_requests_apply(&history, &agreement, &application, &receipt, error, sizeof(error)) == LCS_CONFIG_REQUEST_EXISTS);
+    lcs_config_request_view_t view;
+    assert(!lcs_config_requests_query(&history, value.request_id, &view) && view.state == LCS_CONFIG_REQUEST_APPLIED);
+    forbid_sync = false; reopen(); assert(history.records[0].applied);
+    char *current_catalog; size_t current_length;
+    assert(!lcs_config_application_export(&application, &current_catalog, &current_length, error, sizeof(error)));
+    assert(!lcs_config_store_write(&store, "application.json", old_catalog, old_length, error, sizeof(error)));
+    lcs_config_runtime_t recovered = {0};
+    assert(lcs_config_runtime_open(&recovered, &store, &base, error, sizeof(error)) < 0 && !recovered.base);
+    assert(strstr(error, "applied catalog"));
+    assert(!lcs_config_store_write(&store, "application.json", current_catalog, current_length, error, sizeof(error)));
+    free(current_catalog); free(old_catalog);
+    assert(!lcs_config_runtime_open(&recovered, &store, &base, error, sizeof(error)));
+    assert(recovered.requests.records[0].applied); lcs_config_runtime_close(&recovered);
+    /* Format-1 history remains readable, but catalog state cannot invent an
+     * admission which that old history did not record. No read-time rewrite. */
+    char *document; size_t length;
+    assert(!lcs_config_requests_export(&history, &document, &length, error, sizeof(error)));
+    json_error_t parse; json_t *root = json_loadb(document, length, 0, &parse); assert(root); free(document);
+    json_object_set_new(root, "record_version", json_integer(1));
+    json_object_del(json_array_get(json_object_get(root, "requests"), 0), "applied"); rewrite(root);
+    document = json_dumps(root, JSON_SORT_KEYS | JSON_COMPACT); assert(document); json_decref(root);
+    assert(!lcs_config_store_write(&store, "requests.json", document, strlen(document), error, sizeof(error)));
+    free(document); reopen();
+    assert(history.records[0].committed && !history.records[0].applied);
+    assert(!lcs_config_requests_check_application(&history, &application, error, sizeof(error)));
+    lcs_config_value_clear(&value); lcs_config_application_close(&application);
+    assert(!unlinkat(store.directory_fd, "application.json", 0));
+}
+static void applied_sync_failure(unsigned boundary)
+{
+    lcs_config_application_t application = {0};
+    assert(!lcs_config_application_open(&application, &agreement, true, error, sizeof(error)));
+    lcs_config_value_t value = proposal("uncertain-admission"); learn(&value);
+    assert(!lcs_config_requests_observe(&history, &agreement, error, sizeof(error)));
+    assert(!lcs_config_application_begin(&application, &agreement, error, sizeof(error)));
+    assert(!lcs_config_application_finish(&application, value.digest, error, sizeof(error)));
+    lcs_config_request_admission_t receipt = {.issuer = &application, .attempt = 1, .revision = 1};
+    strcpy(receipt.digest, value.digest); fail_sync = boundary;
+    assert(lcs_config_requests_apply(&history, &agreement, &application, &receipt, error, sizeof(error)) < 0);
+    assert(history.poisoned && !history.records[0].applied);
+    fail_sync = 0; reopen(); assert(history.records[0].applied == (boundary == 2));
+    lcs_config_value_clear(&value); lcs_config_application_close(&application);
+    assert(!unlinkat(store.directory_fd, "application.json", 0));
+}
 static void cleanup(void)
 {
     lcs_config_requests_close(&history); lcs_config_agreement_close(&agreement);
@@ -495,6 +574,8 @@ int main(void)
     setup(); serialized_worker(); cleanup();
     setup(); runtime_recovery(); cleanup();
     setup(); query_facts(); cleanup();
+    setup(); applied_outcomes(); cleanup();
+    for (unsigned boundary = 1; boundary <= 2; boundary++) { setup(); applied_sync_failure(boundary); cleanup(); }
     setup(); request_open_worker(); cleanup();
     setup(); request_open_refuses_promise(); cleanup();
     for (unsigned mode = 0; mode < 5; mode++) { setup(); request_open_failure(mode); cleanup(); }

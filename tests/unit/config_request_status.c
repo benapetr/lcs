@@ -33,7 +33,7 @@ int main(void)
     view.history = LCS_CONFIG_HISTORY_AVAILABLE;
     view.base_revision = LCS_RESOURCE_REVISION_MAX - 1;
     memset(view.base_digest, 'a', 64); memset(view.value_digest, 'b', 64);
-    for (unsigned state = LCS_CONFIG_REQUEST_RESERVED; state <= LCS_CONFIG_REQUEST_COMMITTED; state++)
+    for (unsigned state = LCS_CONFIG_REQUEST_RESERVED; state <= LCS_CONFIG_REQUEST_APPLIED; state++)
     {
         view.state = (uint8_t)state;
         assert(!lcs_config_request_view_encode(&view, payload, sizeof(payload), &length));
@@ -43,12 +43,14 @@ int main(void)
     }
     assert(lcs_config_request_view_encode(&view, payload, length - 1, &length) < 0);
     assert(!lcs_config_request_view_encode(&view, original, sizeof(original), &length));
+    memcpy(payload, original, length); payload[1] = 1;
+    assert(lcs_config_request_view_decode(payload, length, &decoded) < 0); /* Old format cannot claim admission. */
     for (unsigned mode = 0; mode < 9; mode++)
     {
         memcpy(payload, original, length); size_t size = length;
-        if (mode == 0) payload[1] = 2;
+        if (mode == 0) payload[1] = 3;
         if (mode == 1) payload[2] = 3;
-        if (mode == 2) payload[3] = 3;
+        if (mode == 2) payload[3] = 4;
         if (mode == 3) payload[2] = LCS_CONFIG_HISTORY_UNAVAILABLE;
         if (mode == 4) payload[3] = LCS_CONFIG_REQUEST_UNKNOWN;
         if (mode == 5) payload[67] = 1; /* Noncanonical name padding. */

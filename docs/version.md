@@ -184,11 +184,14 @@ transfer failure. This interface carries definitions, not commit/vote authority.
 ## Request-fact journal record format
 
 The explicit `config_requests` core writes a private
-`requests.json` format-1 record: `record_version`, local `member`, canonical
+`requests.json` with record formats 1/2: `record_version`, local `member`, canonical
 `membership`, a `requests` array and SHA-256 `checksum`. Entries contain
 `request_id`, integer `base_revision`, canonical `base_digest`/`value_digest`
-and boolean `committed`. IDs/base/value identities are immutable; worker imports
-may only append identities or advance committed bits. The record is bounded to
+and boolean `committed`. Format 2 adds required boolean `applied`, which can only
+be true when committed is true. Readers accept format 1 with admission unknown
+(false) without rewriting it; subsequent legitimate writes use format 2.
+IDs/base/value identities are immutable; worker imports may only append identities
+or advance committed/applied bits. The record is bounded to
 128 identities and 128 KiB with no automatic eviction. Existing/corrupt history
 is never replaced by initialization. Startup reads an existing record against the
 frozen base and rejects orphaned, unsafe, corrupt, foreign or locally contradictory
@@ -200,8 +203,9 @@ open/recovery worker rechecks disk agreement before publishing history; missing
 history can be created only with first-initialization authorization at pristine
 revision zero without promises/acceptances/learning. Pristine state alone is not
 authorization to recreate lost reservations. These are local reservation/decision
-facts, not peer evidence or final client outcomes. There is
-no wire, CLI, existing-record or release-version change. The transaction
+and admission facts, not peer ownership evidence or cluster-wide client outcomes.
+Record format 2 and applied-response format 2 are deliberate additions; ordinary
+local status, peer wire versions and release version stay unchanged. The transaction
 coordinator has an internal request-storage phase and separate completion counter;
 these are process-local bookkeeping and do not alter durable records or wire
 messages. Coordinator OPEN only recovers existing history; it does not authorize
@@ -226,7 +230,11 @@ payload format 1. The request is u16 format plus a canonical zero-padded 64-byte
 request ID (66 bytes). The response is u16 format, u8 history, u8 request state,
 64-byte ID, u64 expected base revision and two 65-byte canonical digest strings
 (206 bytes). History values 0/1/2 mean unavailable/available/recovery-required;
-request states 0/1/2 mean unknown/reserved/committed. Known states require available
+request states 0/1/2 mean unknown/reserved/committed. Response format 2 adds state
+3 (applied) with the same 206-byte layout. The server retains response format 1
+for the older states, while an applied receipt uses format 2 so old clients reject
+it rather than misreport success. New clients read both formats; state 3 is
+invalid in format 1. The request remains format 1. Known states require available
 history, a base revision below the resource maximum and lowercase SHA-256 digests.
 Unknown states require zero revision and empty canonical digest fields. Truncation,
 trailing bytes, invalid states/IDs/digests and nonzero padding are rejected.
@@ -235,8 +243,8 @@ The client also checks response sequence and request-ID correlation before outpu
 JSON uses null revision/digest fields for unknown records and always marks the
 scope local. Exit 0 means a valid query response, including unknown; it does not
 mean a client mutation succeeded. Older daemons report unsupported requests.
-Ordinary local status protocol 1004, peer wire versions, journal/resource schemas
-and the release version are unchanged. There is no peer request-status endpoint.
+Ordinary local status protocol 1004, peer wire versions, resource JSON schema
+and release version are unchanged. Request record format 2 is described above. There is no peer request-status endpoint.
 
 ## Offline document validation
 

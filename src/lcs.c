@@ -800,7 +800,7 @@ static int cmd_config_request_status(const char *socket_path, const char *id, bo
     if (header.type != LCS_MSG_CONFIG_REQUEST_STATUS_RESP ||
         lcs_config_request_view_decode(payload, header.length, &view) || strcmp(view.id, id))
     { fprintf(stderr, "lcs: invalid request-status response\n"); return 1; }
-    const char *state = view.state == LCS_CONFIG_REQUEST_COMMITTED ? "committed" :
+    const char *state = view.state == LCS_CONFIG_REQUEST_APPLIED ? "applied" : view.state == LCS_CONFIG_REQUEST_COMMITTED ? "committed" :
         view.state == LCS_CONFIG_REQUEST_RESERVED ? "reserved" : "unknown";
     const char *history = view.history == LCS_CONFIG_HISTORY_AVAILABLE ? "available" :
         view.history == LCS_CONFIG_HISTORY_RECOVERY ? "recovery-required" : "unavailable";

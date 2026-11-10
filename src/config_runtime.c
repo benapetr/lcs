@@ -69,6 +69,8 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                 &runtime->agreement, &runtime->application, NULL, err, err_len);
         if (!result)
             result = requests ? 0 : lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len);
+        if (!result && runtime->requests.store)
+            result = lcs_config_requests_check_application(&runtime->requests, &runtime->application, err, err_len);
         if (result)
         {
             lcs_config_runtime_close(runtime);
@@ -116,7 +118,8 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                                   false, err, err_len) ||
         lcs_config_application_open(&runtime->application, &runtime->agreement,
                                     false, err, err_len) ||
-        (!requests && lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len)))
+        (!requests && (lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len) ||
+         lcs_config_requests_check_application(&runtime->requests, &runtime->application, err, err_len))))
     {
         lcs_config_runtime_close(runtime);
         return -1;

@@ -65,6 +65,7 @@ typedef struct
     uint64_t attempt, completion;
     lcs_config_reconcile_phase_t phase, blocked_phase;
     bool quorum_only;
+    bool admission_completed; /* Set only after a real ADMIT callback and final handoff. */
     char error[256];
 } lcs_config_reconcile_t;
 
@@ -79,6 +80,11 @@ int lcs_config_reconcile_start(lcs_config_reconcile_t *reconcile);
  * Returns 1 done, 0 pending, -1 blocked/recovery/stopped. A newer checkpoint cannot
  * overwrite an existing pending target: finish it, then stage the latest value. */
 int lcs_config_reconcile_process(lcs_config_reconcile_t *reconcile);
+/* Exact same-process receipt after this attempt actually completed admission.
+ * Already-current catalog shortcuts, FINISH, blocked/replaced/stopped attempts
+ * never issue receipts. Caller must persist it through the coordinator writer. */
+int lcs_config_reconcile_admission_receipt(const lcs_config_reconcile_t *reconcile,
+                                            lcs_config_request_admission_t *receipt);
 /* Retry only an adapter failure after external repair; never retry uncertain I/O
  * using poisoned handles. Old snapshots and the exact failed stage are retained. */
 int lcs_config_reconcile_retry(lcs_config_reconcile_t *reconcile);

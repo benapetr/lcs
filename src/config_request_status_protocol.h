@@ -5,6 +5,7 @@
 #include "protocol.h"
 
 #define LCS_CONFIG_REQUEST_STATUS_FORMAT 1
+#define LCS_CONFIG_REQUEST_STATUS_APPLIED_FORMAT 2
 #define LCS_CONFIG_REQUEST_STATUS_SIZE 206u
 int lcs_config_request_id_encode(const char *id, void *payload, size_t cap, size_t *length);
 int lcs_config_request_id_decode(const void *payload, size_t length, char id[LCS_CONFIG_REQUEST_MAX + 1]);

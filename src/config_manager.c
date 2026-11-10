@@ -22,7 +22,7 @@ static struct
     bool enabled, started, active, failed, stopping;
     lcs_config_recovery_phase_t logged_phase;
     lcs_config_reconcile_phase_t logged_application_phase;
-    uint64_t retry_ms;
+    uint64_t retry_ms, outcome_completion;
     char error[256];
 } manager;
 
@@ -126,6 +126,36 @@ int config_manager_has_historical_vips(char *err, size_t err_len)
 static int send_owner(void *context, size_t node, const void *payload, size_t length)
 { return peer_queue_config_owner(*(int *)context, (int)node, payload, (uint32_t)length); }
 
+/* Admission has actually completed before this historical receipt is written.
+ * A crash before its durable publication leaves the client outcome unknown; an
+ * applied catalog or a later revision never fabricates the missing receipt. */
+static int record_admission(bool live_application)
+{
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    if (!g_state.config_runtime.requests.store) return 1; /* Older catalog, no invented history. */
+    if (coordinator->failed || coordinator->closing) { fail("request admission persistence requires recovery"); return -1; }
+    if (manager.outcome_completion)
+    {
+        if (coordinator->completed_requests < manager.outcome_completion) return 0;
+        if (coordinator->completed_requests != manager.outcome_completion ||
+            (coordinator->last_request_result != LCS_CONFIG_REQUEST_RECORDED &&
+             coordinator->last_request_result != LCS_CONFIG_REQUEST_EXISTS))
+        { fail("cannot durably record admitted request; retain decision and recover"); return -1; }
+        manager.outcome_completion = 0; return 1;
+    }
+    lcs_config_request_admission_t receipt;
+    int proof = live_application ? lcs_config_reconcile_admission_receipt(&manager.application, &receipt) :
+        lcs_config_recovery_live_admission_receipt(&manager.live, &receipt);
+    if (proof) { fail("completed application lacks exact final admission receipt"); return -1; }
+    lcs_config_agreement_job_t job = {.action = LCS_CONFIG_REQUEST_APPLY,
+        .admission_catalog = &g_state.config_runtime.application, .admission = &receipt};
+    char error[256];
+    int started = lcs_config_coordinator_start_requests(coordinator, &job, error, sizeof(error));
+    if (started > 0) return 0;
+    if (started < 0) { fail("cannot start admitted-request persistence"); return -1; }
+    manager.outcome_completion = coordinator->completed_requests + 1; return 0;
+}
+
 static void process_application(uint64_t now)
 {
     lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
@@ -163,6 +193,7 @@ static void process_application(uint64_t now)
     }
     else if (manager.application.phase == LCS_CONFIG_RECONCILE_DONE)
     {
+        if (record_admission(true) != 1) return;
         manager.applying = false;
         lcs_log_info("distributed resource application admitted revision=%llu; normal lease placement enabled",
             (unsigned long long)g_state.config_runtime.application.applied.revision);
@@ -212,6 +243,7 @@ void config_manager_process(int epoll_fd)
     }
     else if (manager.recovery.phase == LCS_CONFIG_RECOVERY_COMPLETE)
     {
+        if (record_admission(false) != 1) return;
         manager.active = true;
         lcs_log_info("distributed resource recovery admitted revision=%llu; normal lease placement enabled",
             (unsigned long long)runtime->application.applied.revision);

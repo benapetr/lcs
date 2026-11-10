@@ -41,5 +41,7 @@ int lcs_config_recovery_live_install(void *context, const lcs_config_reconcile_v
  * quorum. New learning/cancellation re-fences before recovery resumes. Only a
  * successful controller transfer releases resource fences; never starts backends
  * or changes epochs/promises. Daemon scheduler/startup wiring remains separate. */
+int lcs_config_recovery_live_admission_receipt(const lcs_config_recovery_live_t *live,
+                                                lcs_config_request_admission_t *receipt);
 int lcs_config_recovery_live_begin_admission(lcs_config_recovery_live_t *live, char *err, size_t err_len);
 #endif

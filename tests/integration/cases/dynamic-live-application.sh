@@ -105,7 +105,7 @@ history_path = Path(root + '.state/requests.json')
 if history_path.exists():
     history = json.loads(history_path.read_text())
     record = next(r for r in history['requests'] if r['request_id'] == 'recovery-' + str(revision))
-    assert record['committed'] is True and record['base_revision'] == revision - 1
+    assert record['committed'] is True and record['applied'] is True and record['base_revision'] == revision - 1
     assert len(record['value_digest']) == 64
 
 if revision < 8:

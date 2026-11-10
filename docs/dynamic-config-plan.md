@@ -318,8 +318,12 @@ durable distributed configuration protocol.
   ID` and `--json`. Expose reservation/commit facts with explicit unknown and
   unavailable/recovery-required history states, without disk I/O, inferred
   checkpoint-gap outcomes, automatic initialization or claims of client success.
-- [ ] Extend request diagnostics to final admission acknowledgements/client
-  outcomes after that lifecycle is implemented; retain unknown results where
+- [x] Persist an exact local admitted/applied receipt only after real live or
+  startup admission and its final handoff. Retain it monotonically across restart
+  and later revisions, read older journals without inventing admission, and expose
+  `applied` through local request status. Reject catalog rollback and do not infer
+  completion from FINISH, current-catalog shortcuts or superseded attempts.
+- [ ] Extend request diagnostics to complete distributed client outcomes after that lifecycle is implemented; retain unknown results where
   durable proof is unavailable.
 
 ## 4. Add protocol support and synchronization

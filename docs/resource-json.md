@@ -239,6 +239,9 @@ underscores, dots or hyphens.
 The response has `scope: local`, a `history` state (`available`, `unavailable`, or
 `recovery-required`) and a request `state`:
 
+- `applied`: this node completed configuration admission for that exact value,
+  then durably recorded the receipt. This is a historical completion fact, not
+  current resource availability or a claim that every peer acknowledged it.
 - `committed`: the journal records that exact request's learned consensus decision.
 - `reserved`: its immutable expected base and value were recorded; its eventual
   outcome is unknown to this journal, including while observation is pending.
@@ -250,7 +253,11 @@ Known records include `base_revision`, `value_revision`, `base_digest` and
 poisoned history never exposes fingerprints as current facts. Unknown/reserved
 states do not authorize request-ID reuse or resubmission. Committed does not mean
 resources were applied, admission was acknowledged, or the client operation
-finished successfully. This command does not provide those final outcomes.
+finished successfully. `applied` adds the completed local application/admission
+barrier; quorum-only nodes record metadata admission, never backend execution.
+Fresh admission callbacks issue receipts; catalog FINISH, an already-current
+shortcut or a higher revision alone cannot create one. Receipts survive restart
+and later configuration changes without being interpreted as current health.
 
 Exit status 0 means the local query succeeded, including an unknown result;
 1 means a connection, daemon or protocol error; 2 means invalid arguments.

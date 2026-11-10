@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef LCS_CONFIG_REQUESTS_H
 #define LCS_CONFIG_REQUESTS_H
-#include "config_agreement.h"
+#include "config_application.h"
 
 #define LCS_CONFIG_REQUEST_HISTORY_MAX 128u
 #define LCS_CONFIG_REQUEST_RECORD_MAX (128u * 1024u)
@@ -12,7 +12,8 @@ typedef struct
     char id[LCS_CONFIG_REQUEST_MAX + 1];
     uint64_t base_revision;
     char base_digest[LCS_CONFIG_DIGEST_SIZE], value_digest[LCS_CONFIG_DIGEST_SIZE];
-    bool committed; /* Exact locally learned decision; NOT admission/client success. */
+    bool committed; /* Exact locally learned decision. */
+    bool applied; /* Historical local admission completed, never inferred from FINISH. */
 } lcs_config_request_record_t;
 typedef struct
 {
@@ -25,7 +26,7 @@ typedef struct
 } lcs_config_requests_t;
 
 enum { LCS_CONFIG_HISTORY_UNAVAILABLE = 0, LCS_CONFIG_HISTORY_AVAILABLE = 1, LCS_CONFIG_HISTORY_RECOVERY = 2 };
-enum { LCS_CONFIG_REQUEST_UNKNOWN = 0, LCS_CONFIG_REQUEST_RESERVED = 1, LCS_CONFIG_REQUEST_COMMITTED = 2 };
+enum { LCS_CONFIG_REQUEST_UNKNOWN = 0, LCS_CONFIG_REQUEST_RESERVED = 1, LCS_CONFIG_REQUEST_COMMITTED = 2, LCS_CONFIG_REQUEST_APPLIED = 3 };
 typedef struct
 {
     uint8_t history, state;
@@ -70,6 +71,22 @@ int lcs_config_requests_reserve(lcs_config_requests_t *history, const lcs_config
  * acceptance/promise, revision comparison or timer proves commitment/admission. */
 int lcs_config_requests_observe(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
                                   char *err, size_t err_len);
+/* Same-process receipt issued ONLY after the admission callback and final handoff.
+ * A nonzero attempt binds it to one exact applied/learned value. It is not a peer
+ * message, catalog-derived authorization, or proof that resources are running. */
+typedef struct
+{
+    const void *issuer;
+    uint64_t attempt, revision;
+    char digest[LCS_CONFIG_DIGEST_SIZE];
+} lcs_config_request_admission_t;
+int lcs_config_requests_apply(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
+                                const lcs_config_application_t *application,
+                                const lcs_config_request_admission_t *receipt, char *err, size_t err_len);
+/* Pure recovery consistency check: an admitted receipt cannot precede its local
+ * applied catalog or disagree with an exact equal-revision applied snapshot. */
+int lcs_config_requests_check_application(const lcs_config_requests_t *history,
+                                            const lcs_config_application_t *application, char *err, size_t err_len);
 /* Same-host worker handoff, not network evidence. Import may append immutable
  * identities and advance committed bits; it cannot drop/reorder/regress history. */
 int lcs_config_requests_export(const lcs_config_requests_t *history, char **document, size_t *length, char *err, size_t err_len);

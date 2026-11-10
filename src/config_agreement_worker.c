@@ -188,6 +188,9 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
          * bindings, not disk-owned values. No journal pointers are retained. */
         lcs_config_agreement_close(&disk);
     }
+    else if (job->action == LCS_CONFIG_REQUEST_APPLY)
+        result.result = lcs_config_requests_apply(requests, agreement, job->admission_catalog, job->admission,
+                                                    result.error, sizeof(result.error));
     else if (job->action == LCS_CONFIG_REQUEST_RESERVE)
         result.result = lcs_config_requests_reserve(requests, agreement, job->revision,
             job->parent_digest, job->value, result.error, sizeof(result.error));
@@ -267,7 +270,7 @@ static int start(lcs_config_agreement_worker_t *worker,
         return 1;
     bool request_job = job && (job->action == LCS_CONFIG_REQUEST_RESERVE ||
                                job->action == LCS_CONFIG_REQUEST_OBSERVE ||
-                               job->action == LCS_CONFIG_REQUEST_OPEN);
+                               job->action == LCS_CONFIG_REQUEST_OPEN || job->action == LCS_CONFIG_REQUEST_APPLY);
     if (request_job != (requests != NULL) || (requests &&
         (requests->poisoned || requests->store != agreement->store || requests->base != agreement->base ||
          strcmp(requests->member, agreement->member) || strcmp(requests->membership, agreement->membership) ||
@@ -392,7 +395,7 @@ int lcs_config_agreement_worker_start_requests(lcs_config_agreement_worker_t *wo
                                                char *err, size_t err_len)
 {
     if (!requests || !job || (job->action != LCS_CONFIG_REQUEST_RESERVE &&
-                              job->action != LCS_CONFIG_REQUEST_OBSERVE))
+                              job->action != LCS_CONFIG_REQUEST_OBSERVE && job->action != LCS_CONFIG_REQUEST_APPLY))
         return fail(err, err_len, "request history and reserve/observe job are required");
     return start(worker, agreement, NULL, requests, job, NULL, NULL, false, NULL, err, err_len);
 }
