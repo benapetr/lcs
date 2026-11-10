@@ -124,6 +124,16 @@ durable distributed configuration protocol.
   worker imports strict and validate incarnation continuity on checkpoint imports.
 - [ ] Implement durable request-status history, backup/recovery policy and safe
   history retention/compaction for the complete distributed transaction manager.
+- [x] Add an explicit local request-fact journal core: bind member/membership,
+  immutable request ID/expected base/canonical value fingerprint, idempotent
+  reservation and exact learned-decision observation. Persist atomically with
+  checksums, retain all observed IDs at bounded capacity, and reject stale worker
+  imports. Test restart, process exits, uncertain syncs, corruption and conflicts.
+  This records reservation/commit facts, not admission or final client outcomes.
+- [ ] Integrate request history into the serialized storage worker, startup and
+  proposer/acceptor paths before enabling public mutation endpoints. Handle
+  missing-history/checkpoint transfer, completed admission acknowledgements and
+  deliberate retention/compaction; unrecorded requests remain outcome-unknown.
 - [x] Define full-cluster restart, stale-majority prevention, disk loss, backup
   restoration, and explicit disaster recovery. A lone high revision or a former
   minority must not establish authority by itself.

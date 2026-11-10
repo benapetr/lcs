@@ -181,6 +181,20 @@ out-of-range totals/offsets and truncated/inconsistent streams fail. The client
 buffers the bounded complete document before stdout, avoiding partial output on
 transfer failure. This interface carries definitions, not commit/vote authority.
 
+## Request-fact journal record format
+
+The explicit, currently unwired `config_requests` core writes a private
+`requests.json` format-1 record: `record_version`, local `member`, canonical
+`membership`, a `requests` array and SHA-256 `checksum`. Entries contain
+`request_id`, integer `base_revision`, canonical `base_digest`/`value_digest`
+and boolean `committed`. IDs/base/value identities are immutable; worker imports
+may only append identities or advance committed bits. The record is bounded to
+128 identities and 128 KiB with no automatic eviction. Existing/corrupt history
+is never replaced by initialization. The daemon does not create/read this record
+until worker, startup and transaction integration is implemented. These are local
+reservation/decision facts, not peer evidence or final client outcomes. There is
+no wire, CLI, existing-record or release-version change.
+
 ## Offline document validation
 
 Offline `lcs config validate` uses the existing schema-1/schema-2 parser and

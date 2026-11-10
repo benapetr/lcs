@@ -462,6 +462,55 @@ can advance while cleanup is in progress without replacing its pending target.
 The sequencer and explicit backend barriers remain disconnected from live daemon
 resource application until safe generation/owner adapters are implemented.
 
+## Local durable request-fact journal core
+
+`config_requests.c` adds an explicit storage primitive for future request tracking.
+It is not automatically opened or written by the daemon yet, and it does not
+enable request-status or mutation commands. All its writes are synchronous:
+integration must run them through the shared nonblocking storage writer and
+serialize them with agreement/application work. An inherited directory-lock
+descriptor alone cannot serialize multiple writer children.
+
+The member/membership-bound `requests.json` record contains a checksummed,
+append-only list of observed request identities. Each entry binds the request ID,
+expected base revision and complete base-value digest to the complete requested
+value digest. That digest comes from the canonical value constructor, including
+request ID, resource revision, incarnations and complete definitions. Reserving
+a new identity requires the exact current agreement base; exact retries retain
+their original base even after learning advances. A different base or content
+for an observed ID conflicts and cannot overwrite its record. Reservation is
+not proof of successor eligibility or permission to submit another proposal.
+
+Only observation of the current exact locally learned majority decision can
+advance `committed` from false to true. An accepted value or promise does not
+do so. This bit records a decision fact, not resource admission, successful
+client completion or cluster-wide application. There are no fabricated abort or
+rejection outcomes: an absent entry, a reserved-only entry or an unobserved
+intermediate decision remains uncertain. Checkpoint gaps cannot reconstruct
+missed request outcomes from a higher revision number alone.
+
+The core currently holds 128 identities with a 128-KiB record bound. It never
+evicts an observed ID: capacity refuses new entries while exact retries remain
+readable/idempotent. This is an internal storage bound, not a limit imposed on
+current daemon operation; the daemon does not use this file yet. Before exposing
+mutation commands, retention/compaction and missing-history behavior must be
+integrated explicitly rather than silently forgetting identifiers.
+
+Explicit initialization authorization creates only a missing record; corrupt or
+foreign existing state is never reset. A newly initialized empty record says
+nothing about earlier requests. Atomic replacement uses private mode 0600,
+file sync, rename and directory sync. Write uncertainty poisons the handle until
+disk reopen. Worker export/import is same-host state transfer only; import can
+append entries or advance committed bits, but cannot truncate, reorder, change
+identities or regress confirmed decisions. Invalid or regressive imports poison the handle
+without replacing its last in-memory records.
+
+Regressions exercise process exits before/after rename, independent child writes
+and parent import, failure at both sync boundaries, exact retries after learning,
+ID/base/content conflicts, accepted-only uncertainty, foreign/malformed records,
+symlink refusal, capacity and monotonic replay. No peer/CLI protocol, existing
+agreement/application record or release version changes accompany this core.
+
 ## Remaining daemon activation and application rules
 
 - Confirm support, durable readiness, matching full definitions, and compatible

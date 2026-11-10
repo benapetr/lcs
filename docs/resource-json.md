@@ -119,6 +119,12 @@ before lease voting. See [catalog history and compatibility](dynamic-config-appl
 
 ## Activated startup recovery
 
+The separate [request-fact journal core](dynamic-config-agreement.md#local-durable-request-fact-journal-core)
+is implemented internally but remains disconnected from daemon startup and
+transactions. Ordinary operation does not create `requests.json` yet. Its
+reservation/commit facts are not final client outcomes; public request-status and
+definition mutation commands remain unfinished.
+
 Startup now resumes existing schema-2 applied catalogs with valid durable
 all-member readiness. Full members also require retained predecessor history;
 older catalogs without it and revision-zero initialization remain unsupported.

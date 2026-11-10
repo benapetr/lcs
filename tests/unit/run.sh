@@ -23,8 +23,9 @@ RECONCILE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-reconcile.XXXXXX")"
 COORDINATOR_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-coordinator.XXXXXX")"
 FREEZE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-reload-freeze.XXXXXX")"
 CANDIDATE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-candidate.XXXXXX")"
+REQUESTS_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-requests.XXXXXX")"
 EXPORT_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-export.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN" "$ACTIVATION_BIN" "$FREEZE_BIN" "$COORDINATOR_BIN" "$TRANSACTION_BIN" "$RECONCILE_BIN" "$RESOURCE_FRAME_BIN" "$STARTUP_BIN" "$EXPORT_BIN"' EXIT
+trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN" "$ACTIVATION_BIN" "$FREEZE_BIN" "$COORDINATOR_BIN" "$TRANSACTION_BIN" "$RECONCILE_BIN" "$RESOURCE_FRAME_BIN" "$STARTUP_BIN" "$EXPORT_BIN" "$REQUESTS_BIN"' EXIT
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
     "$ROOT_DIR/tests/unit/config_export.c" "$ROOT_DIR/src/config_export_protocol.c" \
@@ -54,6 +55,16 @@ read -ra JSON_CFLAGS <<< "$(pkg-config --cflags jansson)"
 read -ra JSON_LIBS <<< "$(pkg-config --libs jansson)"
 read -ra CRYPTO_CFLAGS <<< "$(pkg-config --cflags libcrypto)"
 read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
+    "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_requests.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_store.c" \
+    "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/config_candidate.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$REQUESTS_BIN"
+"$REQUESTS_BIN"
+
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_transaction.c" "$ROOT_DIR/src/config_transaction.c" "$ROOT_DIR/src/config_transfer.c" \

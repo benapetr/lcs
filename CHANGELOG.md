@@ -2,6 +2,8 @@
 
 ## Next
 
+- Added an explicit local request-fact journal core with immutable ID/base/value bindings, idempotent reservations, exact learned-decision observation, checksummed atomic persistence and monotonic worker imports. Added restart/process-exit, sync-uncertainty, corrupt/foreign state, conflict and capacity regressions. No automatic eviction or fabricated outcomes: worker/startup/transaction integration, completed-client outcomes and public mutation commands remain unfinished.
+
 - Added offline `lcs [-c CONFIG] [--json] config validate FILE|-` using the shared strict resource JSON parser and static INI context. It validates both schemas, roles/groups/dependencies and size bounds without contacting a daemon or changing files/resources. The CLI now links the Jansson runtime already required by the package. Bulk import and public definition mutations remain unfinished.
 
 - Added read-only `lcs config export [committed|applied]` for effective INI and activated JSON definitions, including recovery/blocked application. Large snapshots use bounded local chunks pinned to one value; clients reject incomplete/inconsistent streams before emitting stdout. Added strict codec, large-export and malformed-stream coverage. Public definition mutations, validation and bulk import remain unfinished.
