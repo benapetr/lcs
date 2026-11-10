@@ -345,7 +345,8 @@ bounded per-peer response slot. PREPARE returns a PROMISE only after its journal
 write completes and parent memory imports the durable result. If a prior value is
 accepted, that reply identifies its ballot and digest and streams the complete
 immutable snapshot; the proposer validates the entire snapshot and exact
-request correlation before counting it. ACCEPT receives a positive ACK only after
+request correlation before counting it. ACCEPT first persists or checks the selected
+request identity through the coordinator, then receives a positive ACK only after
 its value is durably accepted. A conflict at the same ballot rejects without
 replacing the accepted value. Busy/backpressured requests may require retry.
 
@@ -528,17 +529,35 @@ reservation timeout cannot start PREPARE or send proposal frames. A timed-out
 writer still runs to completion and retains its durable identity; shutdown keeps
 its handles until cancellation is reaped and restart reloads the journal.
 
-The reservation always fingerprints the originally requested value. Recovering a
-higher accepted value through promises does not overwrite that intent or claim
-that it committed. Recording learned outcomes on proposer/acceptor/checkpoint paths
+The coordinator's ACCEPT path now requires healthy existing request history.
+After read-only slot/ballot/canonical-successor checks, it owns a copy of the
+selected value across an ACCEPT_RESERVING phase. The shared worker persists or
+checks that value's exact ID/base/fingerprint before a second worker persists
+acceptance. No positive ACK or vote completion is produced by reservation alone.
+Exact known identities are allowed for protocol retries and highest-accepted
+recovery; changing their fingerprint or exhausting space for a new identity
+rejects the vote without replacing an accepted value. Stale/rejected ballots do
+not consume history entries. Request checks and acceptance retain separate
+completion counters and exclude every other configuration writer between phases.
+
+If reservation persistence is uncertain, both handles require recovery. If the
+later acceptance is uncertain, the durable request fact remains, but the agreement
+is fenced for disk recovery. Stop/cancellation clears the owned value and retains
+child/storage handles until reaping. Restart can resume an exact protocol ACCEPT
+without duplicating or rewriting its identity. A matching client proposal remains
+a separate status/recovery case and cannot be resubmitted by changing transport ID.
+
+The proposer reservation fingerprints the originally requested value. Recovering
+a higher accepted value through promises adds/checks its separate selected-value
+identity without overwriting original intent or claiming that it committed. Recording learned outcomes on proposer/acceptor/checkpoint paths
 is a separate unfinished step. Existing history is not proof of full lifecycle
 readiness, and public mutation commands remain disabled.
 
 Automatic first-initialization authorization, lost-history/checkpoint recovery,
-acceptor identity checks and learned-outcome wiring remain unfinished. Callers must keep both
-handles unchanged until completion, use the same worker for every store writer,
-and explicitly authorize first initialization. An inherited directory-lock descriptor alone cannot serialize
-multiple writer children.
+learned-outcome wiring and full client lifecycle handling remain unfinished.
+Callers must keep both handles unchanged until completion, use the same worker
+for every store writer, and explicitly authorize first initialization. An inherited
+directory-lock descriptor alone cannot serialize multiple writer children.
 
 The member/membership-bound `requests.json` record contains a checksummed,
 append-only list of observed request identities. Each entry binds the request ID,

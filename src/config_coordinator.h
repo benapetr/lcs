@@ -15,6 +15,7 @@ typedef enum
     LCS_CONFIG_COORD_APPLYING,
     LCS_CONFIG_COORD_PROJECTING,
     LCS_CONFIG_COORD_REQUESTING,
+    LCS_CONFIG_COORD_ACCEPT_RESERVING,
     LCS_CONFIG_COORD_CANCELLING,
     LCS_CONFIG_COORD_STOPPED,
     LCS_CONFIG_COORD_FAILED,
@@ -36,6 +37,9 @@ typedef struct
     int last_projection_result;
     uint64_t completed_requests; /* Local storage completions, not client outcomes. */
     int last_request_result;
+    lcs_config_value_t accepting; /* Owned across reservation; cleared before voting/shutdown. */
+    uint64_t accepting_ballot;
+    char accepting_parent[LCS_CONFIG_DIGEST_SIZE];
     uint64_t projecting_revision, projected_revision;
     char projecting_digest[LCS_CONFIG_DIGEST_SIZE], projected_digest[LCS_CONFIG_DIGEST_SIZE];
     const void *application_owner; /* Reconciler holds voting through admission. */
@@ -64,7 +68,11 @@ int lcs_config_coordinator_recover(lcs_config_coordinator_t *coordinator);
  * still verifies the transport proposer/ballot identity and quorum policy.
  * Returns 0 started, 1 busy, -1 rejected before any write. Completion advances
  * completed_votes and reports last_vote_result; the network acceptor uses these
- * same gated operations. */
+ * same gated operations. ACCEPT also requires healthy existing request history;
+ * it persists/checks the selected identity before acceptance. A matching known
+ * identity permits protocol recovery, not a new client proposal. The vote counter
+ * advances only after acceptance or a definitive rejection; reservation alone
+ * cannot generate a positive ACK. Stop retains child handles until reaped. */
 int lcs_config_coordinator_start_vote(lcs_config_coordinator_t *coordinator,
                                        const lcs_config_agreement_job_t *job,
                                        char *err, size_t err_len);

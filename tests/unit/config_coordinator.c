@@ -69,6 +69,8 @@ static void initialize(void)
     assert(runtime.base);
     assert(!lcs_config_activation_open(&runtime.activation, &store, &config, runtime.base, true, error, sizeof(error)));
     assert(!lcs_config_activation_resume(&runtime.activation, &runtime.agreement, &runtime.application, error, sizeof(error)));
+    /* Explicit fresh fixture initialization, not daemon upgrade policy. */
+    assert(!lcs_config_requests_recover(&runtime.requests, &runtime.agreement, true, error, sizeof(error)));
     runtime.requires_recovery = true;
     lcs_config_coordinator_init(&coordinator, &runtime, &readiness);
     assert(!lcs_config_readiness_begin(&readiness, &runtime.activation, &runtime.agreement,
@@ -318,8 +320,7 @@ static void ready_with_requests(void)
     confirm(1); confirm(2);
     assert(!lcs_config_coordinator_process(&coordinator, 1003));
     assert(await_completion() == 1);
-    /* Explicit fixture initialization, not a daemon initialization policy. */
-    assert(!lcs_config_requests_recover(&runtime.requests, &runtime.agreement, true, error, sizeof(error)));
+    assert(runtime.requests.store);
 }
 static lcs_config_value_t request_value(const char *id)
 {
@@ -448,7 +449,9 @@ static void test_request_open_never_initializes(void)
     initialize();
     confirm(1); confirm(2);
     assert(!lcs_config_coordinator_process(&coordinator, 1003));
-    assert(await_completion() == 1 && !runtime.requests.store);
+    assert(await_completion() == 1);
+    lcs_config_requests_close(&runtime.requests);
+    assert(!unlinkat(store.directory_fd, "requests.json", 0));
     lcs_config_agreement_job_t job = {.action = LCS_CONFIG_REQUEST_OPEN, .initialize_requests = true};
     forbid_io = true;
     assert(lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)) < 0);

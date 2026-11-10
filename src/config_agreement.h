@@ -85,6 +85,10 @@ bool lcs_config_agreement_has_quorum(const lcs_config_agreement_t *agreement, ui
 int lcs_config_agreement_prepare(lcs_config_agreement_t *agreement,
                                  uint64_t revision, const char *parent_digest,
                                  uint64_t ballot, char *err, size_t err_len);
+/* Read-only phase-two admission; same result codes as accept, no persistence. */
+int lcs_config_agreement_check_accept(const lcs_config_agreement_t *agreement,
+                                      const char *parent_digest, uint64_t ballot,
+                                      const lcs_config_value_t *value, char *err, size_t err_len);
 int lcs_config_agreement_accept(lcs_config_agreement_t *agreement,
                                 const char *parent_digest, uint64_t ballot,
                                 const lcs_config_value_t *value,

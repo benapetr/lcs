@@ -209,8 +209,11 @@ first initialization or enable public mutation commands. The internal proposer
 now requires healthy existing history and persists original request intent before
 PREPARE; its private reservation phase uses request completions separately from
 votes. Known request IDs cannot be submitted again by changing the transport ID.
-This adds no wire fields or disk-format changes; learned-outcome tracking and
-public mutation commands remain unfinished.
+ACCEPT now persists/checks the selected identity before persisting acceptance;
+its private coordinator phase does not report a vote or send ACK until the latter
+write completes. Exact protocol retries remain idempotent; conflicts and a full
+history reject new identities. This adds no wire fields or disk-format changes;
+learned-outcome tracking and public mutation commands remain unfinished.
 
 ## Offline document validation
 

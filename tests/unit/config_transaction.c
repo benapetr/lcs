@@ -588,7 +588,8 @@ static void test_network_proposer(void)
     assert(!strcmp(lcs_config_transactions_selected(&nodes[0].transactions)->request_id, "earlier-request"));
     const lcs_config_request_record_t *intent = lcs_config_requests_find(&nodes[0].runtime.requests, "new-request");
     assert(intent && !intent->committed && !strcmp(intent->value_digest, newer.digest));
-    assert(!lcs_config_requests_find(&nodes[0].runtime.requests, "earlier-request"));
+    const lcs_config_request_record_t *recovered_intent = lcs_config_requests_find(&nodes[0].runtime.requests, "earlier-request");
+    assert(recovered_intent && !recovered_intent->committed && !strcmp(recovered_intent->value_digest, value.digest));
     lcs_config_value_clear(&value);
     lcs_config_value_clear(&newer);
     cleanup();
@@ -712,7 +713,7 @@ static void test_proposal_reservation_order_and_timeout(void)
             }
             const lcs_config_request_record_t *record = lcs_config_requests_find(&nodes[0].runtime.requests, value.request_id);
             assert(record && !strcmp(record->value_digest, value.digest) && !record->committed);
-            assert(nodes[0].coordinator.completed_requests == 1 && !network_errors);
+            assert(nodes[0].coordinator.completed_requests == (mode ? 1u : 2u) && !network_errors);
         }
         lcs_config_value_clear(&value); cleanup();
     }
@@ -758,6 +759,157 @@ static void test_proposal_history_admission(void)
     assert(nodes[0].coordinator.completed_requests == 1 && nodes[0].coordinator.last_request_result == LCS_CONFIG_REQUEST_CAPACITY);
     assert(nodes[0].runtime.requests.count == LCS_CONFIG_REQUEST_HISTORY_MAX);
     lcs_config_value_clear(&value); cleanup();
+}
+
+static void test_accept_identity_durability(void)
+{
+    for (unsigned stage = 0; stage < 2; stage++) for (int boundary = 1; boundary <= 2; boundary++)
+    {
+        setup();
+        lcs_config_tx_control_t control = prepare(1, 1, 32);
+        assert(!send_control(1, &control)); await_operation(&nodes[1], 0);
+        lcs_config_value_t value = candidate("accepted-identity");
+        forbid_io = true; stop_sync = stage ? 0 : boundary;
+        assert(!send_value(1, 2, LCS_CONFIG_TRANSFER_ACCEPT, 0, &value, 32));
+        if (stage)
+        {
+            stop_sync = boundary;
+            for (unsigned i = 0; i < 5000 && nodes[1].coordinator.phase == LCS_CONFIG_COORD_ACCEPT_RESERVING; i++)
+            { tick(&nodes[1]); usleep(1000); }
+            assert(nodes[1].coordinator.phase == LCS_CONFIG_COORD_VOTING);
+        }
+        await_stopped(&nodes[1]); stop_sync = 0;
+        assert(nodes[1].controls == 1 && nodes[1].transactions.active && !nodes[1].runtime.agreement.accepted.document);
+        assert(nodes[1].coordinator.completed_votes == 1 && nodes[1].coordinator.completed_requests == stage);
+        assert(nodes[1].runtime.requests.count == stage);
+        assert(!lcs_config_coordinator_can_vote(&nodes[1].coordinator));
+        assert(!kill(nodes[1].coordinator.storage.pid, SIGCONT));
+        await_operation(&nodes[1], 1);
+        assert(nodes[1].received.kind == LCS_CONFIG_TX_ACK && nodes[1].received.result == LCS_CONFIG_TX_OK);
+        assert(lcs_config_value_equal(&nodes[1].runtime.agreement.accepted, &value));
+        const lcs_config_request_record_t *record = lcs_config_requests_find(&nodes[1].runtime.requests, value.request_id);
+        assert(record && !record->committed && !strcmp(record->value_digest, value.digest));
+        assert(!nodes[1].coordinator.accepting.document && nodes[1].coordinator.completed_requests == 1);
+        assert(!send_value(1, 3, LCS_CONFIG_TRANSFER_ACCEPT, 0, &value, 32));
+        await_operation(&nodes[1], 2);
+        assert(nodes[1].received.result == LCS_CONFIG_TX_OK && nodes[1].runtime.requests.count == 1);
+        assert(nodes[1].coordinator.completed_requests == 2 && !nodes[1].coordinator.accepting.document);
+        lcs_config_value_clear(&value); cleanup();
+    }
+}
+static void test_accept_identity_failures(void)
+{
+    for (unsigned stage = 0; stage < 2; stage++) for (int boundary = 1; boundary <= 2; boundary++)
+    {
+        setup();
+        lcs_config_tx_control_t control = prepare(1, 1, 32);
+        assert(!send_control(1, &control)); await_operation(&nodes[1], 0);
+        lcs_config_value_t value = candidate("failed-identity");
+        forbid_io = true; fail_sync = stage ? 0 : boundary;
+        assert(!send_value(1, 2, LCS_CONFIG_TRANSFER_ACCEPT, 0, &value, 32));
+        if (stage)
+        {
+            fail_sync = boundary;
+            for (unsigned i = 0; i < 5000 && nodes[1].coordinator.phase == LCS_CONFIG_COORD_ACCEPT_RESERVING; i++)
+            { tick(&nodes[1]); usleep(1000); }
+        }
+        fail_sync = 0;
+        await_operation(&nodes[1], 1);
+        assert(nodes[1].received.result == LCS_CONFIG_TX_UNKNOWN && nodes[1].coordinator.failed);
+        assert(nodes[1].runtime.agreement.poisoned && !nodes[1].runtime.agreement.accepted.document);
+        assert(!nodes[1].coordinator.accepting.document && nodes[1].coordinator.completed_votes == 1);
+        assert(nodes[1].coordinator.completed_requests == stage);
+        lcs_config_value_clear(&value); cleanup();
+    }
+}
+static void test_accept_history_conflicts_and_capacity(void)
+{
+    for (unsigned mode = 0; mode < 3; mode++)
+    {
+        setup();
+        lcs_config_value_t value = candidate("incoming-identity");
+        if (mode == 0)
+        {
+            lcs_config_t *bad = malloc(sizeof(*bad)); assert(bad); uint64_t revision;
+            assert(!lcs_resource_config_decode(value.document, value.length, &config, bad, &revision, error, sizeof(error)));
+            strcpy(bad->resources[0].address, "192.0.2.99/32");
+            char *document; size_t length;
+            assert(!lcs_resource_config_encode(bad, revision, &document, &length, error, sizeof(error))); free(bad);
+            lcs_config_value_t conflict = {0};
+            assert(!lcs_config_value_init(&conflict, &config, value.request_id, document, length, error, sizeof(error))); free(document);
+            assert(!lcs_config_requests_reserve(&nodes[1].runtime.requests, &nodes[1].runtime.agreement, 0,
+                nodes[1].runtime.agreement.committed.digest, &conflict, error, sizeof(error)));
+            lcs_config_value_clear(&conflict);
+        }
+        if (mode == 1) for (unsigned i = 0; i < LCS_CONFIG_REQUEST_HISTORY_MAX; i++)
+        {
+            char id[32]; snprintf(id, sizeof(id), "full-%u", i); lcs_config_value_t full = candidate(id);
+            assert(!lcs_config_requests_reserve(&nodes[1].runtime.requests, &nodes[1].runtime.agreement, 0,
+                nodes[1].runtime.agreement.committed.digest, &full, error, sizeof(error)));
+            lcs_config_value_clear(&full);
+        }
+        forbid_io = true;
+        lcs_config_tx_control_t control = prepare(1, 1, mode == 2 ? 64 : 32);
+        assert(!send_control(1, &control)); await_operation(&nodes[1], 0);
+        assert(!send_value(1, 2, LCS_CONFIG_TRANSFER_ACCEPT, 0, &value, 32));
+        await_operation(&nodes[1], 1);
+        assert(nodes[1].received.result == LCS_CONFIG_TX_REJECTED && !nodes[1].coordinator.failed);
+        assert(!nodes[1].runtime.agreement.accepted.document && !nodes[1].coordinator.accepting.document);
+        assert(nodes[1].coordinator.completed_requests == (mode == 2 ? 0u : 1u));
+        assert(nodes[1].runtime.requests.count == (mode == 0 ? 1u : mode == 1 ? LCS_CONFIG_REQUEST_HISTORY_MAX : 0u));
+        if (mode == 1)
+        {
+            lcs_config_value_clear(&value); value = candidate("full-0");
+            assert(!send_value(1, 3, LCS_CONFIG_TRANSFER_ACCEPT, 0, &value, 32));
+            await_operation(&nodes[1], 2);
+            assert(nodes[1].received.result == LCS_CONFIG_TX_OK);
+            assert(nodes[1].runtime.requests.count == LCS_CONFIG_REQUEST_HISTORY_MAX);
+        }
+        lcs_config_value_clear(&value); cleanup();
+    }
+}
+
+static void test_accept_cancellation_recovery(void)
+{
+    for (unsigned stage = 0; stage < 2; stage++)
+    {
+        setup();
+        lcs_config_tx_control_t control = prepare(1, 1, 32);
+        assert(!send_control(1, &control)); await_operation(&nodes[1], 0);
+        lcs_config_value_t value = candidate("cancelled-accept");
+        forbid_io = true; stop_sync = stage ? 0 : 2;
+        assert(!send_value(1, 2, LCS_CONFIG_TRANSFER_ACCEPT, 0, &value, 32));
+        if (stage)
+        {
+            stop_sync = 2;
+            for (unsigned i = 0; i < 5000 && nodes[1].coordinator.phase == LCS_CONFIG_COORD_ACCEPT_RESERVING; i++)
+            { tick(&nodes[1]); usleep(1000); }
+        }
+        await_stopped(&nodes[1]); stop_sync = 0;
+        lcs_config_transactions_close(&nodes[1].transactions);
+        lcs_config_coordinator_stop(&nodes[1].coordinator);
+        assert(!nodes[1].coordinator.accepting.document);
+        for (unsigned i = 0; i < 5000 && !lcs_config_coordinator_can_close(&nodes[1].coordinator); i++)
+        { (void)lcs_config_coordinator_process(&nodes[1].coordinator, 1000); usleep(1000); }
+        assert(lcs_config_coordinator_can_close(&nodes[1].coordinator) && nodes[1].controls == 1);
+        assert(nodes[1].runtime.agreement.poisoned && nodes[1].coordinator.completed_votes == 1);
+        forbid_io = false;
+        lcs_config_runtime_close(&nodes[1].runtime);
+        lcs_config_t *local = malloc(sizeof(*local)); assert(local); *local = config;
+        strcpy(local->self_name, "node1");
+        assert(!lcs_config_runtime_open(&nodes[1].runtime, &nodes[1].store, local, error, sizeof(error))); free(local);
+        assert(nodes[1].runtime.requests.count == 1);
+        assert(!!nodes[1].runtime.agreement.accepted.document == !!stage);
+        lcs_config_coordinator_init(&nodes[1].coordinator, &nodes[1].runtime, &nodes[1].readiness);
+        assert(!lcs_config_coordinator_recover(&nodes[1].coordinator));
+        lcs_config_transactions_init(&nodes[1].transactions, &nodes[1].coordinator, 101);
+        forbid_io = true;
+        assert(!send_value(1, 3, LCS_CONFIG_TRANSFER_ACCEPT, 0, &value, 32));
+        await_operation(&nodes[1], 0);
+        assert(nodes[1].received.result == LCS_CONFIG_TX_OK && nodes[1].runtime.requests.count == 1);
+        assert(lcs_config_value_equal(&nodes[1].runtime.agreement.accepted, &value));
+        lcs_config_value_clear(&value); cleanup();
+    }
 }
 
 static lcs_config_value_t next_value(const lcs_config_value_t *previous, bool present)
@@ -947,6 +1099,10 @@ int main(void)
     test_network_proposer();
     test_proposal_reservation_order_and_timeout();
     test_proposal_history_admission();
+    test_accept_identity_durability();
+    test_accept_identity_failures();
+    test_accept_history_conflicts_and_capacity();
+    test_accept_cancellation_recovery();
     test_checkpoint_sync();
     test_codecs_and_session_admission();
     test_majority_and_recovery();

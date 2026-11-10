@@ -155,6 +155,11 @@ durable distributed configuration protocol.
   history, refuse known IDs even with newer transport IDs, and keep recovered
   accepted values separate from original intent. Test ordering, capacity, timeout,
   uncertain writes, shutdown/restart and absence of implicit history initialization.
+- [x] Persist/check the acceptor's selected request identity before phase-two
+  acceptance through the same coordinator writer. Require healthy existing
+  history, reject immutable-ID conflicts and capacity exhaustion without accepting,
+  and send positive ACK only after acceptance completes. Preserve exact protocol
+  retries/recovery and test both writes' sync boundaries, failures and cancellation.
 - [ ] Integrate coordinated first-initialization authorization, lost-history recovery
   and proposer/acceptor paths before enabling public mutation endpoints. Handle
   missing-history/checkpoint transfer, completed admission acknowledgements and

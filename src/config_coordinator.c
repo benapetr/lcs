@@ -44,11 +44,19 @@ static bool current_attempt(const lcs_config_coordinator_t *coordinator)
         readiness->round.required == coordinator->persisted_round.required;
 }
 
+static void clear_accept(lcs_config_coordinator_t *coordinator)
+{
+    lcs_config_value_clear(&coordinator->accepting);
+    coordinator->accepting_ballot = 0;
+    memset(coordinator->accepting_parent, 0, sizeof(coordinator->accepting_parent));
+}
+
 void lcs_config_coordinator_stop(lcs_config_coordinator_t *coordinator)
 {
     if (!coordinator->initialized)
         return;
     coordinator->closing = true;
+    clear_accept(coordinator);
     coordinator->readiness->round.failed = true;
     if (coordinator->storage.pid > 0)
         lcs_config_agreement_worker_cancel(&coordinator->storage, &coordinator->runtime->agreement);
@@ -140,6 +148,36 @@ int lcs_config_coordinator_start_vote(lcs_config_coordinator_t *coordinator,
     lcs_config_runtime_t *runtime = coordinator->runtime;
     if (job->action == LCS_CONFIG_ACCEPT && dynamic_successor(runtime, job->value, err, err_len))
         return -1;
+    if (job->action == LCS_CONFIG_ACCEPT)
+    {
+        lcs_config_requests_t *history = &runtime->requests;
+        if (!memchr(job->value->request_id, 0, sizeof(job->value->request_id)) ||
+            !history->store || history->poisoned || coordinator->completed_requests == UINT64_MAX ||
+            !strcmp(job->value->request_id, runtime->agreement.committed.request_id) ||
+            (runtime->agreement.accepted.document &&
+             !strcmp(job->value->request_id, runtime->agreement.accepted.request_id) &&
+             !lcs_config_value_equal(job->value, &runtime->agreement.accepted)))
+            return -1;
+        int admissible = lcs_config_agreement_check_accept(&runtime->agreement,
+            job->parent_digest, job->ballot, job->value, err, err_len);
+        if (admissible < 0) return -1;
+        if (!admissible)
+        {
+            if (lcs_config_value_copy(&coordinator->accepting, job->value)) return -1;
+            coordinator->accepting_ballot = job->ballot;
+            memcpy(coordinator->accepting_parent, job->parent_digest, sizeof(coordinator->accepting_parent));
+            lcs_config_agreement_job_t reservation = {.action = LCS_CONFIG_REQUEST_RESERVE,
+                .revision = job->value->revision - 1, .value = &coordinator->accepting};
+            memcpy(reservation.parent_digest, job->parent_digest, sizeof(reservation.parent_digest));
+            int result = lcs_config_agreement_worker_start_requests(&coordinator->storage, &runtime->agreement,
+                &runtime->requests, &reservation, err, err_len);
+            if (result) clear_accept(coordinator);
+            else coordinator->phase = LCS_CONFIG_COORD_ACCEPT_RESERVING;
+            return result;
+        }
+        /* A stale/rejected ballot is reported through the ordinary vote worker
+         * without consuming a request-history entry. It cannot become accepted. */
+    }
     int result = lcs_config_agreement_worker_start(&coordinator->storage, &runtime->agreement, job, err, err_len);
     if (!result)
         coordinator->phase = LCS_CONFIG_COORD_VOTING;
@@ -296,8 +334,10 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
         return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
     lcs_config_runtime_t *runtime = coordinator->runtime;
     if (coordinator->phase == LCS_CONFIG_COORD_VOTING || coordinator->phase == LCS_CONFIG_COORD_APPLYING ||
-        coordinator->phase == LCS_CONFIG_COORD_PROJECTING || coordinator->phase == LCS_CONFIG_COORD_REQUESTING)
+        coordinator->phase == LCS_CONFIG_COORD_PROJECTING || coordinator->phase == LCS_CONFIG_COORD_REQUESTING ||
+        coordinator->phase == LCS_CONFIG_COORD_ACCEPT_RESERVING)
     {
+        bool accepting_job = coordinator->phase == LCS_CONFIG_COORD_ACCEPT_RESERVING;
         bool request_job = coordinator->phase == LCS_CONFIG_COORD_REQUESTING;
         bool application_job = coordinator->phase == LCS_CONFIG_COORD_APPLYING;
         bool projection_job = coordinator->phase == LCS_CONFIG_COORD_PROJECTING;
@@ -308,9 +348,35 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
             return 0;
         if (result < 0)
         {
+            clear_accept(coordinator);
             coordinator->failed = coordinator->closing = true;
             coordinator->phase = coordinator->storage.pid > 0 ? LCS_CONFIG_COORD_CANCELLING : LCS_CONFIG_COORD_FAILED;
             return coordinator->storage.pid > 0 ? 0 : -1;
+        }
+        if (accepting_job)
+        {
+            coordinator->last_request_result = operation;
+            coordinator->completed_requests++;
+            coordinator->phase = LCS_CONFIG_COORD_READY;
+            if ((operation == LCS_CONFIG_REQUEST_RECORDED || operation == LCS_CONFIG_REQUEST_EXISTS) &&
+                lcs_config_coordinator_can_vote(coordinator))
+            {
+                lcs_config_agreement_job_t acceptance = {.action = LCS_CONFIG_ACCEPT,
+                    .ballot = coordinator->accepting_ballot, .value = &coordinator->accepting};
+                memcpy(acceptance.parent_digest, coordinator->accepting_parent, sizeof(acceptance.parent_digest));
+                int started = lcs_config_agreement_worker_start(&coordinator->storage, &runtime->agreement,
+                    &acceptance, coordinator->error, sizeof(coordinator->error));
+                clear_accept(coordinator);
+                if (!started)
+                {
+                    coordinator->phase = LCS_CONFIG_COORD_VOTING;
+                    return 0;
+                }
+            }
+            clear_accept(coordinator);
+            coordinator->last_vote_result = LCS_CONFIG_REJECTED;
+            coordinator->completed_votes++;
+            return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
         }
         if (request_job)
         {

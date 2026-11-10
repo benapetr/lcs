@@ -502,7 +502,7 @@ int lcs_config_agreement_import_checkpoint(lcs_config_agreement_t *agreement, co
     return import_record(agreement, document, length, err, err_len, true);
 }
 
-static int slot_check(lcs_config_agreement_t *agreement, uint64_t revision,
+static int slot_check(const lcs_config_agreement_t *agreement, uint64_t revision,
                        const char *parent, uint64_t ballot, char *err, size_t err_len)
 {
     if (agreement->poisoned)
@@ -572,11 +572,13 @@ static int checked_value(const lcs_config_agreement_t *agreement,
     return same ? 0 : fail(err, err_len, "proposal is not canonical or its identity is invalid");
 }
 
-int lcs_config_agreement_accept(lcs_config_agreement_t *agreement,
+int lcs_config_agreement_check_accept(const lcs_config_agreement_t *agreement,
                                 const char *parent_digest, uint64_t ballot,
                                 const lcs_config_value_t *value,
                                 char *err, size_t err_len)
 {
+    if (!value || !value->document)
+        return fail(err, err_len, "complete accepted value required");
     int rc = slot_check(agreement, value->revision, parent_digest, ballot, err, err_len);
     if (rc)
         return rc;
@@ -588,6 +590,17 @@ int lcs_config_agreement_accept(lcs_config_agreement_t *agreement,
     if (agreement->accepted_ballot == ballot)
         return lcs_config_value_equal(&agreement->accepted, value) ?
                LCS_CONFIG_AGREED : LCS_CONFIG_REJECTED;
+    return LCS_CONFIG_AGREED;
+}
+
+int lcs_config_agreement_accept(lcs_config_agreement_t *agreement,
+                                const char *parent_digest, uint64_t ballot,
+                                const lcs_config_value_t *value,
+                                char *err, size_t err_len)
+{
+    int rc = lcs_config_agreement_check_accept(agreement, parent_digest, ballot, value, err, err_len);
+    if (rc || agreement->accepted_ballot == ballot)
+        return rc;
     lcs_config_agreement_t next;
     if (clone(&next, agreement))
         return fail(err, err_len, "out of memory accepting proposal");
