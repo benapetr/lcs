@@ -165,6 +165,57 @@ static bool bound(const lcs_config_requests_t *history, const lcs_config_agreeme
         history->store == agreement->store && history->base == agreement->base &&
         !strcmp(history->member, agreement->member) && !strcmp(history->membership, agreement->membership);
 }
+static int validate_agreement(const lcs_config_requests_t *history,
+                                 const lcs_config_agreement_t *agreement, char *err, size_t err_len)
+{
+    if (!bound(history, agreement)) return fail(err, err_len, "history/agreement binding requires recovery");
+    for (size_t i = 0; i < history->count; i++)
+    {
+        const lcs_config_request_record_t *r = &history->records[i];
+        const lcs_config_value_t *committed = &agreement->committed;
+        bool current_id = !strcmp(r->id, committed->request_id);
+        if (r->base_revision > committed->revision ||
+            (r->base_revision == committed->revision &&
+             (r->committed || strcmp(r->base_digest, committed->digest))) ||
+            ((current_id || (r->committed && r->base_revision + 1 == committed->revision)) &&
+             (r->base_revision + 1 != committed->revision ||
+              strcmp(r->id, committed->request_id) || strcmp(r->base_digest, agreement->parent_digest) ||
+              strcmp(r->value_digest, committed->digest))))
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: request history contradicts the learned journal; recovery required");
+            return -1;
+        }
+        if (agreement->accepted.document && !strcmp(r->id, agreement->accepted.request_id) &&
+            (r->base_revision != committed->revision || strcmp(r->base_digest, committed->digest) ||
+             strcmp(r->value_digest, agreement->accepted.digest)))
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: accepted request contradicts its immutable identity; recovery required");
+            return -1;
+        }
+    }
+    return 0;
+}
+int lcs_config_requests_recover(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
+                                 bool allow_initialize, char *err, size_t err_len)
+{
+    if (!history || history->store || history->base || history->count || history->poisoned ||
+        !agreement || agreement->poisoned || !agreement->store || !agreement->base || !agreement->committed.document)
+        return fail(err, err_len, "fresh history and recovered agreement required");
+    /* Initialization is safe only before any agreement activity, never as a
+     * substitute for lost request history on a running/previously active node. */
+    bool pristine = !agreement->committed.revision && !strcmp(agreement->committed.request_id, "bootstrap") &&
+        !agreement->promised && !agreement->accepted_ballot && !agreement->accepted.document &&
+        !agreement->committed_ballot && !agreement->committed_voters && !*agreement->parent_digest;
+    lcs_config_requests_t *next = calloc(1, sizeof(*next));
+    if (!next) return fail(err, err_len, "cannot allocate recovered request history");
+    int result = lcs_config_requests_open(next, agreement->store, agreement->base,
+                                            allow_initialize && pristine, err, err_len);
+    if (!result) result = validate_agreement(next, agreement, err, err_len);
+    if (!result) *history = *next;
+    free(next); return result;
+}
 static int record(lcs_config_requests_t *history, const lcs_config_request_record_t *request, char *err, size_t err_len)
 {
     const lcs_config_request_record_t *existing = lcs_config_requests_find(history, request->id);

@@ -366,6 +366,99 @@ static void runtime_recovery(void)
     lcs_config_value_clear(&value); lcs_config_application_close(&application);
     assert(!unlinkat(store.directory_fd, "application.json", 0));
 }
+static void reopen_agreement(void)
+{
+    lcs_config_agreement_close(&agreement);
+    assert(!lcs_config_agreement_open(&agreement, &store, &base, false, error, sizeof(error)));
+}
+static void request_open_worker(void)
+{
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    lcs_config_requests_close(&history);
+    assert(!unlinkat(store.directory_fd, "requests.json", 0));
+    int operation = -99;
+    forbid_parent = getpid();
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, false, error, sizeof(error)));
+    assert(!history.store && !history.poisoned);
+    assert(finish_worker(&worker, &operation) < 0 && history.poisoned && agreement.poisoned);
+    forbid_parent = 0; reopen_agreement(); lcs_config_requests_close(&history);
+    assert(faccessat(store.directory_fd, "requests.json", F_OK, 0) < 0 && errno == ENOENT);
+    forbid_parent = getpid();
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)));
+    assert(!history.store);
+    assert(lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)) == 1);
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_PREPARE };
+    assert(lcs_config_agreement_worker_start(&worker, &agreement, &job, error, sizeof(error)) == 1);
+    assert(finish_worker(&worker, &operation) == 1 && !operation && history.store == &store && !history.count);
+    forbid_parent = 0;
+    assert(lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)) < 0);
+    lcs_config_value_t value = proposal("open-recovery");
+    assert(!reserve(&value)); learn(&value);
+    assert(!lcs_config_requests_observe(&history, &agreement, error, sizeof(error)));
+    char *original; size_t length;
+    assert(!lcs_config_requests_export(&history, &original, &length, error, sizeof(error)));
+    lcs_config_requests_close(&history);
+    forbid_sync = true;
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)));
+    assert(finish_worker(&worker, &operation) == 1 && !operation);
+    assert(history.count == 1 && history.records[0].committed);
+    forbid_sync = false;
+    /* A stale parent must not authorize opening against newer disk promises. */
+    lcs_config_agreement_t disk = {0};
+    assert(!lcs_config_agreement_open(&disk, &store, &base, false, error, sizeof(error)));
+    assert(!lcs_config_agreement_prepare(&disk, 2, disk.committed.digest, 64, error, sizeof(error)));
+    lcs_config_agreement_close(&disk); lcs_config_requests_close(&history);
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)));
+    assert(finish_worker(&worker, &operation) < 0 && history.poisoned && agreement.poisoned);
+    reopen_agreement(); lcs_config_requests_close(&history);
+    assert(!unlinkat(store.directory_fd, "requests.json", 0));
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)));
+    assert(finish_worker(&worker, &operation) < 0 && history.poisoned && agreement.poisoned);
+    assert(faccessat(store.directory_fd, "requests.json", F_OK, 0) < 0 && errno == ENOENT);
+    reopen_agreement(); lcs_config_requests_close(&history);
+    assert(!lcs_config_store_write(&store, "requests.json", "{}", 2, error, sizeof(error)));
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)));
+    assert(finish_worker(&worker, &operation) < 0 && history.poisoned && agreement.poisoned);
+    reopen_agreement(); lcs_config_requests_close(&history);
+    assert(!lcs_config_store_write(&store, "requests.json", original, length, error, sizeof(error)));
+    assert(!lcs_config_requests_recover(&history, &agreement, false, error, sizeof(error)));
+    free(original); lcs_config_value_clear(&value);
+}
+static void request_open_failure(unsigned mode)
+{
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    lcs_config_requests_close(&history);
+    assert(!unlinkat(store.directory_fd, "requests.json", 0));
+    if (mode < 2) fail_sync = mode + 1;
+    else if (mode < 4) crash_sync = mode - 1;
+    int operation = -99;
+    forbid_parent = getpid();
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)));
+    fail_sync = crash_sync = 0;
+    if (mode == 4) lcs_config_agreement_worker_cancel(&worker, &agreement);
+    if (worker.pid) assert(finish_worker(&worker, &operation) < 0);
+    assert(history.poisoned && !history.store && agreement.poisoned);
+    forbid_parent = 0; reopen_agreement(); lcs_config_requests_close(&history);
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)));
+    assert(finish_worker(&worker, &operation) == 1 && !operation && !history.count);
+}
+static void request_open_refuses_promise(void)
+{
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    assert(!lcs_config_agreement_prepare(&agreement, 1, agreement.committed.digest, 32, error, sizeof(error)));
+    lcs_config_requests_close(&history);
+    assert(!unlinkat(store.directory_fd, "requests.json", 0));
+    int operation;
+    assert(!lcs_config_agreement_worker_open_requests(&worker, &agreement, &history, true, error, sizeof(error)));
+    assert(finish_worker(&worker, &operation) < 0 && agreement.poisoned && history.poisoned);
+    assert(faccessat(store.directory_fd, "requests.json", F_OK, 0) < 0 && errno == ENOENT);
+    reopen_agreement(); lcs_config_requests_close(&history);
+    /* Restore the known pre-promise empty fixture explicitly for cleanup. */
+    assert(!lcs_config_requests_open(&history, &store, &base, true, error, sizeof(error)));
+}
 static void cleanup(void)
 {
     lcs_config_requests_close(&history); lcs_config_agreement_close(&agreement);
@@ -377,5 +470,8 @@ int main(void)
     setup(); identities_and_decisions(); invalid_records(); failures_and_capacity(); cleanup();
     setup(); serialized_worker(); cleanup();
     setup(); runtime_recovery(); cleanup();
+    setup(); request_open_worker(); cleanup();
+    setup(); request_open_refuses_promise(); cleanup();
+    for (unsigned mode = 0; mode < 5; mode++) { setup(); request_open_failure(mode); cleanup(); }
     puts("durable request identity, decision facts, serialized worker and sync-failure unit tests passed"); return 0;
 }

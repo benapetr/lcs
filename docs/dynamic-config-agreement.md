@@ -485,8 +485,23 @@ learning but before history observation does not silently upgrade a reserved bit
 
 Older catalogs without `requests.json` remain recoverable, with history unavailable.
 Recovery never creates an empty file or authorizes identifier reuse from absence.
-Missing-history initialization, checkpoint-history recovery and transaction
-submission are still unwired. Callers must keep both handles unchanged until
+The shared storage worker now also offers explicit request-history open/recovery.
+It reopens the disk agreement in its child and compares the complete committed
+value, promises, accepted value and learned evidence with the parent's immutable
+snapshot. Existing history passes the same checks as startup recovery and is not
+rewritten. Publication waits for a complete handoff and successful child exit;
+failed/cancelled jobs poison both the agreement and destination until reaping and
+recovery. The destination must be fresh and cannot replace an existing handle.
+
+Explicit first-initialization authorization can create a missing journal only
+at pristine revision zero without promises, acceptances or learned successors.
+It never resets corrupt history or initializes an advanced missing history.
+Pristine agreement alone cannot prove no earlier request IDs were reserved before
+PREPARE, so callers must establish coordinated first-initialization authorization;
+absence is never authorization for automatic repair after history loss.
+
+Automatic first-initialization authorization, lost-history/checkpoint recovery
+and transaction submission are still unwired. Callers must keep both handles unchanged until
 completion, use the same worker for every store writer, and explicitly authorize missing-history
 initialization. An inherited directory-lock descriptor alone cannot serialize
 multiple writer children.

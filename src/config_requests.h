@@ -32,6 +32,15 @@ typedef struct
  * reset. New empty history cannot establish outcomes for earlier/missed requests. */
 int lcs_config_requests_open(lcs_config_requests_t *history, lcs_config_store_t *store,
                                const lcs_config_t *base, bool allow_initialize, char *err, size_t err_len);
+/* Recover existing history against learned/accepted facts without fabricating
+ * missed decisions. Fresh target only. Explicit initialization may create a
+ * missing file ONLY at pristine revision zero without promises or acceptances.
+ * Advanced missing history must be recovered, never replaced with an empty list.
+ * Pristine state alone does not prove no earlier reservations; authorization
+ * means coordinated first initialization, not automatic repair after file loss.
+ * Synchronous; runtime callers must use the shared storage worker. */
+int lcs_config_requests_recover(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,
+                                 bool allow_initialize, char *err, size_t err_len);
 void lcs_config_requests_close(lcs_config_requests_t *history);
 /* Healthy handle only. Borrowed until the next mutation/close. Absence is
  * unknown, never rejection/abort or permission to reuse a forgotten identifier. */

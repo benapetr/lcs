@@ -195,8 +195,12 @@ frozen base and rejects orphaned, unsafe, corrupt, foreign or locally contradict
 history. Older catalogs with no record remain readable with history unavailable;
 startup does not create empty history or infer missed outcomes. Reservation and
 decision observation have explicit jobs on the shared storage worker; initialization
-and transaction submission do not yet run automatically in the daemon. These are local
-reservation/decision facts, not peer evidence or final client outcomes. There is
+and transaction submission do not yet run automatically in the daemon. An explicit
+open/recovery worker rechecks disk agreement before publishing history; missing
+history can be created only with first-initialization authorization at pristine
+revision zero without promises/acceptances/learning. Pristine state alone is not
+authorization to recreate lost reservations. These are local reservation/decision
+facts, not peer evidence or final client outcomes. There is
 no wire, CLI, existing-record or release-version change.
 
 ## Offline document validation

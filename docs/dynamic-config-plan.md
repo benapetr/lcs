@@ -138,8 +138,14 @@ durable distributed configuration protocol.
   reject unsafe/corrupt/foreign/orphan records and locally contradictory learned or
   accepted identities before listeners open. Keep missing older history unavailable
   without silently creating an empty file or inferring checkpoint-gap outcomes.
-- [ ] Integrate missing-history initialization/recovery and proposer/acceptor paths
-  before enabling public mutation endpoints. Handle
+- [x] Add explicit nonblocking request-history recovery/first-initialization jobs
+  on the shared writer. Reopen and compare disk agreement before publishing;
+  allow missing-file creation only with explicit first-initialization authorization
+  at pristine revision zero. Refuse initialization after promises or learning,
+  preserve corrupt state, and test uncertain writes, crashes and cancellation.
+  This primitive does not infer first-initialization permission from missing files.
+- [ ] Integrate coordinated first-initialization authorization, lost-history recovery
+  and proposer/acceptor paths before enabling public mutation endpoints. Handle
   missing-history/checkpoint transfer, completed admission acknowledgements and
   deliberate retention/compaction; unrecorded requests remain outcome-unknown.
 - [x] Define full-cluster restart, stale-majority prevention, disk loss, backup

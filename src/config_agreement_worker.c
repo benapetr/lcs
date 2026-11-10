@@ -43,6 +43,8 @@ static void reset(lcs_config_agreement_worker_t *worker)
     if (worker->pipe_fd >= 0)
         close(worker->pipe_fd);
     free(worker->buffer);
+    if (worker->requests_target)
+        free(worker->requests);
     if (worker->initialization_candidate)
     {
         lcs_config_runtime_close(worker->initialization_candidate);
@@ -160,7 +162,33 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
         lcs_config_runtime_close(&recovered);
         _exit(write_all(pipe_fd, &result, sizeof(result)) ? 1 : 0);
     }
-    if (job->action == LCS_CONFIG_REQUEST_RESERVE)
+    if (job->action == LCS_CONFIG_REQUEST_OPEN)
+    {
+        lcs_config_agreement_t disk = {0};
+        bool same = !lcs_config_agreement_open(&disk, agreement->store, agreement->base, false,
+                                                 result.error, sizeof(result.error)) &&
+            lcs_config_value_equal(&disk.committed, &agreement->committed) &&
+            disk.promised == agreement->promised && disk.accepted_ballot == agreement->accepted_ballot &&
+            ((!disk.accepted.document && !agreement->accepted.document) ||
+             lcs_config_value_equal(&disk.accepted, &agreement->accepted)) &&
+            disk.committed_ballot == agreement->committed_ballot &&
+            disk.committed_voters == agreement->committed_voters &&
+            !strcmp(disk.parent_digest, agreement->parent_digest);
+        /* The private candidate has binding metadata only for parent import. */
+        lcs_config_requests_close(requests);
+        result.result = same ? lcs_config_requests_recover(requests, &disk, job->initialize_requests,
+                                                           result.error, sizeof(result.error)) : -1;
+        if (result.result)
+        {
+            requests->poisoned = true;
+            if (!*result.error)
+                snprintf(result.error, sizeof(result.error), "disk agreement changed; recover before opening request history");
+        }
+        /* requests borrows disk.base/store, which are the immutable parent's
+         * bindings, not disk-owned values. No journal pointers are retained. */
+        lcs_config_agreement_close(&disk);
+    }
+    else if (job->action == LCS_CONFIG_REQUEST_RESERVE)
         result.result = lcs_config_requests_reserve(requests, agreement, job->revision,
             job->parent_digest, job->value, result.error, sizeof(result.error));
     else if (job->action == LCS_CONFIG_REQUEST_OBSERVE)
@@ -238,7 +266,8 @@ static int start(lcs_config_agreement_worker_t *worker,
     if (worker->pid > 0)
         return 1;
     bool request_job = job && (job->action == LCS_CONFIG_REQUEST_RESERVE ||
-                               job->action == LCS_CONFIG_REQUEST_OBSERVE);
+                               job->action == LCS_CONFIG_REQUEST_OBSERVE ||
+                               job->action == LCS_CONFIG_REQUEST_OPEN);
     if (request_job != (requests != NULL) || (requests &&
         (requests->poisoned || requests->store != agreement->store || requests->base != agreement->base ||
          strcmp(requests->member, agreement->member) || strcmp(requests->membership, agreement->membership) ||
@@ -333,6 +362,27 @@ int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t 
     if (!application)
         return fail(err, err_len, "application catalog is required");
     return start(worker, agreement, application, NULL, job, NULL, NULL, false, NULL, err, err_len);
+}
+
+int lcs_config_agreement_worker_open_requests(lcs_config_agreement_worker_t *worker,
+                                               lcs_config_agreement_t *agreement,
+                                               lcs_config_requests_t *requests,
+                                               bool allow_initialize, char *err, size_t err_len)
+{
+    if (worker->pid > 0) return 1;
+    if (!requests || requests->store || requests->base || requests->count || requests->poisoned ||
+        !agreement || agreement->poisoned || !agreement->store || !agreement->base || !agreement->committed.document)
+        return fail(err, err_len, "fresh request history and healthy agreement required");
+    lcs_config_requests_t *candidate = calloc(1, sizeof(*candidate));
+    if (!candidate) return fail(err, err_len, "cannot allocate request recovery candidate");
+    candidate->store = agreement->store; candidate->base = agreement->base;
+    memcpy(candidate->member, agreement->member, sizeof(candidate->member));
+    memcpy(candidate->membership, agreement->membership, sizeof(candidate->membership));
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_REQUEST_OPEN, .initialize_requests = allow_initialize };
+    int result = start(worker, agreement, NULL, candidate, &job, NULL, NULL, false, NULL, err, err_len);
+    if (result) free(candidate);
+    else worker->requests_target = requests;
+    return result;
 }
 
 int lcs_config_agreement_worker_start_requests(lcs_config_agreement_worker_t *worker,
@@ -475,6 +525,8 @@ static void poison(lcs_config_agreement_worker_t *worker, lcs_config_agreement_t
     agreement->poisoned = true;
     if (worker->requests)
         worker->requests->poisoned = true;
+    if (worker->requests_target)
+        worker->requests_target->poisoned = true;
     if (worker->application)
         worker->application->poisoned = true;
 }
@@ -613,6 +665,13 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
         poison(worker, agreement);
         reset(worker);
         return -1;
+    }
+    if (worker->requests_target)
+    {
+        if (result.result || worker->requests_target->store || worker->requests_target->base ||
+            worker->requests_target->count || worker->requests_target->poisoned)
+            goto broken;
+        *worker->requests_target = *worker->requests;
     }
     *operation_result = result.result;
     if (result.result < 0)

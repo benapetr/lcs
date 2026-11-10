@@ -17,46 +17,6 @@ void lcs_config_runtime_close(lcs_config_runtime_t *runtime)
     memset(runtime, 0, sizeof(*runtime));
 }
 
-/* Old catalogs predate request tracking. Missing history is unknown, never a
- * new empty history. A present journal must agree with all locally verifiable
- * facts; historical checkpoint gaps cannot reconstruct unobserved decisions. */
-static int recover_requests(lcs_config_runtime_t *runtime, lcs_config_store_t *store,
-                              int missing, char *err, size_t err_len)
-{
-    if (missing)
-        return 0;
-    if (lcs_config_requests_open(&runtime->requests, store, runtime->base, false, err, err_len))
-        return -1;
-    const lcs_config_agreement_t *agreement = &runtime->agreement;
-    for (size_t i = 0; i < runtime->requests.count; i++)
-    {
-        const lcs_config_request_record_t *r = &runtime->requests.records[i];
-        const lcs_config_value_t *committed = &agreement->committed;
-        bool current_id = !strcmp(r->id, committed->request_id);
-        if (r->base_revision > committed->revision ||
-            (r->base_revision == committed->revision &&
-             (r->committed || strcmp(r->base_digest, committed->digest))) ||
-            ((current_id || (r->committed && r->base_revision + 1 == committed->revision)) &&
-             (r->base_revision + 1 != committed->revision ||
-              strcmp(r->id, committed->request_id) || strcmp(r->base_digest, agreement->parent_digest) ||
-              strcmp(r->value_digest, committed->digest))))
-        {
-            if (err && err_len)
-                snprintf(err, err_len, "configuration recovery: request history contradicts the learned journal; recovery required");
-            return -1;
-        }
-        if (agreement->accepted.document && !strcmp(r->id, agreement->accepted.request_id) &&
-            (r->base_revision != committed->revision || strcmp(r->base_digest, committed->digest) ||
-             strcmp(r->value_digest, agreement->accepted.digest)))
-        {
-            if (err && err_len)
-                snprintf(err, err_len, "configuration recovery: accepted request contradicts its immutable identity; recovery required");
-            return -1;
-        }
-    }
-    return 0;
-}
-
 int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                              lcs_config_store_t *store, const lcs_config_t *cfg,
                              char *err, size_t err_len)
@@ -108,7 +68,7 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
             result = lcs_config_barrier_open(&runtime->barrier, &runtime->activation,
                 &runtime->agreement, &runtime->application, NULL, err, err_len);
         if (!result)
-            result = recover_requests(runtime, store, requests, err, err_len);
+            result = requests ? 0 : lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len);
         if (result)
         {
             lcs_config_runtime_close(runtime);
@@ -156,7 +116,7 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                                   false, err, err_len) ||
         lcs_config_application_open(&runtime->application, &runtime->agreement,
                                     false, err, err_len) ||
-        recover_requests(runtime, store, requests, err, err_len))
+        (!requests && lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len)))
     {
         lcs_config_runtime_close(runtime);
         return -1;

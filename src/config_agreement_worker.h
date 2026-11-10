@@ -21,11 +21,13 @@ typedef enum
     LCS_CONFIG_PROJECTION = 8,
     LCS_CONFIG_REQUEST_RESERVE = 9,
     LCS_CONFIG_REQUEST_OBSERVE = 10,
+    LCS_CONFIG_REQUEST_OPEN = 11,
 } lcs_config_agreement_action_t;
 
 typedef struct
 {
     lcs_config_agreement_action_t action;
+    bool initialize_requests; /* Explicit pristine-only authorization for OPEN. */
     uint64_t revision;
     char parent_digest[LCS_CONFIG_DIGEST_SIZE];
     uint64_t ballot;
@@ -45,7 +47,8 @@ typedef struct
     bool eof;
     bool cancelled;
     bool checkpoint; /* Selects the explicit monotonic checkpoint import. */
-    lcs_config_requests_t *requests; /* Borrowed until reaped; already explicitly opened. */
+    lcs_config_requests_t *requests; /* Borrowed, or private OPEN candidate until reaped. */
+    lcs_config_requests_t *requests_target; /* Fresh borrowed OPEN destination. */
     lcs_config_agreement_t *request_agreement; /* Original handle required for poll/cancel. */
     lcs_config_application_t *application; /* Borrowed until completion/cancellation is reaped. */
     lcs_config_runtime_t *initialization_target; /* Borrowed until reaped. */
@@ -93,6 +96,20 @@ int lcs_config_agreement_worker_start_application(lcs_config_agreement_worker_t 
                                                   lcs_config_application_t *application,
                                                   const lcs_config_agreement_job_t *job,
                                                   char *err, size_t err_len);
+/* Explicit recover/open through the same writer. The destination must be fresh;
+ * parent-side file I/O is forbidden. Child reopens and compares disk agreement
+ * before recovering history. Initialization authorization is pristine-only and
+ * must come from the coordinated upgrade path, never capability advertisements.
+ * Missing history after promises/acceptances/learning is never initialized.
+ * Pristine state alone is insufficient authorization: it cannot exclude lost
+ * reservations before PREPARE. Recovery must not infer permission from absence.
+ * Failure/cancellation poisons destination and agreement until disk recovery.
+ * This worker is not automatically scheduled by the daemon and does not submit
+ * proposals or confer outcome authority. */
+int lcs_config_agreement_worker_open_requests(lcs_config_agreement_worker_t *worker,
+                                               lcs_config_agreement_t *agreement,
+                                               lcs_config_requests_t *requests,
+                                               bool allow_initialize, char *err, size_t err_len);
 /* Reserve/observe through the SAME serialized writer. History must already be
  * explicitly opened and bound to this agreement's store/static base. RESERVE
  * uses revision/parent_digest as expected base and value as requested successor.
