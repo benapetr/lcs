@@ -144,6 +144,12 @@ durable distributed configuration protocol.
   at pristine revision zero. Refuse initialization after promises or learning,
   preserve corrupt state, and test uncertain writes, crashes and cancellation.
   This primitive does not infer first-initialization permission from missing files.
+- [x] Route explicit request-history recovery, reservation and decision observation
+  through the transaction coordinator's shared writer and shutdown lifecycle.
+  Keep request completions separate from votes/catalog/projection completions;
+  gate new IDs on voting eligibility and valid successors while allowing known-ID
+  checks and learned observations during application lag without releasing fences.
+  Do not infer initialization authorization or expose public mutation commands.
 - [ ] Integrate coordinated first-initialization authorization, lost-history recovery
   and proposer/acceptor paths before enabling public mutation endpoints. Handle
   missing-history/checkpoint transfer, completed admission acknowledgements and

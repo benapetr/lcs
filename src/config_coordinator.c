@@ -237,6 +237,43 @@ int lcs_config_coordinator_start_projection(lcs_config_coordinator_t *coordinato
     return result;
 }
 
+int lcs_config_coordinator_start_requests(lcs_config_coordinator_t *coordinator,
+                                            const lcs_config_agreement_job_t *job,
+                                            char *err, size_t err_len)
+{
+    if (coordinator->initialized && coordinator->storage.pid > 0)
+        return 1;
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed ||
+        coordinator->phase != LCS_CONFIG_COORD_READY || !job ||
+        coordinator->completed_requests == UINT64_MAX ||
+        (job->action != LCS_CONFIG_REQUEST_OPEN && job->action != LCS_CONFIG_REQUEST_RESERVE &&
+         job->action != LCS_CONFIG_REQUEST_OBSERVE) || job->initialize_requests)
+        return -1;
+    lcs_config_runtime_t *runtime = coordinator->runtime;
+    if (!lcs_config_barrier_valid(&runtime->barrier, &runtime->activation,
+                                    &runtime->agreement, &runtime->application))
+        return -1;
+    if (job->action == LCS_CONFIG_REQUEST_RESERVE)
+    {
+        if (!job->value || !memchr(job->value->request_id, 0, sizeof(job->value->request_id)))
+            return -1;
+        const lcs_config_request_record_t *known = lcs_config_requests_find(&runtime->requests, job->value->request_id);
+        /* A known identity is checked by the worker without permitting another
+         * proposal. New intent must pass the same successor/admission gate as ACCEPT. */
+        if (!known && (!lcs_config_coordinator_can_vote(coordinator) ||
+            dynamic_successor(runtime, job->value, err, err_len)))
+            return -1;
+    }
+    int result = job->action == LCS_CONFIG_REQUEST_OPEN ?
+        lcs_config_agreement_worker_open_requests(&coordinator->storage, &runtime->agreement,
+                                                    &runtime->requests, false, err, err_len) :
+        lcs_config_agreement_worker_start_requests(&coordinator->storage, &runtime->agreement,
+                                                     &runtime->requests, job, err, err_len);
+    if (!result)
+        coordinator->phase = LCS_CONFIG_COORD_REQUESTING;
+    return result;
+}
+
 int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64_t now_ms)
 {
     if (!coordinator->initialized || coordinator->phase == LCS_CONFIG_COORD_IDLE ||
@@ -259,8 +296,9 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
         return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
     lcs_config_runtime_t *runtime = coordinator->runtime;
     if (coordinator->phase == LCS_CONFIG_COORD_VOTING || coordinator->phase == LCS_CONFIG_COORD_APPLYING ||
-        coordinator->phase == LCS_CONFIG_COORD_PROJECTING)
+        coordinator->phase == LCS_CONFIG_COORD_PROJECTING || coordinator->phase == LCS_CONFIG_COORD_REQUESTING)
     {
+        bool request_job = coordinator->phase == LCS_CONFIG_COORD_REQUESTING;
         bool application_job = coordinator->phase == LCS_CONFIG_COORD_APPLYING;
         bool projection_job = coordinator->phase == LCS_CONFIG_COORD_PROJECTING;
         int operation = -1;
@@ -274,7 +312,12 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
             coordinator->phase = coordinator->storage.pid > 0 ? LCS_CONFIG_COORD_CANCELLING : LCS_CONFIG_COORD_FAILED;
             return coordinator->storage.pid > 0 ? 0 : -1;
         }
-        if (projection_job)
+        if (request_job)
+        {
+            coordinator->last_request_result = operation;
+            coordinator->completed_requests++;
+        }
+        else if (projection_job)
         {
             coordinator->last_projection_result = operation;
             coordinator->completed_projections++;

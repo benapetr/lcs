@@ -131,7 +131,7 @@ static void cleanup(void)
     assert(lcs_config_coordinator_can_close(&coordinator));
     lcs_config_runtime_close(&runtime);
     const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json",
-        ".barrier.json.tmp", ".agreement.json.tmp", "lock"};
+        ".barrier.json.tmp", ".agreement.json.tmp", "requests.json", ".requests.json.tmp", "lock"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         assert(!unlinkat(store.directory_fd, names[i], 0) || errno == ENOENT);
     lcs_config_store_close(&store);
@@ -313,6 +313,185 @@ static void test_vote_cancellation_and_recovered_barrier(void)
     cleanup();
 }
 
+static void ready_with_requests(void)
+{
+    confirm(1); confirm(2);
+    assert(!lcs_config_coordinator_process(&coordinator, 1003));
+    assert(await_completion() == 1);
+    /* Explicit fixture initialization, not a daemon initialization policy. */
+    assert(!lcs_config_requests_recover(&runtime.requests, &runtime.agreement, true, error, sizeof(error)));
+}
+static lcs_config_value_t request_value(const char *id)
+{
+    lcs_config_t *candidate = malloc(sizeof(*candidate)); assert(candidate);
+    assert(!lcs_resource_config_assign_identities(&config, 0, &config, candidate, error, sizeof(error)));
+    char *document; size_t length; lcs_config_value_t value = {0};
+    assert(!lcs_resource_config_encode(candidate, 1, &document, &length, error, sizeof(error)));
+    assert(!lcs_config_value_init(&value, &config, id, document, length, error, sizeof(error)));
+    free(document); free(candidate); return value;
+}
+static void await_request_ready(void)
+{
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        int result = lcs_config_coordinator_process(&coordinator, 1005);
+        assert(result >= 0 && !coordinator.failed);
+        if (coordinator.phase == LCS_CONFIG_COORD_READY) return;
+        usleep(1000);
+    }
+    assert(!"request coordinator did not finish");
+}
+static void test_request_metadata_gates_and_completions(void)
+{
+    initialize();
+    lcs_config_agreement_job_t job = {.action = LCS_CONFIG_REQUEST_OPEN};
+    assert(lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)) < 0);
+    ready_with_requests();
+    lcs_config_requests_close(&runtime.requests);
+    job.initialize_requests = true;
+    assert(lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)) < 0);
+    job.initialize_requests = false;
+    forbid_io = true;
+    assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+    assert(coordinator.phase == LCS_CONFIG_COORD_REQUESTING && !runtime.requests.store);
+    assert(!lcs_config_coordinator_can_vote(&coordinator));
+    await_request_ready();
+    assert(runtime.requests.store && coordinator.completed_requests == 1 && !coordinator.last_request_result);
+    assert(!coordinator.completed_votes && !coordinator.completed_applications && !coordinator.completed_projections);
+    coordinator.completed_requests = UINT64_MAX;
+    job.action = LCS_CONFIG_REQUEST_OBSERVE;
+    assert(lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)) < 0);
+    coordinator.completed_requests = 1;
+    lcs_config_value_t value = request_value("request-one");
+    job.action = LCS_CONFIG_REQUEST_RESERVE; job.value = &value;
+    strcpy(job.parent_digest, runtime.agreement.committed.digest);
+    int owner;
+    coordinator.application_owner = &owner;
+    assert(lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)) < 0);
+    coordinator.application_owner = NULL;
+    stop_sync = 2;
+    assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+    await_stopped();
+    assert(!runtime.requests.count && coordinator.completed_requests == 1);
+    assert(lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)) == 1);
+    lcs_config_agreement_job_t vote = {.action = LCS_CONFIG_PREPARE};
+    assert(lcs_config_coordinator_start_vote(&coordinator, &vote, error, sizeof(error)) == 1);
+    assert(lcs_config_coordinator_start_application(&coordinator, &owner, &vote, error, sizeof(error)) == 1);
+    assert(!kill(coordinator.storage.pid, SIGCONT)); stop_sync = 0;
+    await_request_ready();
+    assert(runtime.requests.count == 1 && !runtime.requests.records[0].committed);
+    assert(coordinator.completed_requests == 2 && coordinator.last_request_result == LCS_CONFIG_REQUEST_RECORDED);
+    coordinator.application_owner = &owner;
+    assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+    await_request_ready();
+    assert(coordinator.completed_requests == 3 && coordinator.last_request_result == LCS_CONFIG_REQUEST_EXISTS);
+    memset(job.parent_digest, 'f', 64); job.parent_digest[64] = 0;
+    assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+    await_request_ready();
+    assert(coordinator.completed_requests == 4 && coordinator.last_request_result == LCS_CONFIG_REQUEST_CONFLICT);
+    assert(!runtime.requests.poisoned && !runtime.agreement.poisoned && coordinator.application_owner == &owner);
+    coordinator.application_owner = NULL;
+    /* Persist a decision, then observe it while the application is behind. */
+    vote.action = LCS_CONFIG_LEARN; vote.value = &value; vote.ballot = 32; vote.voters = 3;
+    strcpy(vote.parent_digest, runtime.agreement.committed.digest);
+    assert(!lcs_config_coordinator_start_learn(&coordinator, &vote, error, sizeof(error)));
+    await_request_ready();
+    assert(coordinator.completed_votes == 1 && !lcs_config_coordinator_can_vote(&coordinator));
+    job.action = LCS_CONFIG_REQUEST_OBSERVE;
+    coordinator.application_owner = &owner;
+    assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+    await_request_ready();
+    assert(coordinator.completed_requests == 5 && !coordinator.last_request_result && runtime.requests.records[0].committed);
+    assert(coordinator.completed_votes == 1 && !coordinator.completed_applications && !coordinator.completed_projections);
+    assert(runtime.application.applied.revision == 0 && coordinator.application_owner == &owner);
+    job.action = LCS_CONFIG_REQUEST_RESERVE;
+    strcpy(job.parent_digest, vote.parent_digest);
+    assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+    await_request_ready();
+    assert(coordinator.completed_requests == 6 && coordinator.last_request_result == LCS_CONFIG_REQUEST_EXISTS);
+    assert(!lcs_config_coordinator_can_vote(&coordinator));
+    lcs_config_value_clear(&value); cleanup();
+}
+static void test_request_capacity_and_invalid_successor(void)
+{
+    initialize(); ready_with_requests();
+    lcs_config_value_t value = request_value("bad-activation");
+    lcs_config_t *bad = malloc(sizeof(*bad)); assert(bad);
+    uint64_t revision; char *document; size_t length;
+    assert(!lcs_resource_config_decode(value.document, value.length, &config, bad, &revision, error, sizeof(error)));
+    strcpy(bad->resources[0].address, "192.0.2.20/32");
+    assert(!lcs_resource_config_encode(bad, 1, &document, &length, error, sizeof(error))); free(bad);
+    lcs_config_value_clear(&value);
+    assert(!lcs_config_value_init(&value, &config, "bad-activation", document, length, error, sizeof(error))); free(document);
+    lcs_config_agreement_job_t job = {.action = LCS_CONFIG_REQUEST_RESERVE, .value = &value};
+    strcpy(job.parent_digest, runtime.agreement.committed.digest);
+    forbid_io = true;
+    assert(lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)) < 0);
+    assert(!runtime.requests.count && !coordinator.completed_requests && !coordinator.storage.pid);
+    forbid_io = false; lcs_config_value_clear(&value);
+    for (unsigned i = 0; i < LCS_CONFIG_REQUEST_HISTORY_MAX; i++)
+    {
+        char id[32]; snprintf(id, sizeof(id), "full-%u", i); value = request_value(id);
+        assert(!lcs_config_requests_reserve(&runtime.requests, &runtime.agreement, 0,
+            runtime.agreement.committed.digest, &value, error, sizeof(error)));
+        lcs_config_value_clear(&value);
+    }
+    value = request_value("overflow"); forbid_io = true;
+    assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+    await_request_ready();
+    assert(coordinator.completed_requests == 1 && coordinator.last_request_result == LCS_CONFIG_REQUEST_CAPACITY);
+    assert(runtime.requests.count == LCS_CONFIG_REQUEST_HISTORY_MAX && !runtime.requests.poisoned && !coordinator.failed);
+    lcs_config_value_clear(&value); cleanup();
+}
+static void test_request_open_never_initializes(void)
+{
+    initialize();
+    confirm(1); confirm(2);
+    assert(!lcs_config_coordinator_process(&coordinator, 1003));
+    assert(await_completion() == 1 && !runtime.requests.store);
+    lcs_config_agreement_job_t job = {.action = LCS_CONFIG_REQUEST_OPEN, .initialize_requests = true};
+    forbid_io = true;
+    assert(lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)) < 0);
+    assert(!coordinator.storage.pid && !runtime.requests.poisoned);
+    job.initialize_requests = false;
+    assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+    assert(await_completion() < 0 && coordinator.failed && lcs_config_coordinator_can_close(&coordinator));
+    assert(runtime.requests.poisoned && runtime.agreement.poisoned && !coordinator.completed_requests);
+    forbid_io = false;
+    assert(faccessat(store.directory_fd, "requests.json", F_OK, 0) < 0 && errno == ENOENT);
+    cleanup();
+}
+static void test_request_failure_and_shutdown(void)
+{
+    for (unsigned mode = 0; mode < 3; mode++)
+    {
+        initialize(); ready_with_requests();
+        lcs_config_value_t value = request_value("uncertain-request");
+        lcs_config_agreement_job_t job = {.action = LCS_CONFIG_REQUEST_RESERVE, .value = &value};
+        strcpy(job.parent_digest, runtime.agreement.committed.digest);
+        forbid_io = true;
+        if (mode < 2) fail_sync = (int)mode + 1;
+        else stop_sync = 2;
+        assert(!lcs_config_coordinator_start_requests(&coordinator, &job, error, sizeof(error)));
+        if (mode == 2)
+        {
+            await_stopped(); lcs_config_coordinator_stop(&coordinator);
+            assert(await_completion() == 0);
+        }
+        else assert(await_completion() < 0 && coordinator.failed);
+        assert(lcs_config_coordinator_can_close(&coordinator) && !coordinator.completed_requests);
+        assert(!runtime.requests.count && runtime.requests.poisoned && runtime.agreement.poisoned);
+        assert(!lcs_config_coordinator_can_vote(&coordinator));
+        forbid_io = false; fail_sync = stop_sync = 0;
+        lcs_config_runtime_close(&runtime);
+        assert(!lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)));
+        assert(runtime.requests.count == (mode ? 1u : 0u));
+        lcs_config_coordinator_init(&coordinator, &runtime, &readiness);
+        assert(!lcs_config_coordinator_recover(&coordinator));
+        assert(lcs_config_coordinator_can_vote(&coordinator) && !coordinator.completed_requests);
+        lcs_config_value_clear(&value); cleanup();
+    }
+}
 int main(void)
 {
     parent = getpid();
@@ -321,6 +500,10 @@ int main(void)
     test_incomplete_timeout_and_changed_attempt();
     test_gated_votes();
     test_vote_cancellation_and_recovered_barrier();
+    test_request_metadata_gates_and_completions();
+    test_request_capacity_and_invalid_successor();
+    test_request_open_never_initializes();
+    test_request_failure_and_shutdown();
     puts("readiness-to-durable-barrier coordinator and gated vote unit tests passed");
     return 0;
 }

@@ -201,7 +201,11 @@ history can be created only with first-initialization authorization at pristine
 revision zero without promises/acceptances/learning. Pristine state alone is not
 authorization to recreate lost reservations. These are local reservation/decision
 facts, not peer evidence or final client outcomes. There is
-no wire, CLI, existing-record or release-version change.
+no wire, CLI, existing-record or release-version change. The transaction
+coordinator has an internal request-storage phase and separate completion counter;
+these are process-local bookkeeping and do not alter durable records or wire
+messages. Coordinator OPEN only recovers existing history; it does not authorize
+first initialization or enable public mutation commands.
 
 ## Offline document validation
 

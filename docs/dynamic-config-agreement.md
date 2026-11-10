@@ -500,10 +500,26 @@ Pristine agreement alone cannot prove no earlier request IDs were reserved befor
 PREPARE, so callers must establish coordinated first-initialization authorization;
 absence is never authorization for automatic repair after history loss.
 
+The transaction coordinator now schedules explicit OPEN (existing history only),
+RESERVE and OBSERVE jobs on its single storage worker. Its request phase blocks
+other configuration writers and voting until completion. Request completion has
+its own counter/result: it does not advance vote, application or projection
+counters, and records neither admission nor a final client outcome. Logical
+EXISTS/CONFLICT/CAPACITY results keep the coordinator usable; uncertain persistence
+or cancellation poisons the handles and requires child reaping and disk recovery.
+
+New request IDs require the normal voting prerequisite and a valid dynamic
+successor, including definition-preserving activation. Known-ID checks can return
+EXISTS/CONFLICT while application is behind, but cannot start another proposal.
+Observation of the current learned decision is also allowed while application
+lags or a reconciler holds the application owner. Neither operation releases the
+owner's fence, changes the applied revision or runs a backend. OPEN deliberately
+rejects initialization authorization at the coordinator boundary.
+
 Automatic first-initialization authorization, lost-history/checkpoint recovery
-and transaction submission are still unwired. Callers must keep both handles unchanged until
-completion, use the same worker for every store writer, and explicitly authorize missing-history
-initialization. An inherited directory-lock descriptor alone cannot serialize
+and proposer/acceptor submission wiring remain unfinished. Callers must keep both
+handles unchanged until completion, use the same worker for every store writer,
+and explicitly authorize first initialization. An inherited directory-lock descriptor alone cannot serialize
 multiple writer children.
 
 The member/membership-bound `requests.json` record contains a checksummed,

@@ -14,6 +14,7 @@ typedef enum
     LCS_CONFIG_COORD_VOTING,
     LCS_CONFIG_COORD_APPLYING,
     LCS_CONFIG_COORD_PROJECTING,
+    LCS_CONFIG_COORD_REQUESTING,
     LCS_CONFIG_COORD_CANCELLING,
     LCS_CONFIG_COORD_STOPPED,
     LCS_CONFIG_COORD_FAILED,
@@ -33,6 +34,8 @@ typedef struct
     int last_application_result;
     uint64_t completed_projections;
     int last_projection_result;
+    uint64_t completed_requests; /* Local storage completions, not client outcomes. */
+    int last_request_result;
     uint64_t projecting_revision, projected_revision;
     char projecting_digest[LCS_CONFIG_DIGEST_SIZE], projected_digest[LCS_CONFIG_DIGEST_SIZE];
     const void *application_owner; /* Reconciler holds voting through admission. */
@@ -89,6 +92,17 @@ int lcs_config_coordinator_start_application(lcs_config_coordinator_t *coordinat
  * and catalogs. A completed I/O error leaves agreement/catalog handles healthy. */
 int lcs_config_coordinator_start_projection(lcs_config_coordinator_t *coordinator,
                                             lcs_config_bootstrap_t *bootstrap,
+                                            char *err, size_t err_len);
+/* Request metadata through the SAME writer. OPEN recovers existing history only;
+ * initialization authorization is deliberately not inferred here. RESERVE for a
+ * new ID requires voting eligibility and a valid dynamic successor. Known IDs
+ * can return EXISTS/CONFLICT while application lags; that never resubmits them.
+ * OBSERVE records the current learned decision even during application recovery.
+ * A durable barrier is mandatory for every action. Completion uses its own
+ * counter/result and never claims voting, application, admission or client success.
+ * Failure/cancellation retains ordinary poisoning and child-reaping rules. */
+int lcs_config_coordinator_start_requests(lcs_config_coordinator_t *coordinator,
+                                            const lcs_config_agreement_job_t *job,
                                             char *err, size_t err_len);
 /* Nonblocking: collect -> shared barrier writer -> durable READY. Returns 1
  * while proof is eligible, -1 for terminal failure, 0 for pending/stopped/idle.
