@@ -1150,3 +1150,23 @@ base, ID and membership as ordinary edits. File paths and stdin choice are absen
 Changed whitespace conflicts under the same ID. Known exact retries inspect their
 own historical result before any new candidate is compiled. Ordinary resource
 mutation frames cannot impersonate this import descriptor namespace.
+
+
+## Scope-bound mutation failure reporting
+
+Mutation waiters and verified origin retries explain published request facts
+without changing them. Application errors are bound to the manager's actual
+blocked reconciler/recovery target (ID, revision, complete digest), rather than
+assuming that the latest committed value is the pending cleanup target. A newer
+learned request cannot borrow an older cleanup failure. Historical applied facts
+remain true after later coordinator/backend failures; unproven admission remains
+pending/unknown. The diagnostic formatter performs no I/O or state transition.
+
+A fatal storage/coordinator failure can stop normal scheduling before its next
+CLI poll. Before stopping the manager or closing storage, shutdown revisits only
+existing mutation waiters, queues their known pending/unknown result and root
+recovery reason, and tries a nonblocking flush of the bounded response. It never
+accepts new commands, waits for readers, retries persistence, releases fences or
+cancels an uncertain write on the client's behalf. Partial/lost delivery retains
+the client's existing unknown-transport behavior. Recovery still requires the
+normal retained-journal and fresh cleanup/admission proof.

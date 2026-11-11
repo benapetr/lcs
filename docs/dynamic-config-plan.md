@@ -449,8 +449,14 @@ Automatic activation remains a separate unfinished phase. Existing
   transaction status command so interrupted clients can determine the outcome.
   Exact retries require local origin descriptor evidence; other nodes retain an
   unknown descriptor result and never resubmit. Automatic activation is separate.
-- [ ] Return actionable errors for no quorum, unsupported members, revision
+- [x] Return actionable errors for no quorum, unsupported members, revision
   conflicts, invalid definitions, persistence failures, and failed resource stops.
+  Preserve pending/unknown outcomes, include exact blocked-attempt backend or
+  projection details and recovery instructions, and keep historical admission
+  true despite later failures. Fatal shutdown attempts a bounded nonblocking
+  diagnostic flush to existing waiters; lost transport still means unknown.
+  Exercise failed backend stops, verified restart repair, reservation write
+  failure before PREPARE, blocked exact retries and distinct older/newer scopes.
 - [x] Provide structured `--json` results and consistent CLI exit codes.
   Exercise public VIP/group/policy/dependency edits through real daemon processes,
   old-base retries, descriptor conflicts, origin restart, quorum-only refusal,

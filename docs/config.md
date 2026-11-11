@@ -26,6 +26,10 @@ client success. An `applied` fact additionally records completed local admission
 not current resource health or acknowledgements from every peer. The query does
 not initialize files or retry requests. See
 [request facts](resource-json.md#inspecting-a-requests-local-facts).
+Mutation reasons expose exact blocked-attempt cleanup/projection errors and
+storage-recovery instructions without changing pending/unknown outcomes. Fatal
+shutdown makes a nonblocking best-effort diagnostic attempt; a lost connection
+still means unknown. See [failure diagnostics](resource-json.md#mutation-failure-diagnostics).
 `lcs config import FILE|-` submits one complete resource/group replacement through
 the same guarded transaction path; it cannot import static daemon/node settings.
 Source revision/identity metadata is validated but reallocated against the current

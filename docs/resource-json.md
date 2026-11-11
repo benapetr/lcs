@@ -518,6 +518,32 @@ with healthy history; quorum, idle writer and peer capability checks still apply
 at submission. Automatic activation remains unfinished.
 
 
+## Mutation failure diagnostics
+
+A mutation's `reason` includes the local blocking error and the next recovery
+step when that evidence is available. A committed edit with failed cleanup stays
+`pending`, identifying the resource and requiring verified cleanup/fencing and
+restart where appropriate. Repairable projection failures can retry after the
+file/path problem is corrected. New submissions are rejected while that fence
+remains, with the current blocking cause. Use `config status` and daemon logs for
+full details; the response reason is bounded.
+
+An exact retry includes a cleanup/projection error only when its request ID,
+revision and digest match the actual blocked application attempt. A node can
+still be cleaning an older target after learning a later value: that older error
+is not attributed to the newer request, and an unrelated later failure does not
+undo an already-recorded historical `applied` result. A committed request with no
+matching admission receipt keeps that uncertainty explicit.
+
+Uncertain journal/storage failures retain `unknown`, the original ID and repair/
+restart instructions; they never become rejection or permission to submit a new
+ID blindly. Fatal configuration failure shuts down the daemon. Before closing,
+it attempts to send existing mutation waiters a small diagnostic without blocking,
+accepting further commands or delaying safe shutdown. A disconnected or slow
+reader may receive only the CLI's structured transport-unknown result. Retain the
+state files, repair the cause, restart and query the same ID. Never delete the
+journal to reset an uncertain outcome.
+
 ## Atomic bulk import
 
 ```sh

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "config_status_protocol.h"
+#include "config_agreement.h"
 
 /* Daemon-owned entry for existing activated catalogs only. Runs before sockets
  * or ordinary workers, freezes legacy bootstrap, and restores durable tables.
@@ -17,6 +18,9 @@ bool config_manager_applying(void);
 bool config_manager_failed(void);
 /* Fill local diagnostics only; no disk I/O, state advance or peer evidence. */
 void config_manager_diagnostics(lcs_config_status_view_t *view);
+/* Borrowed exact blocked attempt target, possibly older than committed. No proof
+ * of completion or permission to retry. NULL when the error has no bound target. */
+const lcs_config_value_t *config_manager_error_target(void);
 /* Includes retained historical definitions in the pre-listener capability check. */
 int config_manager_has_historical_vips(char *err, size_t err_len);
 void config_manager_process(int epoll_fd);

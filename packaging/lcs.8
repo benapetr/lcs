@@ -161,6 +161,11 @@ The CLI prints generated IDs before sending and waits up to 30 seconds for local
 admission. Exit codes: 0 applied, 1 rejected, 2 committed but pending admission,
 3 unknown. Usage errors retain exit 2. Supports
 .BR --json .
+Reasons include bound backend/projection errors and repair instructions when
+available. Committed cleanup failures stay pending; uncertain storage failures
+stay unknown. Fatal shutdown attempts a nonblocking diagnostic to existing waiters,
+but lost delivery still leaves unknown. Historical admission is never undone by
+a later failure. Retain state and query the original ID after repair/restart.
 Timeout/disconnect never cancels storage or proves abort. Query request-status
 with the same ID. Automatic activation remains unavailable.
 .TP

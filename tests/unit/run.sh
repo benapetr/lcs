@@ -29,6 +29,10 @@ REQUEST_STATUS_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-request-status.XXXXXX")"
 trap 'rm -f "$REQUEST_STATUS_BIN" "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN" "$ACTIVATION_BIN" "$FREEZE_BIN" "$COORDINATOR_BIN" "$TRANSACTION_BIN" "$RECONCILE_BIN" "$RESOURCE_FRAME_BIN" "$STARTUP_BIN" "$EXPORT_BIN" "$REQUESTS_BIN"' EXIT
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_mutation_diagnostic.c" "$ROOT_DIR/src/config_mutation_diagnostic.c" -o "$REQUEST_STATUS_BIN"
+"$REQUEST_STATUS_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
     "$ROOT_DIR/tests/unit/config_mutation.c" "$ROOT_DIR/src/config_mutation_protocol.c" \
     "$ROOT_DIR/src/config_request_status_protocol.c" "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/util.c" -o "$REQUEST_STATUS_BIN"
 "$REQUEST_STATUS_BIN"
@@ -112,7 +116,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
     "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/config.c" \
     "$ROOT_DIR/src/vip.c" "$ROOT_DIR/src/systemd_service.c" "$ROOT_DIR/src/log.c" \
     "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
-    -Wl,--wrap=fsync -Wl,--gc-sections "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$STARTUP_BIN"
+    -Wl,--wrap=fsync -Wl,--wrap=waitpid -Wl,--gc-sections "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$STARTUP_BIN"
 "$STARTUP_BIN"
 "$RECONCILE_BIN"
 

@@ -19,6 +19,16 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* Keep the cancellation assertion independent of whether SIGKILL is reaped in
+ * the same scheduler step. The real child is still killed and subsequently reaped. */
+static pid_t held_reap_pid;
+pid_t __real_waitpid(pid_t pid, int *status, int options);
+pid_t __wrap_waitpid(pid_t pid, int *status, int options)
+{
+    if (held_reap_pid > 0 && pid == held_reap_pid && (options & WNOHANG)) return 0;
+    return __real_waitpid(pid, status, options);
+}
+
 daemon_state_t g_state;
 static bool admission_cleanup_blocked;
 bool resources_startup_cleanup_complete(void) { return !admission_cleanup_blocked; }
@@ -303,11 +313,12 @@ static void test_timeout_cancellation_and_binding(void)
                 if (startup.phase == LCS_CONFIG_STARTUP_POST_STOP && startup.pid > 0) break;
                 assert(i < 4999); usleep(1000);
             }
-        pid_t worker = startup.pid;
+        pid_t worker = startup.pid; assert(worker > 0); held_reap_pid = worker;
         if (fault == 0 || fault == 3) (void)lcs_config_startup_process(&startup, startup.deadline_ms);
         if (fault == 1) lcs_config_startup_stop(&startup);
         if (fault == 2) { runtime.application.poisoned = true; (void)lcs_config_startup_process(&startup, lcs_now_ms()); }
         assert(startup.pid == worker && lcs_config_startup_close(&startup) < 0);
+        held_reap_pid = 0;
         finish(&startup, (fault == 0 || fault == 3) ? LCS_CONFIG_STARTUP_BLOCKED : fault == 1 ? LCS_CONFIG_STARTUP_STOPPED : LCS_CONFIG_STARTUP_RECOVERY);
         assert(!lcs_config_startup_verified(&startup, &runtime, 900));
         if (!fault || fault == 3) { unsetenv("LCS_VIP_OP_DELAY_MS"); unsetenv("LCS_STARTUP_SLEEP_EVENT"); assert(!lcs_config_startup_retry(&startup)); finish(&startup, LCS_CONFIG_STARTUP_DONE); }

@@ -102,7 +102,12 @@ done
 python3 - "$TEST_TMP/pending.json" <<'PYTHON'
 import json,sys
 s=json.load(open(sys.argv[1])); assert s['result']=='pending' and s['committed_revision']==13 and s['applied_revision'] is None,s
+assert 'projection' in s['reason'] and 'config status' in s['reason'],s
 PYTHON
+retry_result=0
+"$LCS" -s "$(node_socket node1)" --json --request-id blocked-admission resource update vip1 priority=99 >"$TEST_TMP/pending-retry.json" || retry_result=$?
+(( retry_result == 2 )) || die 'exact blocked retry lost commitment'
+grep -Fq 'projection' "$TEST_TMP/pending-retry.json" || die 'exact retry omitted current projection failure'
 rm "$snapshot"
 for node in node1 node2 node3; do wait_until 40 "$node repaired projection" admitted_revision "$node" 13; done
 # Disconnect only after original intent is published; no response is consumed.

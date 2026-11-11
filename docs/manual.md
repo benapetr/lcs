@@ -29,6 +29,11 @@ or an acknowledgement from every peer. `reserved` leaves its eventual outcome un
 abort or permission to reuse the ID. Missing/poisoned history is identified
 explicitly. This read-only query remains available during recovery and transitions;
 see [request facts](resource-json.md#inspecting-a-requests-local-facts).
+Mutation failure reasons include the bound cleanup/projection or storage error
+when available, with repair instructions. Commitment with blocked admission stays
+pending; uncertain persistence stays unknown. An older/newer request's failure
+cannot change a recorded historical applied result. See
+[mutation failure diagnostics](resource-json.md#mutation-failure-diagnostics).
 Use `lcs config export` to save locally committed resource/group JSON, or
 `lcs config export applied` for locally applied definitions. With INI authority
 both export effective running definitions at revision zero. Export is read-only

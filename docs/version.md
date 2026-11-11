@@ -316,3 +316,14 @@ connection cannot leave durable import staging. The final response uses the
 existing mutation type 44 and result format 1, correlated to BEGIN's ID/sequence.
 These are additive local formats, with no peer wire, journal record, resource
 schema, ordinary status or release-version change.
+
+
+## Mutation diagnostic text
+
+Mutation result format 1 retains its existing outcome/fact fields and bounded
+256-byte `reason`. Blocked-attempt cleanup/projection details and fatal
+configuration-storage recovery instructions refine that text; no result code,
+wire/local format, disk schema or release version changes. Reasons are diagnostic
+text, not a machine-stable error-code enumeration. Exact origin retries and
+waiters keep the same pending/unknown semantics, and historical applied facts are
+never downgraded because a later operation fails.

@@ -581,6 +581,7 @@ static bool shutdown_daemon(int epoll_fd)
         .cli_server_fd = g_cli_server_fd,
         .metrics_fd = g_metrics_fd,
     };
+    cli_server_fail_mutations(epoll_fd);
     config_manager_stop();
     config_peer_stop();
     resources_begin_graceful_shutdown(epoll_fd);

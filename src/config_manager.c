@@ -107,6 +107,16 @@ void config_manager_diagnostics(lcs_config_status_view_t *view)
         snprintf(view->error, sizeof(view->error), "%s", manager.recovery.error);
 }
 
+const lcs_config_value_t *config_manager_error_target(void)
+{
+    if (!manager.enabled || manager.failed) return NULL;
+    if (manager.applying && manager.application.phase == LCS_CONFIG_RECONCILE_BLOCKED)
+        return &manager.application.value;
+    if (!manager.active && manager.recovery.phase == LCS_CONFIG_RECOVERY_BLOCKED)
+        return &manager.recovery.target;
+    return NULL;
+}
+
 int config_manager_has_historical_vips(char *err, size_t err_len)
 {
     if (!manager.enabled || g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL) return 0;
