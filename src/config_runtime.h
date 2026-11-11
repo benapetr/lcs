@@ -25,8 +25,9 @@ typedef struct
 /* Call after locking storage, before bootstrap refresh or opening listeners.
  * No distributed records means legacy mode; orphan request history never does.
  * Existing request history is recovered without writes against the frozen base.
- * Missing history remains unavailable for mutation/retry authorization, preserving
- * upgrade compatibility for older catalogs without inventing empty history.
+ * Missing history remains unavailable only for legacy format-1 initialization,
+ * preserving older catalogs without inventing empty history. Format-2 intents
+ * require history: resume creation only while INITIALIZING, never after PREPARED.
  * Partial/corrupt/foreign or contradictory records fail before listeners open. */
 int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                              lcs_config_store_t *store, const lcs_config_t *cfg,

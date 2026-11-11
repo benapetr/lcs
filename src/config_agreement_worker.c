@@ -141,14 +141,16 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
         int missing_requests = lcs_config_store_read(agreement->store, "requests.json",
             &request_record, &request_length, LCS_CONFIG_REQUEST_RECORD_MAX, result.error, sizeof(result.error));
         free(request_record);
-        if (!recovered.base || missing_barrier != 1 || missing_requests != 1 ||
-            lcs_config_activation_open(&recovered.activation, agreement->store,
+        if (!recovered.base || missing_barrier != 1 || missing_requests < 0 ||
+            lcs_config_activation_open_requests(&recovered.activation, agreement->store,
                 initialization->base, recovered.base, allow_initialize,
                 result.error, sizeof(result.error)) ||
             !lcs_config_value_equal(&recovered.activation.baseline, &initialization->activation.baseline) ||
             lcs_config_activation_resume(&recovered.activation, &recovered.agreement,
                 &recovered.application, result.error, sizeof(result.error)) ||
-            recovered.activation.phase != LCS_CONFIG_ACTIVATION_PREPARED ||
+            recovered.activation.phase != LCS_CONFIG_ACTIVATION_PREPARED || !recovered.activation.requests_required ||
+            lcs_config_requests_recover(&recovered.requests, &recovered.agreement, false, result.error, sizeof(result.error)) ||
+            recovered.requests.count ||
             recovered.agreement.promised || recovered.agreement.accepted.document ||
             !lcs_config_value_equal(&recovered.agreement.committed, &initialization->activation.baseline) ||
             recovered.application.pending.document ||
@@ -449,6 +451,7 @@ int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker
     candidate->activation.store = &bootstrap->state;
     candidate->activation.base = candidate->base;
     candidate->activation.phase = LCS_CONFIG_ACTIVATION_PREPARED;
+    candidate->activation.requests_required = true;
     snprintf(candidate->activation.member, sizeof(candidate->activation.member), "%s", candidate->base->nodes[self].name);
     candidate->agreement.store = candidate->application.store = &bootstrap->state;
     candidate->agreement.base = candidate->application.base = candidate->base;
@@ -456,6 +459,9 @@ int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker
     snprintf(candidate->application.member, sizeof(candidate->application.member), "%s", candidate->activation.member);
     snprintf(candidate->agreement.membership, sizeof(candidate->agreement.membership), "%s", candidate->activation.membership);
     snprintf(candidate->application.membership, sizeof(candidate->application.membership), "%s", candidate->activation.membership);
+    candidate->requests.store = &bootstrap->state; candidate->requests.base = candidate->base;
+    snprintf(candidate->requests.member, sizeof(candidate->requests.member), "%s", candidate->activation.member);
+    snprintf(candidate->requests.membership, sizeof(candidate->requests.membership), "%s", candidate->activation.membership);
     if (lcs_config_value_copy(&candidate->agreement.committed, &candidate->activation.baseline) ||
         lcs_config_value_copy(&candidate->application.applied, &candidate->activation.baseline))
         goto out;
@@ -522,7 +528,7 @@ static void poison(lcs_config_agreement_worker_t *worker, lcs_config_agreement_t
     if (worker->initialization_target)
     {
         lcs_config_runtime_t *runtime = worker->initialization_target;
-        runtime->agreement.poisoned = runtime->application.poisoned = runtime->activation.poisoned = true;
+        runtime->agreement.poisoned = runtime->application.poisoned = runtime->activation.poisoned = runtime->requests.poisoned = true;
         runtime->requires_recovery = true;
         return;
     }

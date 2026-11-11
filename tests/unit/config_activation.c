@@ -16,6 +16,7 @@
 #include <sys/wait.h>
 
 static int fail_sync;
+static int crash_sync;
 static int stop_sync;
 static pid_t test_parent;
 static bool forbid_parent_io;
@@ -25,6 +26,7 @@ int __wrap_fsync(int fd)
     assert(!forbid_parent_io || getpid() != test_parent);
     if (stop_sync && !--stop_sync)
         raise(SIGSTOP);
+    if (crash_sync && !--crash_sync) _exit(__real_fsync(fd) ? 78 : 77);
     if (fail_sync && !--fail_sync)
     {
         errno = EIO;
@@ -86,7 +88,7 @@ static void close_handles(void)
 static void cleanup(void)
 {
     close_handles();
-    const char *names[] = {"activation.json", "agreement.json", "application.json",
+    const char *names[] = {"activation.json", "agreement.json", "application.json", "requests.json", ".requests.json.tmp",
         "barrier.json", ".barrier.json.tmp", ".activation.json.tmp", ".agreement.json.tmp", ".application.json.tmp", "lock"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         assert(!unlinkat(store.directory_fd, names[i], 0) || errno == ENOENT);
@@ -144,6 +146,7 @@ static void test_write_boundaries(void)
         lcs_config_runtime_t runtime;
         assert(lcs_config_runtime_open(&runtime, &store, &changed, error, sizeof(error)) == 0);
         assert(runtime.requires_recovery && runtime.activation.phase == LCS_CONFIG_ACTIVATION_PREPARED);
+        assert(!runtime.activation.requests_required && !runtime.requests.store);
         assert(runtime.agreement.base == runtime.base && runtime.application.base == runtime.base);
         assert(lcs_config_value_equal(&runtime.activation.baseline, &agreement.committed));
         lcs_config_runtime_close(&runtime);
@@ -351,6 +354,7 @@ static void test_initialization_worker_success(void)
     assert(await_initialization(&worker, &runtime) == 1);
     assert(!worker.pid && !worker.initialization_candidate && worker.pipe_fd == -1);
     assert(runtime.requires_recovery && runtime.activation.phase == LCS_CONFIG_ACTIVATION_PREPARED);
+    assert(runtime.activation.requests_required && runtime.requests.store == &bootstrap.state && runtime.requests.base == runtime.base && !runtime.requests.count);
     assert(!strcmp(runtime.base->resources[0].address, "192.0.2.10/32"));
     assert(runtime.activation.base == runtime.base && runtime.agreement.base == runtime.base &&
            runtime.application.base == runtime.base);
@@ -379,7 +383,7 @@ static void test_initialization_worker_success(void)
 
 static void test_initialization_worker_sync_failures(void)
 {
-    for (int boundary = 1; boundary <= 8; boundary++)
+    for (int boundary = 1; boundary <= 10; boundary++)
     {
         initialize();
         lcs_config_bootstrap_t bootstrap = bootstrap_for_test();
@@ -402,7 +406,10 @@ static void test_initialization_worker_sync_failures(void)
         assert(!lcs_config_runtime_open(&runtime, &store, &changed, error, sizeof(error)));
         assert(runtime.requires_recovery == (boundary != 1));
         if (boundary != 1)
+        {
             assert(!strcmp(runtime.base->resources[0].address, "192.0.2.10/32"));
+            assert(runtime.activation.requests_required && runtime.requests.store && !runtime.requests.count);
+        }
         lcs_config_runtime_close(&runtime);
         cleanup();
     }
@@ -475,17 +482,14 @@ static void test_initialization_worker_refuses_existing_history(void)
         lcs_config_agreement_worker_t worker;
         lcs_config_agreement_worker_init(&worker);
         if (mode == 4)
-            fail_sync = 1; /* Reopening pristine prepared state must not write. */
+            fail_sync = 1; /* Legacy prepared state cannot authorize a new request journal. */
         forbid_parent_io = true;
         /* Missing intent without authorization, changed frozen baseline,
          * existing promises, and chosen successors all require disk recovery. */
         assert(!lcs_config_agreement_worker_start_initialization(&worker, &runtime, &bootstrap,
             mode == 1 ? &changed : &config, false, error, sizeof(error)));
-        assert(await_initialization(&worker, &runtime) == (mode == 4 ? 1 : -1));
-        if (mode != 4)
-            assert(!runtime.base && runtime.agreement.poisoned);
-        else
-            assert(runtime.base && !runtime.agreement.poisoned && !runtime.agreement.promised);
+        assert(await_initialization(&worker, &runtime) == -1);
+        assert(!runtime.base && runtime.agreement.poisoned && runtime.requests.poisoned);
         fail_sync = 0;
         forbid_parent_io = false;
         lcs_config_runtime_close(&runtime);
@@ -494,6 +498,8 @@ static void test_initialization_worker_refuses_existing_history(void)
             assert(runtime.agreement.promised);
         if (mode == 3)
             assert(runtime.agreement.committed.revision == 1);
+        if (mode == 4)
+            assert(!runtime.activation.requests_required && !runtime.requests.store);
         lcs_config_runtime_close(&runtime);
         cleanup();
     }
@@ -522,6 +528,104 @@ static void test_initialization_refuses_orphan_request_history(void)
     lcs_config_runtime_close(&runtime);
     assert(!unlinkat(store.directory_fd, "requests.json", 0));
     cleanup();
+}
+
+static void test_required_requests_crash_recovery(void)
+{
+    for (int boundary = 1; boundary <= 10; boundary++)
+    {
+        initialize();
+        pid_t child = fork(); assert(child >= 0);
+        if (!child)
+        {
+            crash_sync = boundary;
+            if (lcs_config_activation_open_requests(&activation, &store, &config, &frozen, true, error, sizeof(error)) ||
+                lcs_config_activation_resume(&activation, &agreement, &application, error, sizeof(error))) _exit(79);
+            _exit(80); /* Every expected persistence boundary must have been reached. */
+        }
+        int status; assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 77);
+        bool intent = faccessat(store.directory_fd, "activation.json", F_OK, 0) == 0;
+        assert(intent == (boundary > 1));
+        if (boundary == 10) assert(!faccessat(store.directory_fd, "requests.json", F_OK, 0));
+        lcs_config_runtime_t runtime = {0};
+        assert(!lcs_config_runtime_open(&runtime, &store, &changed, error, sizeof(error)));
+        assert(runtime.requires_recovery == intent);
+        if (intent)
+        {
+            assert(runtime.activation.requests_required && runtime.activation.phase == LCS_CONFIG_ACTIVATION_PREPARED);
+            assert(runtime.requests.store == &store && runtime.requests.base == runtime.base && !runtime.requests.count);
+            assert(!strcmp(runtime.base->resources[0].address, "192.0.2.10/32"));
+        }
+        lcs_config_runtime_close(&runtime); cleanup();
+    }
+}
+
+static void test_required_requests_worker_reopen(void)
+{
+    initialize();
+    assert(!lcs_config_activation_open_requests(&activation, &store, &config, &frozen, true, error, sizeof(error)));
+    assert(!lcs_config_activation_resume(&activation, &agreement, &application, error, sizeof(error)));
+    close_handles();
+    lcs_config_bootstrap_t bootstrap = bootstrap_for_test(); lcs_config_runtime_t runtime = {0};
+    lcs_config_agreement_worker_t worker; lcs_config_agreement_worker_init(&worker);
+    fail_sync = 1; forbid_parent_io = true; /* Reopen must only read verified empty history. */
+    assert(!lcs_config_agreement_worker_start_initialization(&worker, &runtime, &bootstrap, &config, false, error, sizeof(error)));
+    assert(await_initialization(&worker, &runtime) == 1);
+    assert(runtime.activation.requests_required && runtime.requests.store == &bootstrap.state && !runtime.requests.count);
+    forbid_parent_io = false; fail_sync = 0;
+    lcs_config_runtime_close(&runtime); cleanup();
+}
+
+static void test_prepared_requests_never_reinitialized(void)
+{
+    for (unsigned mode = 0; mode < 3; mode++)
+    {
+        initialize();
+        assert(!lcs_config_activation_open_requests(&activation, &store, &config, &frozen, true, error, sizeof(error)));
+        assert(!lcs_config_activation_resume(&activation, &agreement, &application, error, sizeof(error)));
+        assert(activation.requests_required); close_handles();
+        lcs_config_runtime_t runtime = {0};
+        assert(!lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)) && runtime.requests.store);
+        if (mode == 2)
+        {
+            lcs_config_t successor;
+            assert(!lcs_resource_config_assign_identities(runtime.base, 0, runtime.base, &successor, error, sizeof(error)));
+            char *document; size_t length;
+            assert(!lcs_resource_config_encode(&successor, 1, &document, &length, error, sizeof(error)));
+            lcs_config_value_t value = {0};
+            assert(!lcs_config_value_init(&value, runtime.base, "reserved-before-prepare", document, length, error, sizeof(error)));
+            assert(!lcs_config_requests_reserve(&runtime.requests, &runtime.agreement, 0, runtime.agreement.committed.digest,
+                &value, error, sizeof(error)));
+            free(document); lcs_config_value_clear(&value);
+        }
+        lcs_config_runtime_close(&runtime);
+        if (mode == 0) assert(!unlinkat(store.directory_fd, "requests.json", 0));
+        if (mode == 1) assert(!lcs_config_store_write(&store, "requests.json", "{}", 2, error, sizeof(error)));
+        lcs_config_bootstrap_t bootstrap = bootstrap_for_test();
+        lcs_config_agreement_worker_t worker; lcs_config_agreement_worker_init(&worker);
+        forbid_parent_io = true;
+        assert(!lcs_config_agreement_worker_start_initialization(&worker, &runtime, &bootstrap, &config, true, error, sizeof(error)));
+        assert(await_initialization(&worker, &runtime) == -1 && runtime.requests.poisoned);
+        forbid_parent_io = false; lcs_config_runtime_close(&runtime);
+        if (mode < 2)
+        {
+            assert(lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)) < 0);
+            if (!mode) assert(faccessat(store.directory_fd, "requests.json", F_OK, 0) < 0 && errno == ENOENT);
+            else
+            {
+                char *record; size_t length;
+                assert(!lcs_config_store_read(&store, "requests.json", &record, &length, LCS_CONFIG_REQUEST_RECORD_MAX, error, sizeof(error)));
+                assert(length == 2 && !memcmp(record, "{}", 2)); free(record);
+            }
+        }
+        else
+        {
+            assert(!lcs_config_runtime_open(&runtime, &store, &changed, error, sizeof(error)));
+            assert(runtime.requests.count == 1 && !runtime.agreement.promised);
+            assert(!strcmp(runtime.requests.records[0].id, "reserved-before-prepare"));
+        }
+        lcs_config_runtime_close(&runtime); cleanup();
+    }
 }
 
 static lcs_config_barrier_round_t complete_barrier(const lcs_config_activation_t *intent,
@@ -773,6 +877,9 @@ int main(void)
     test_initialization_worker_cancel_and_stale();
     test_initialization_worker_refuses_existing_history();
     test_initialization_refuses_orphan_request_history();
+    test_required_requests_crash_recovery();
+    test_prepared_requests_never_reinitialized();
+    test_required_requests_worker_reopen();
     test_all_member_barrier();
     test_barrier_limits_and_missing_history();
     test_barrier_worker();

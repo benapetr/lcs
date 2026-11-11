@@ -19,6 +19,10 @@ reports local committed/applied/pending revisions and digests, recovery/admissio
 state and cleanup errors. These read-only observations do not authorize edits. Admitted JSON full members
 with healthy request history support [runtime definition commands](resource-json.md#runtime-definition-commands)
 through the local Unix socket; automatic upgrade activation remains unfinished.
+New coordinated format-2 initialization makes request history mandatory before
+preparation: missing/corrupt history after that point requires recovery, never
+empty-journal recreation. Older format-1 catalogs keep their existing read-only
+compatibility. See [required initialization history](resource-json.md#required-request-history-during-initialization).
 `lcs config request-status ID` (also with `--json`) reads published local request
 facts during normal operation or recovery. Missing/poisoned history and unrecorded
 outcomes remain unknown; a committed fact does not establish application or final

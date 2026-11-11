@@ -24,18 +24,30 @@ typedef struct
     char member[LCS_NAME_MAX + 1];
     char membership[LCS_CONFIG_DIGEST_SIZE];
     lcs_config_activation_phase_t phase;
+    bool requests_required; /* Format 2: journal created before PREPARED; never recreate afterwards. */
     bool poisoned;
 } lcs_config_activation_t;
 
 /* Never authorize first initialization from mere peer/version advertisements.
  * allow_initialize requires a coordinated, serialized initialization intent.
  * An existing record supplies resources even if INI definitions have changed.
- * cfg and frozen_base may alias; outputs must be fresh/unopened objects. */
+ * cfg and frozen_base may alias; outputs must be fresh/unopened objects.
+ * This compatibility primitive retains format-1 creation. Automatic upgrade
+ * initialization must use open_requests below, never this legacy creation path. */
 int lcs_config_activation_open(lcs_config_activation_t *activation,
                                 lcs_config_store_t *store, const lcs_config_t *cfg,
                                 lcs_config_t *frozen_base, bool allow_initialize,
                                 char *err, size_t err_len);
-/* Resume initialization in journal -> application -> prepared-record order.
+/* Coordinated first initialization for automatic upgrade: write format 2,
+ * requiring request history before PREPARED. Existing format-1 intents are never
+ * silently upgraded or used to authorize a new empty request journal. The caller
+ * must already exclude reload and coordinate initialization across members. */
+int lcs_config_activation_open_requests(lcs_config_activation_t *activation,
+                                         lcs_config_store_t *store, const lcs_config_t *cfg,
+                                         lcs_config_t *frozen_base, bool allow_initialize,
+                                         char *err, size_t err_len);
+/* Resume initialization in agreement -> application -> required request history
+ * -> prepared-record order. Format-1 intents retain their legacy semantics.
  * Missing records may be created ONLY while INITIALIZING and before any promise
  * or accepted value exists. PREPARED state never recreates missing records.
  * Success returns recovered handles; failure closes them and requires reopen. */

@@ -20,6 +20,10 @@ see [runtime definition commands](resource-json.md#runtime-definition-commands).
 Use `resource create/update/delete`, `resource group add/remove/delete` and group
 policy updates with `--request-id` and optional expected-base checks. Mutation
 results use exits 0 applied, 1 rejected, 2 pending and 3 unknown.
+Coordinated initialization now seals required request history before preparation.
+A format-2 prepared intent with missing/corrupt history fails before listeners;
+retain/recover its state. This is a prerequisite for automatic upgrade activation,
+which is still unfinished. See [initialization history](resource-json.md#required-request-history-during-initialization).
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means
 its consensus decision was recorded, not resource application or final client

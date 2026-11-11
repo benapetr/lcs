@@ -139,17 +139,22 @@ the daemon activation/recovery manager must decide when that is permitted.
 `config_activation.c` provides a resumable local initialization primitive. Before
 creating either durable journal or application catalog, it syncs `activation.json`
 with the node/membership identity, complete canonical revision-zero baseline and
-its digest, phase, and checksum. Record format 1 uses `initializing` and `prepared`
-phases. These describe local storage preparation, not a chosen activation decision.
+its digest, phase, and checksum. Record formats 1/2 use `initializing` and `prepared`
+phases. Format 1 is retained for compatibility; the coordinated initialization
+worker now uses format 2, requiring request history before preparation. These
+describe local storage preparation, not a chosen activation decision.
 First creation requires explicit coordinated authorization; advisory peer metadata
 is insufficient. Ordinary legacy startup does not create this record.
 
 Recovery uses the frozen baseline even if INI resource definitions changed after
 the intent was written. While `initializing`, it may create missing journal and
 catalog records in that order, provided no promise, accepted value, committed
-successor or pending application exists. It syncs `prepared` only after both records
-are durable. A catalog without a journal is rejected, preserving the requirement
-to recover promises. Once `prepared`, missing records are never regenerated.
+successor or pending application exists. Format 2 additionally creates/validates
+empty request history before syncing `prepared`; format 1 retains its original
+ordering. A catalog without a journal is rejected, preserving the requirement
+to recover promises. Once `prepared`, missing required records are never
+regenerated, even at
+revision zero with no promise. A reservation may already exist before PREPARE.
 Any uncertain write requires reopening disk state before proceeding.
 
 Startup resumes an existing initialization before opening listeners, but still
@@ -161,11 +166,14 @@ worker; it must not be called directly from the live event loop.
 `lcs_config_agreement_worker_start_initialization()` uses the same worker as
 agreement and application jobs. Before forking it copies and validates an immutable
 revision-zero candidate entirely in memory. The child creates or resumes storage
-and verifies that the intent, journal and applied catalog all describe that exact
-pristine value, with no promise, accepted successor or pending application. Only
-an exact, complete local acknowledgement and successful child exit publish the
-preallocated handles. The parent never reopens files or syncs storage to import
-that result. This compact same-host acknowledgement cannot import active history
+and verifies that the format-2 intent, journal and applied catalog all describe
+that exact pristine value, with no promise, accepted successor or pending
+application, and that the required request journal is healthy and empty. The
+worker cannot silently upgrade a format-1 intent or replace pre-PREPARE
+reservations with an empty in-memory journal. Only an exact, complete local
+acknowledgement and successful child exit publish the preallocated handles,
+including the required request history. The parent never reopens files or syncs
+storage to import that result. This compact same-host acknowledgement cannot import active history
 and is never transmitted as agreement or readiness evidence.
 
 Initialization waits for active/queued INI refreshes, then permanently locks further
@@ -175,6 +183,15 @@ the child must be reaped before disk recovery. Even a visible prepared marker do
 not make an unsuccessful worker return successful. A missing intent without
 explicit authorization, a different frozen baseline, or existing promises/chosen
 successors requires disk recovery rather than a pristine-result import.
+
+The format-2 INITIALIZING marker is the first-initialization authorization for
+missing request history; a pristine agreement alone is insufficient. No readiness
+barrier or proposal may be admitted before preparation, so a resumed INITIALIZING
+intent cannot have legally issued client reservations. Nonempty history in that
+phase is rejected without resetting it. PREPARED requires existing valid history,
+including any retained reservations; normal runtime recovery reads those facts
+without writes. Initialization's compact acknowledgement accepts only empty
+history and sends nonempty state through normal recovery instead.
 
 The automatic initialization coordinator remains to be implemented. Its worker
 is not yet invoked by ordinary daemon startup/peering. Preparing local files alone does not permit configuration voting

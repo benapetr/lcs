@@ -181,6 +181,10 @@ the local filename is not part of the identity. A partial/invalid upload cannot
 reserve or propose. Upload deadline is ten seconds, followed by the ordinary
 thirty-second admission wait. Input errors before submission exit 1. This command
 does not activate a cluster or initialize missing request history.
+New coordinated format-2 initialization requires request history before the intent
+becomes prepared. Missing/corrupt history afterwards requires recovery and is never
+recreated merely because no promise is visible. Format-1 catalogs retain their
+legacy recovery compatibility. Automatic all-member activation remains unfinished.
 .TP
 .B config request-status ID
 Read published local request facts from daemon memory, also available with

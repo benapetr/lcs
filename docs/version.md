@@ -327,3 +327,26 @@ wire/local format, disk schema or release version changes. Reasons are diagnosti
 text, not a machine-stable error-code enumeration. Exact origin retries and
 waiters keep the same pending/unknown semantics, and historical applied facts are
 never downgraded because a later operation fails.
+
+
+## Initialization intent record format 2
+
+`activation.json` format 2 retains the exact format-1 keys and checksum algorithm:
+`record_version`, `phase`, `member`, `membership`, `baseline_digest`, `baseline`
+and `checksum`. The version itself requires request history. Its durable order is
+INITIALIZING intent, agreement, application, empty `requests.json`, then PREPARED
+intent, with file and directory sync for each replacement (ten sync boundaries).
+A required history file may be created on resume only while INITIALIZING, with
+pristine baseline agreement/application and no barrier or request reservations.
+PREPARED requires an existing valid request journal, even at revision zero.
+
+The shared initialization worker creates format 2 and verifies empty history
+before publishing its preallocated handles through the same-host acknowledgement.
+It refuses legacy format-1 intents, missing/corrupt PREPARED history and nonempty
+reservations rather than synthesizing an empty journal. Normal runtime recovery
+still accepts format 1 without read-time rewrite or invented history; its legacy
+low-level creation primitive remains available for compatibility fixtures. Format
+2 recovery includes newly completed INITIALIZING history in its returned runtime,
+not just files which existed before recovery began. Older readers reject format 2.
+This is a private intent-record change, not a peer/CLI wire, resource-schema or
+release-version change. Automatic all-member activation remains unfinished.

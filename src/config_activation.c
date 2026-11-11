@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_activation.h"
 #include "config_barrier.h"
+#include "config_requests.h"
 
 #include <jansson.h>
 #include <openssl/sha.h>
@@ -55,7 +56,7 @@ static int checksum(json_t *root, char hash[65])
 static int persist(lcs_config_activation_t *activation, lcs_config_activation_phase_t phase,
                      char *err, size_t err_len)
 {
-    json_t *root = json_pack("{s:i,s:s,s:s,s:s,s:s,s:s}", "record_version", 1,
+    json_t *root = json_pack("{s:i,s:s,s:s,s:s,s:s,s:s}", "record_version", activation->requests_required ? 2 : 1,
         "phase", phase == LCS_CONFIG_ACTIVATION_PREPARED ? "prepared" : "initializing",
         "member", activation->member, "membership", activation->membership,
         "baseline_digest", activation->baseline.digest, "baseline", activation->baseline.document);
@@ -102,7 +103,7 @@ static int decode(lcs_config_activation_t *activation, const char *text, size_t 
     json_t *stored = json_object_get(root, "checksum");
     const char *hash = json_string_value(stored);
     char expected[65], actual[65];
-    bool valid = keys_match(root, keys) && json_is_integer(format) && json_integer_value(format) == 1 &&
+    bool valid = keys_match(root, keys) && json_is_integer(format) && (json_integer_value(format) == 1 || json_integer_value(format) == 2) &&
         string_matches(json_object_get(root, "member"), activation->member) &&
         string_matches(json_object_get(root, "membership"), activation->membership) &&
         hash && json_string_length(stored) == 64 && strlen(hash) == 64;
@@ -112,6 +113,7 @@ static int decode(lcs_config_activation_t *activation, const char *text, size_t 
         json_object_del(root, "checksum");
         valid = !checksum(root, actual) && !strcmp(expected, actual);
     }
+    if (valid) activation->requests_required = json_integer_value(format) == 2;
     if (valid && string_matches(json_object_get(root, "phase"), "initializing"))
         activation->phase = LCS_CONFIG_ACTIVATION_INITIALIZING;
     else if (valid && string_matches(json_object_get(root, "phase"), "prepared"))
@@ -133,12 +135,12 @@ static int decode(lcs_config_activation_t *activation, const char *text, size_t 
     return valid ? 0 : fail(err, err_len, "invalid, corrupt, or foreign frozen baseline; recovery required");
 }
 
-int lcs_config_activation_open(lcs_config_activation_t *activation,
+static int activation_open(lcs_config_activation_t *activation,
                                 lcs_config_store_t *store, const lcs_config_t *cfg,
-                                lcs_config_t *frozen_base, bool allow_initialize,
+                                lcs_config_t *frozen_base, bool allow_initialize, bool require_requests,
                                 char *err, size_t err_len)
 {
-    lcs_config_activation_t next = { .store = store };
+    lcs_config_activation_t next = { .store = store, .requests_required = require_requests };
     int self = lcs_config_self_index(cfg);
     if (self < 0 || lcs_config_agreement_membership(cfg, next.membership))
         return fail(err, err_len, "invalid static membership");
@@ -147,7 +149,11 @@ int lcs_config_activation_open(lcs_config_activation_t *activation,
     size_t length;
     int result = lcs_config_store_read(store, RECORD, &text, &length, LCS_CONFIG_ACTIVATION_MAX, err, err_len);
     if (!result)
+    {
         result = decode(&next, text, length, cfg, err, err_len);
+        if (!result && require_requests && !next.requests_required)
+            result = fail(err, err_len, "legacy initialization cannot authorize new request history; recover existing state instead of upgrading/resetting it");
+    }
     else if (result == 1)
     {
         if (!allow_initialize)
@@ -157,9 +163,10 @@ int lcs_config_activation_open(lcs_config_activation_t *activation,
             int journal = exists(store, "agreement.json", LCS_CONFIG_JOURNAL_MAX, err, err_len);
             int catalog = journal < 0 ? -1 : exists(store, "application.json", LCS_CONFIG_APPLICATION_MAX, err, err_len);
             int barrier = catalog < 0 ? -1 : exists(store, "barrier.json", LCS_CONFIG_BARRIER_MAX, err, err_len);
-            if (journal < 0 || catalog < 0 || barrier < 0)
+            int requests = barrier < 0 ? -1 : exists(store, "requests.json", LCS_CONFIG_REQUEST_RECORD_MAX, err, err_len);
+            if (journal < 0 || catalog < 0 || barrier < 0 || requests < 0)
                 result = -1;
-            else if (journal || catalog || barrier)
+            else if (journal || catalog || barrier || requests)
                 result = fail(err, err_len, "cannot initialize over existing agreement/application history");
             else
             {
@@ -198,6 +205,22 @@ int lcs_config_activation_open(lcs_config_activation_t *activation,
     }
     free(decoded);
     return result;
+}
+
+int lcs_config_activation_open(lcs_config_activation_t *activation,
+                                lcs_config_store_t *store, const lcs_config_t *cfg,
+                                lcs_config_t *frozen_base, bool allow_initialize,
+                                char *err, size_t err_len)
+{
+    return activation_open(activation, store, cfg, frozen_base, allow_initialize, false, err, err_len);
+}
+
+int lcs_config_activation_open_requests(lcs_config_activation_t *activation,
+                                         lcs_config_store_t *store, const lcs_config_t *cfg,
+                                         lcs_config_t *frozen_base, bool allow_initialize,
+                                         char *err, size_t err_len)
+{
+    return activation_open(activation, store, cfg, frozen_base, allow_initialize, true, err, err_len);
 }
 
 static int validate_dynamic_value(const lcs_config_activation_t *activation,
@@ -272,6 +295,20 @@ int lcs_config_activation_resume(lcs_config_activation_t *activation,
     {
         fail(err, err_len, "application catalog does not match frozen initialization");
         goto out;
+    }
+    if (activation->requests_required)
+    {
+        lcs_config_requests_t *requests = calloc(1, sizeof(*requests));
+        if (!requests) { fail(err, err_len, "cannot allocate required request history"); goto out; }
+        /* INITIALIZING is the durable first-initialization authorization, not
+         * merely a pristine agreement. No configuration barrier/proposal can
+         * have been admitted before this intent becomes PREPARED. */
+        int recovered = lcs_config_requests_recover(requests, &next_agreement, initializing, err, err_len);
+        if (!recovered && initializing && requests->count)
+            recovered = fail(err, err_len, "request identities exist before initialization is prepared; recovery required");
+        if (!recovered) recovered = lcs_config_requests_check_application(requests, &next_application, err, err_len);
+        lcs_config_requests_close(requests); free(requests);
+        if (recovered) goto out;
     }
     if (initializing && persist(activation, LCS_CONFIG_ACTIVATION_PREPARED, err, err_len))
         goto out;

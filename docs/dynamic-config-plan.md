@@ -196,6 +196,13 @@ durable distributed configuration protocol.
   excluding INI refresh and withholding prepared handles until successful child
   exit. Preserve recovery requirements on cancellation, uncertain writes and
   conflicting history. The distributed manager does not invoke it yet.
+- [x] Bind first request-history creation to a durable format-2 initialization
+  intent: persist agreement, application and empty requests before PREPARED.
+  Resume only while INITIALIZING; never recreate lost/corrupt PREPARED history
+  or replace reservations made before PREPARE. Publish verified empty history
+  only after the initialization child exits successfully, keep format-1 recovery
+  compatible, and refuse to silently upgrade legacy intents. Cover all ten sync/
+  crash boundaries, no parent-side I/O, cancellation and pre-listener recovery.
 - [ ] Use one resource/group authority at a time: INI before activation, JSON
   after activation. Do not introduce a permanent mixed static/dynamic namespace.
 - [ ] Route existing coordinated reload and dynamic updates through compatible
@@ -468,6 +475,10 @@ Automatic activation remains a separate unfinished phase. Existing
 
 - [ ] Test rolling binary upgrades from the currently released wire-5 version
   with existing INI resources, unchanged placement, and no dynamic files present.
+- [x] Verify pre-activation rolling peering against the released v1.1.1 wire-5
+  daemon: no dynamic files on released nodes, mixed wire-5/6 quorum, upgrading the
+  other full member and quorum-only voter, unchanged active owner/epoch, and no
+  new frames sent to old sessions. This does not yet test automatic activation.
 - [ ] Implement deterministic automatic bootstrap from effective INI definitions,
   preserving resource identity, ownership, lease safety, and running resources.
   Use compatible voting fingerprints during the rolling-upgrade phase.

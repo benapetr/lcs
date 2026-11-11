@@ -68,7 +68,8 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
             result = lcs_config_barrier_open(&runtime->barrier, &runtime->activation,
                 &runtime->agreement, &runtime->application, NULL, err, err_len);
         if (!result)
-            result = requests ? 0 : lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len);
+            result = requests && !runtime->activation.requests_required ? 0 :
+                lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len);
         if (!result && runtime->requests.store)
             result = lcs_config_requests_check_application(&runtime->requests, &runtime->application, err, err_len);
         if (result)

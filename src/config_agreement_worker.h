@@ -69,7 +69,10 @@ void lcs_config_agreement_worker_init(lcs_config_agreement_worker_t *worker);
  * Once started, bootstrap refresh stays locked, even on failure/cancellation;
  * retain all handles/storage until the child is reaped, then recover from disk.
  * poll/cancel use &runtime->agreement. Success publishes only pristine revision
- * zero, NOT activation authority or permission to vote. No parent-side I/O. */
+ * zero plus an already-durable empty request journal, NOT activation authority
+ * or permission to vote. New initialization uses format-2 intent; legacy intents,
+ * lost prepared journals and nonempty reservations require normal recovery,
+ * never a synthetic empty-history acknowledgement. No parent-side I/O. */
 int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker_t *worker,
                                                       lcs_config_runtime_t *runtime,
                                                       lcs_config_bootstrap_t *bootstrap,

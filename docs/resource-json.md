@@ -117,6 +117,24 @@ instance, retaining evidence for slow peers. The daemon manager invokes it for
 supported activated catalogs and separately requires fresh restart synchronization
 before lease voting. See [catalog history and compatibility](dynamic-config-application.md#durable-completed-predecessor-history).
 
+## Required request history during initialization
+
+The coordinated initialization worker now uses format 2 of `activation.json`.
+It persists the frozen baseline intent first, then agreement, application and
+empty request history before marking the intent prepared. An interrupted
+initializing intent can resume creation from its frozen baseline. Once prepared,
+missing/corrupt request history fails startup before listeners and is never
+recreated from an empty/pristine agreement: an earlier request may have reserved
+its ID without reaching PREPARE. Restore/recover the retained state instead.
+
+Format-1 initialization records remain readable with their earlier missing-history
+compatibility. They are not silently upgraded to authorize a new empty journal.
+The initializer publishes its in-memory handles only after its child verifies
+all required state and exits successfully, and it refuses to publish an empty
+journal over existing reservations. The automatic all-member coordinator is still
+unfinished; normal INI startup/peering does not invoke this worker or switch
+authority merely because every binary supports wire 6.
+
 ## Activated startup recovery
 
 The separate [request-fact journal core](dynamic-config-agreement.md#local-durable-request-fact-journal-core)
@@ -128,7 +146,7 @@ client success. Observation failure fences configuration progress for recovery
 without undoing a learned decision.
 Startup recovers an existing `requests.json` against the frozen static context
 and rejects corrupt, orphaned or locally contradictory history before listeners
-open. Older catalogs without it retain unavailable request history; startup does
+open. Older format-1 catalogs without it retain unavailable request history; startup does
 not create an empty file or infer earlier outcomes. Ordinary operation does not
 automatically initialize `requests.json` yet. Explicit internal proposals require
 healthy existing history and reserve original intent before PREPARE; known IDs
