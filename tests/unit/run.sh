@@ -74,7 +74,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
     "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_requests.c" "$ROOT_DIR/src/config_requests.c" \
-    "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_application.c" \
+    "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_application.c" \
     "$ROOT_DIR/src/config_bootstrap.c" "$ROOT_DIR/src/config_activation.c" \
     "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
     "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_store.c" \
@@ -86,7 +86,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_transaction.c" "$ROOT_DIR/src/config_transaction.c" "$ROOT_DIR/src/config_transfer.c" \
-    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
     "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
     "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_store.c" \
     "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/protocol.c" \
@@ -98,7 +98,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_reconcile.c" "$ROOT_DIR/src/config_reconcile.c" "$ROOT_DIR/src/protocol.c" \
     "$ROOT_DIR/src/resource_generation.c" "$ROOT_DIR/src/resource_frame.c" "$ROOT_DIR/src/config_live.c" "$ROOT_DIR/src/config_projection.c" "$ROOT_DIR/src/config_owner_barrier.c" "$ROOT_DIR/src/config_owner_network.c" \
-    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
     "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
     "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_store.c" \
     "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/config.c" \
@@ -109,7 +109,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_startup.c" "$ROOT_DIR/src/config_startup.c" "$ROOT_DIR/src/config_recovery.c" \
     "$ROOT_DIR/src/cluster.c" "$ROOT_DIR/src/config_recovery_live.c" "$ROOT_DIR/src/config_projection.c" "$ROOT_DIR/src/resource_generation.c" "$ROOT_DIR/src/resource_frame.c" \
-    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
     "$ROOT_DIR/src/config_owner_barrier.c" "$ROOT_DIR/src/config_owner_network.c" \
     "$ROOT_DIR/src/config_runtime.c" "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" \
     "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_store.c" \
@@ -123,7 +123,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_coordinator.c" "$ROOT_DIR/src/config_coordinator.c" \
-    "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
     "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
     "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_store.c" \
     "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/protocol.c" \
@@ -134,7 +134,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_activation.c" "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" \
-    "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" "$ROOT_DIR/src/config_bootstrap.c" \
+    "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" "$ROOT_DIR/src/config_bootstrap.c" \
     "$ROOT_DIR/src/config_runtime.c" "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" \
     "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
     "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
@@ -146,7 +146,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
     "$ROOT_DIR/tests/unit/config_peer.c" "$ROOT_DIR/src/config_peer.c" \
     "$ROOT_DIR/src/config_owner_barrier.c" "$ROOT_DIR/src/config_owner_network.c" \
     "$ROOT_DIR/src/config_transaction.c" "$ROOT_DIR/src/config_transfer.c" \
-    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
     "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_barrier.c" \
     "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_runtime.c" \
     "$ROOT_DIR/src/config_status_protocol.c" "$ROOT_DIR/src/config_agreement.c" \
@@ -158,7 +158,7 @@ read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
     "$ROOT_DIR/tests/unit/config_agreement.c" "$ROOT_DIR/src/config_agreement.c" \
-    "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" "$ROOT_DIR/src/config_application.c" \
+    "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" "$ROOT_DIR/src/config_application.c" \
     "$ROOT_DIR/src/config_transfer.c" "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" "$ROOT_DIR/src/protocol.c" \
     "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
     "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \

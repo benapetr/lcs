@@ -7,6 +7,7 @@
 #include "config_requests.h"
 #include "config_bootstrap.h"
 #include "config_runtime.h"
+#include "config_initialization.h"
 #include <sys/types.h>
 
 typedef enum
@@ -64,8 +65,9 @@ typedef struct
 void lcs_config_agreement_worker_init(lcs_config_agreement_worker_t *worker);
 /* Same serialized writer as agreement/catalog jobs. Returns 1 while this worker
  * or an INI refresh is busy, -1 for preflight failure, 0 for started. Call ONLY
- * after coordinated authorization and while INI reload is excluded. Capability
- * advertisements do not authorize initialization. runtime must be fresh/empty.
+ * after coordinated authorization and while INI reload is excluded. This is a
+ * low-level storage primitive; automatic upgrade uses the guarded round API below.
+ * Capability advertisements do not authorize initialization. runtime must be fresh/empty.
  * Once started, bootstrap refresh stays locked, even on failure/cancellation;
  * retain all handles/storage until the child is reaped, then recover from disk.
  * poll/cancel use &runtime->agreement. Success publishes only pristine revision
@@ -79,6 +81,15 @@ int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker
                                                       const lcs_config_t *cfg,
                                                       bool allow_initialize,
                                                       char *err, size_t err_len);
+/* Automatic first initialization must use this gate, not the low-level boolean
+ * authorization primitive above. Revalidate exact effective definitions, reload
+ * generation and all admitted upgrade-capable instances against an explicit
+ * freeze round before forking. Busy/preflight failure never consumes the round;
+ * successful fork consumes it and permanently locks local INI refresh. */
+int lcs_config_agreement_worker_start_initialization_round(lcs_config_agreement_worker_t *worker,
+    lcs_config_runtime_t *runtime, lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg,
+    lcs_config_initialization_round_t *round, const uint64_t instances[LCS_MAX_NODES],
+    uint64_t generation, uint64_t now_ms, char *err, size_t err_len);
 /* Persist explicit all-member readiness through the SAME writer. runtime must
  * retain pristine initialization; an existing durable barrier is recovered via
  * runtime_open, not overwritten. poll/cancel use &runtime->agreement. Successful

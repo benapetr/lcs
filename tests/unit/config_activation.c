@@ -865,6 +865,140 @@ static void test_barrier_worker_preserves_newer_disk_state(void)
     cleanup();
 }
 
+static lcs_config_initialization_receipt_t freeze_receipt(const lcs_config_initialization_round_t *round, size_t node)
+{
+    lcs_config_initialization_receipt_t receipt = {
+        .requester_instance = round->instances[round->self], .attempt = round->attempt,
+        .responder_instance = round->instances[node], .status = LCS_INITIALIZATION_FROZEN };
+    memcpy(receipt.membership, round->membership, sizeof(receipt.membership));
+    memcpy(receipt.baseline, round->baseline, sizeof(receipt.baseline));
+    return receipt;
+}
+
+static void freeze_all(lcs_config_initialization_round_t *round)
+{
+    for (size_t i = 0; i < round->count; i++)
+    {
+        if (i == round->self) continue;
+        lcs_config_initialization_receipt_t query;
+        assert(!lcs_config_initialization_query(round, i, round->instances[i], 101, &query, error, sizeof(error)));
+        assert(!query.status && query.responder_instance == round->instances[i] && query.attempt == round->attempt);
+        lcs_config_initialization_receipt_t receipt = freeze_receipt(round, i);
+        assert(!lcs_config_initialization_receipt(round, i, round->instances[i], &receipt, 101, error, sizeof(error)));
+    }
+    assert(round->sealed);
+}
+
+static void test_initialization_round(void)
+{
+    initialize();
+    uint64_t instances[LCS_MAX_NODES] = {11, 22, 33};
+    lcs_config_initialization_round_t round = {0};
+    /* Unknown/old/offline quorum-only members prevent even beginning a round. */
+    instances[2] = 0;
+    assert(lcs_config_initialization_begin(&round, &config, instances, 7, 1, 100, error, sizeof(error)) == -1);
+    assert(!round.active);
+    instances[2] = 33;
+    assert(lcs_config_initialization_begin(&round, &config, instances, 7, 1, UINT64_MAX, error, sizeof(error)) == -1);
+    assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 1, 100, error, sizeof(error)));
+    assert(round.required == 7 && round.frozen == 1 && !round.sealed);
+    assert(lcs_config_initialization_begin(&round, &config, instances, 7, 2, 101, error, sizeof(error)) == -1);
+    assert(!round.failed && round.attempt == 1);
+    lcs_config_initialization_receipt_t receipt = freeze_receipt(&round, 1);
+    /* Even an exactly matching receipt is unsolicited until a query is registered. */
+    assert(lcs_config_initialization_receipt(&round, 1, 22, &receipt, 101, error, sizeof(error)) == 1);
+    lcs_config_initialization_receipt_t query;
+    assert(!lcs_config_initialization_query(&round, 1, 22, 101, &query, error, sizeof(error)));
+    receipt.attempt++;
+    assert(lcs_config_initialization_receipt(&round, 1, 22, &receipt, 101, error, sizeof(error)) == 1);
+    receipt = freeze_receipt(&round, 1); receipt.requester_instance++;
+    assert(lcs_config_initialization_receipt(&round, 1, 22, &receipt, 101, error, sizeof(error)) == 1);
+    receipt = freeze_receipt(&round, 1); receipt.responder_instance++;
+    assert(lcs_config_initialization_receipt(&round, 1, 23, &receipt, 101, error, sizeof(error)) == 1);
+    receipt = freeze_receipt(&round, 1); receipt.status = LCS_INITIALIZATION_BUSY;
+    assert(!lcs_config_initialization_receipt(&round, 1, 22, &receipt, 101, error, sizeof(error)));
+    assert(!lcs_config_initialization_poll(&round, instances, 7, 101, error, sizeof(error)));
+    receipt.status = LCS_INITIALIZATION_FROZEN;
+    assert(!lcs_config_initialization_receipt(&round, 1, 22, &receipt, 101, error, sizeof(error)));
+    assert(!lcs_config_initialization_receipt(&round, 1, 22, &receipt, 102, error, sizeof(error)));
+    assert(round.frozen == 3 && !round.sealed); /* A quorum cannot authorize conversion. */
+    assert(lcs_config_initialization_query(&round, 1, 22, 102, &query, error, sizeof(error)) == 1);
+    assert(!lcs_config_initialization_query(&round, 2, 33, 102, &query, error, sizeof(error)));
+    receipt = freeze_receipt(&round, 2);
+    assert(!lcs_config_initialization_receipt(&round, 2, 33, &receipt, 102, error, sizeof(error)));
+    assert(!lcs_config_initialization_authorize(&round, &config, instances, 7, 103, error, sizeof(error)));
+    assert(lcs_config_initialization_authorize(&round, &changed, instances, 7, 103, error, sizeof(error)) == -1);
+    assert(round.failed);
+    assert(lcs_config_initialization_begin(&round, &config, instances, 7, 1, 104, error, sizeof(error)) == -1);
+    for (unsigned mode = 0; mode < 6; mode++)
+    {
+        assert(!lcs_config_initialization_begin(&round, &config, instances, 7, mode + 2, 100, error, sizeof(error)));
+        freeze_all(&round);
+        uint64_t live[LCS_MAX_NODES]; memcpy(live, instances, sizeof(live));
+        if (mode == 0) live[2] = 0;
+        if (mode == 1) live[2]++;
+        if (mode == 2) live[0]++;
+        if (mode <= 3)
+            assert(lcs_config_initialization_poll(&round, live, mode == 3 ? 8 : 7, 103, error, sizeof(error)) == -1);
+        else if (mode == 4)
+            assert(lcs_config_initialization_poll(&round, live, 7, round.deadline_ms, error, sizeof(error)) == -1);
+        else
+        {
+            receipt = freeze_receipt(&round, 2); receipt.status = LCS_INITIALIZATION_BUSY;
+            assert(lcs_config_initialization_receipt(&round, 2, 33, &receipt, 103, error, sizeof(error)) == -1);
+        }
+        assert(round.failed && lcs_config_initialization_authorize(&round, &config, instances, 7, 103, error, sizeof(error)) == -1);
+    }
+    assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 8, 100, error, sizeof(error)));
+    assert(!lcs_config_initialization_query(&round, 2, 33, 101, &query, error, sizeof(error)));
+    receipt = freeze_receipt(&round, 2); receipt.baseline[0] ^= 1;
+    assert(lcs_config_initialization_receipt(&round, 2, 33, &receipt, 101, error, sizeof(error)) == -1);
+    assert(round.failed);
+    assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 9, 100, error, sizeof(error)));
+    assert(lcs_config_initialization_query(&round, 2, 34, 101, &query, error, sizeof(error)) == -1);
+    assert(round.failed && !round.queried);
+    /* Collection/authorization never writes any initialization record. */
+    assert(faccessat(store.directory_fd, "activation.json", F_OK, 0) == -1 && errno == ENOENT);
+    cleanup();
+}
+
+static void test_initialization_round_worker(void)
+{
+    initialize();
+    uint64_t instances[LCS_MAX_NODES] = {11, 22, 33};
+    lcs_config_initialization_round_t round = {0};
+    lcs_config_bootstrap_t bootstrap = bootstrap_for_test();
+    lcs_config_runtime_t runtime = {0};
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 1, 100, error, sizeof(error)));
+    assert(lcs_config_agreement_worker_start_initialization_round(&worker, &runtime, &bootstrap,
+        &config, &round, instances, 7, 101, error, sizeof(error)) == -1);
+    assert(!worker.pid && !bootstrap.initialization_locked && !runtime.requires_recovery && !round.consumed);
+    assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 2, 100, error, sizeof(error)));
+    freeze_all(&round);
+    bootstrap.refresh_pending = true;
+    assert(lcs_config_agreement_worker_start_initialization_round(&worker, &runtime, &bootstrap,
+        &config, &round, instances, 7, 101, error, sizeof(error)) == 1);
+    assert(!round.consumed && !round.failed);
+    bootstrap.refresh_pending = false;
+    assert(lcs_config_agreement_worker_start_initialization_round(&worker, &runtime, &bootstrap,
+        &changed, &round, instances, 7, 101, error, sizeof(error)) == -1);
+    assert(!worker.pid && !bootstrap.initialization_locked && !runtime.requires_recovery && !round.consumed);
+    assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 3, 100, error, sizeof(error)));
+    freeze_all(&round);
+    forbid_parent_io = true;
+    assert(!lcs_config_agreement_worker_start_initialization_round(&worker, &runtime, &bootstrap,
+        &config, &round, instances, 7, 101, error, sizeof(error)));
+    assert(round.consumed && bootstrap.initialization_locked);
+    assert(await_initialization(&worker, &runtime) == 1);
+    assert(runtime.activation.requests_required && runtime.requests.store && !runtime.requests.count);
+    assert(lcs_config_initialization_authorize(&round, &config, instances, 7, 102, error, sizeof(error)) == -1);
+    forbid_parent_io = false;
+    lcs_config_runtime_close(&runtime);
+    cleanup();
+}
+
 int main(void)
 {
     test_parent = getpid();
@@ -872,6 +1006,8 @@ int main(void)
     test_missing_state_and_promises();
     test_recovered_authority();
     test_corrupt_foreign_and_missing_intent();
+    test_initialization_round();
+    test_initialization_round_worker();
     test_initialization_worker_success();
     test_initialization_worker_sync_failures();
     test_initialization_worker_cancel_and_stale();

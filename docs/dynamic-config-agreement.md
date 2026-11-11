@@ -197,6 +197,44 @@ The automatic initialization coordinator remains to be implemented. Its worker
 is not yet invoked by ordinary daemon startup/peering. Preparing local files alone does not permit configuration voting
 or switch resource authority.
 
+### First-initialization authorization round
+
+`config_initialization.c` collects explicit freeze confirmations in memory before
+the first initialization worker may start. It requires a current upgrade-capable
+instance for every configured member, including quorum-only members. The future
+transport must supply zero for unknown, disconnected or unsupported members;
+ordinary version/bootstrap advertisements must never become freeze receipts.
+The caller must exclude local legacy reloads, including queued requests, before
+beginning collection.
+
+Each receipt binds the coordinator instance and increasing attempt, responder's
+admitted instance, exact membership and canonical effective INI baseline. The
+collector registers each query before queuing it and counts only replies from
+queried members; a majority is insufficient. Busy members keep the round pending.
+Conflicting current evidence or withdrawal of an acknowledged
+freeze fails the round, even after every member has replied. Stale/unsolicited
+receipts do not count. A fixed ten-second deadline is not extended by retries,
+duplicates or completion. Polling and the final worker gate invalidate the round
+if any admitted instance changes/disconnects or the local reload generation changes.
+
+`lcs_config_agreement_worker_start_initialization_round()` also recomputes the
+effective configuration binding before invoking the shared storage writer.
+Incomplete, expired or mismatched authorization does not fork or create files.
+An active/queued bootstrap refresh returns busy without consuming the round;
+the caller must revalidate when retrying. Successful fork consumes the round and
+keeps the existing permanent local reload lock through cancellation, uncertain
+I/O and disk recovery. The older boolean initialization function remains a
+low-level explicitly authorized storage primitive; automatic upgrade must use
+the guarded round entry point instead.
+
+These are same-process collection objects, not serialized proofs or new wire
+messages. The peer freeze exchange and responder lifecycle are still unfinished:
+before automatic use, a responder must durably exclude reloads until coordinated
+initialization/recovery takes over, including across restart. Collector expiry
+alone must never authorize a responder to thaw. A completed collection authorizes
+only local storage preparation; it is neither the durable readiness barrier nor
+a decision to switch to JSON authority.
+
 After preparation, nonzero committed/accepted values must use the dynamic schema;
 revision one must preserve the frozen definitions when assigning incarnations.
 The generic agreement library alone also supports legacy-schema successors, so

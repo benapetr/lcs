@@ -403,6 +403,14 @@ durable distributed configuration protocol.
 - [ ] Gate automatic activation on explicit capability and readiness confirmation
   from every configured member, including quorum-only nodes, with matching
   effective configuration. Unknown/offline members must not count as upgraded.
+- [x] Add the same-process all-member first-initialization freeze collector and
+  guarded writer entry point. Bind explicit receipts to the coordinator instance,
+  monotonic attempt, exact baseline/membership, current upgraded peer instances,
+  local reload generation and a fixed deadline. Revalidate sealed rounds before
+  forking, consume authorization once, and reject incomplete member sets, stale
+  replies, restarts, disconnects, changed definitions and withdrawn freezes.
+  This core does not send freeze messages or establish the responder's durable
+  reload exclusion/restart lifecycle; those remain required before automatic use.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

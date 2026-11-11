@@ -485,6 +485,19 @@ out:
     return result;
 }
 
+int lcs_config_agreement_worker_start_initialization_round(lcs_config_agreement_worker_t *worker,
+    lcs_config_runtime_t *runtime, lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg,
+    lcs_config_initialization_round_t *round, const uint64_t instances[LCS_MAX_NODES],
+    uint64_t generation, uint64_t now_ms, char *err, size_t err_len)
+{
+    if (worker->pid > 0 || bootstrap->worker_pid > 0 || bootstrap->refresh_pending) return 1;
+    if (!round || lcs_config_initialization_authorize(round, cfg, instances, generation, now_ms, err, err_len))
+        return fail(err, err_len, "initialization requires a complete current all-member freeze round");
+    int result = lcs_config_agreement_worker_start_initialization(worker, runtime, bootstrap, cfg, true, err, err_len);
+    if (!result) round->consumed = true;
+    return result;
+}
+
 int lcs_config_agreement_worker_start_barrier(lcs_config_agreement_worker_t *worker,
                                               lcs_config_runtime_t *runtime,
                                               const lcs_config_barrier_round_t *round,
