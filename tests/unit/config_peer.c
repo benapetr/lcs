@@ -911,6 +911,81 @@ static void test_initialization_interruption(void)
     }
 }
 
+static void test_automatic_readiness_and_restart(void)
+{
+    initialize(); g_state.self_index = 0; g_state.instance_id = 100;
+    strcpy(readiness_directory, "/tmp/lcs-auto-readiness.XXXXXX"); assert(mkdtemp(readiness_directory));
+    char error[256]; assert(!lcs_config_store_open(&readiness_store, readiness_directory, error, sizeof(error)));
+    g_state.config_bootstrap.state = readiness_store;
+    lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    runtime->base = malloc(sizeof(*runtime->base)); assert(runtime->base);
+    assert(!lcs_config_activation_open_requests(&runtime->activation, &g_state.config_bootstrap.state,
+        &g_state.cfg, runtime->base, true, error, sizeof(error)));
+    assert(!lcs_config_activation_resume(&runtime->activation, &runtime->agreement, &runtime->application, error, sizeof(error)));
+    lcs_config_runtime_close(runtime);
+    assert(!lcs_config_runtime_open(runtime, &g_state.config_bootstrap.state, &g_state.cfg, error, sizeof(error)));
+    memset(g_state.resources, 0, sizeof(g_state.resources)); memset(g_state.lease_grants, 0, sizeof(g_state.lease_grants));
+    g_state.config_status.serial = 0; assert(!config_peer_resume_frozen(error, sizeof(error)));
+    g_state.config_initialization_auto_resume = true;
+    establish(1, 6); g_state.peers[1].instance_id = 200; config_peer_process(-1);
+    assert(g_state.config_coordinator.phase == LCS_CONFIG_COORD_IDLE && !runtime->barrier.store);
+    establish(2, 6); g_state.peers[2].instance_id = 300; g_state.config_readiness_retry_ms = 0;
+    config_peer_process(-1); assert(g_state.config_coordinator.phase == LCS_CONFIG_COORD_COLLECTING);
+    lcs_config_readiness_message_t old = last_ready[1]; uint64_t attempt = old.attempt;
+    assert(lcs_config_coordinator_reset_readiness(&g_state.config_coordinator, lcs_now_ms()) < 0);
+    g_state.config_readiness.deadline_ms = lcs_now_ms() - 1; config_peer_process(-1);
+    assert(g_state.config_coordinator.phase == LCS_CONFIG_COORD_IDLE && !g_state.config_coordinator.failed &&
+        !g_state.config_coordinator.closing && g_state.config_readiness.round.failed && !runtime->barrier.store);
+    g_state.config_readiness_retry_ms = 0; config_peer_process(-1);
+    assert(g_state.config_readiness.query.attempt > attempt);
+    old.kind = LCS_READINESS_REPLY; old.status = LCS_READINESS_READY; old.responder_instance = 200;
+    unsigned char payload[LCS_CONFIG_READINESS_MAX]; size_t length;
+    assert(!lcs_config_readiness_encode(&old, payload, sizeof(payload), &length));
+    assert(!config_peer_receive_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_REPLY, payload, length));
+    assert(g_state.config_readiness.round.ready == 1); /* Old attempt cannot be reused. */
+    for (size_t node = 1; node <= 2; node++)
+    {
+        lcs_config_readiness_message_t reply = last_ready[node]; reply.kind = LCS_READINESS_REPLY;
+        reply.status = LCS_READINESS_READY; reply.responder_instance = g_state.peers[node].instance_id;
+        assert(!lcs_config_readiness_encode(&reply, payload, sizeof(payload), &length));
+        assert(!config_peer_receive_readiness(-1, (int)node, LCS_MSG_CONFIG_READINESS_REPLY, payload, length));
+        if (node == 1) { config_peer_process(-1); assert(!g_state.config_coordinator.storage.pid && !runtime->barrier.store); }
+    }
+    stop_freeze_sync = true; config_peer_process(-1);
+    pid_t child = g_state.config_coordinator.storage.pid; assert(child > 0 && !runtime->barrier.store);
+    assert(g_state.config_coordinator.phase == LCS_CONFIG_COORD_PERSISTING && !config_peer_configuration_vote_ready());
+    assert(lcs_config_coordinator_reset_readiness(&g_state.config_coordinator, UINT64_MAX) < 0);
+    int status; pid_t result = 0;
+    for (unsigned i = 0; i < 5000 && !result; i++)
+    { result = waitpid(child, &status, WNOHANG | WUNTRACED); if (!result) usleep(1000); }
+    assert(result == child && WIFSTOPPED(status)); assert(!kill(child, SIGCONT)); stop_freeze_sync = false;
+    for (unsigned i = 0; i < 5000 && g_state.config_coordinator.storage.pid; i++) { config_peer_process(-1); usleep(1000); }
+    assert(lcs_config_runtime_readiness_prepared(runtime) && !lcs_config_runtime_initialization_prepared(runtime));
+    assert(config_peer_configuration_vote_ready() && g_state.config_coordinator.phase == LCS_CONFIG_COORD_READY);
+    assert(g_state.config_application_remapping && g_state.config_application_fenced && !g_state.resource_generation_enabled && !g_state.voting_ready);
+    lcs_config_status_view_t view; assert(!config_peer_view(&view) && view.phase == LCS_CONFIG_DIAG_FROZEN && !view.admitted && strstr(view.error, "readiness persisted"));
+    char *record = NULL; size_t bytes;
+    assert(!lcs_config_store_read(&readiness_store, "barrier.json", &record, &bytes, LCS_CONFIG_BARRIER_MAX, error, sizeof(error)));
+    config_peer_stop(); assert(config_peer_stopped()); lcs_config_runtime_close(runtime);
+    memset(&g_state.config_coordinator, 0, sizeof(g_state.config_coordinator));
+    memset(&g_state.config_readiness, 0, sizeof(g_state.config_readiness));
+    g_state.config_status.serial = 0; g_state.config_status_generation = 0; g_state.instance_id++;
+    for (size_t i = 0; i < 3; i++) g_state.peers[i].fd = -1;
+    strcpy(g_state.cfg.resources[0].address, "192.0.2.99/32");
+    assert(!lcs_config_runtime_open(runtime, &g_state.config_bootstrap.state, &g_state.cfg, error, sizeof(error)));
+    assert(lcs_config_runtime_readiness_prepared(runtime)); assert(!config_peer_resume_frozen(error, sizeof(error)));
+    config_peer_process(-1);
+    assert(config_peer_configuration_vote_ready() && !g_state.config_readiness.active && !g_state.config_coordinator.storage.pid);
+    assert(!strcmp(g_state.cfg.resources[0].address, "192.0.2.10/32") && resource_config_is_fenced(0));
+    char *again = NULL; size_t again_bytes;
+    assert(!lcs_config_store_read(&readiness_store, "barrier.json", &again, &again_bytes, LCS_CONFIG_BARRIER_MAX, error, sizeof(error)));
+    assert(bytes == again_bytes && !memcmp(record, again, bytes)); free(record); free(again);
+    config_peer_stop(); lcs_config_runtime_close(runtime);
+    const char *names[] = {"activation.json", "agreement.json", "application.json", "requests.json", "barrier.json", "lock"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) assert(!unlinkat(readiness_store.directory_fd, names[i], 0));
+    lcs_config_store_close(&readiness_store); assert(!rmdir(readiness_directory));
+}
+
 int main(void)
 {
     test_metadata_and_reload();
@@ -927,6 +1002,7 @@ int main(void)
     test_frozen_startup_and_status();
     test_coordinated_local_initialization();
     test_initialization_interruption();
+    test_automatic_readiness_and_restart();
     puts("configuration peer metadata and explicit readiness unit tests passed");
     return 0;
 }

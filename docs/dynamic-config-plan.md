@@ -453,6 +453,14 @@ durable distributed configuration protocol.
   shared-writer interruption/shutdown, all sync/crash boundaries, real three-node
   automatic preparation and mixed frozen/prepared/interrupted restart. This does
   not initiate the first freeze from INI, create readiness, or activate JSON.
+- [x] Automatically collect explicit all-member readiness after pristine local
+  preparation, persist the sealed proof through the shared writer, and recover
+  valid barriers over pristine revision-zero history without rewriting them.
+  Retry only failed/expired in-memory unsealed collection with fresh attempts;
+  persistence uncertainty requires recovery. Keep resource voting/placement,
+  reload, JSON authority and mutation admission fenced. Verify stale replies,
+  timeout retry, writer exclusion, full/quorum-only restart, unchanged proof and
+  missing/corrupt history. First-freeze creation and JSON activation remain open.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

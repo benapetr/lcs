@@ -673,7 +673,8 @@ int main(int argc, char **argv)
     if (g_state.config_runtime.requires_recovery)
     {
         bool frozen = g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
-            lcs_config_runtime_initialization_prepared(&g_state.config_runtime);
+            lcs_config_runtime_initialization_prepared(&g_state.config_runtime) ||
+            lcs_config_runtime_readiness_prepared(&g_state.config_runtime);
         int result = frozen ? config_peer_resume_frozen(bootstrap_error, sizeof(bootstrap_error)) :
             config_manager_prepare(bootstrap_error, sizeof(bootstrap_error));
         if (result)

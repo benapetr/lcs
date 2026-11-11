@@ -204,6 +204,13 @@ static void process_readiness(int epoll_fd)
     lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
     uint64_t now = lcs_now_ms();
     lcs_config_coordinator_phase_t before = coordinator->phase;
+    if (g_state.config_initialization_auto_resume && before == LCS_CONFIG_COORD_COLLECTING &&
+        !state->round.sealed && (state->round.failed || now >= state->deadline_ms) && durable_readiness_available() &&
+        !lcs_config_coordinator_reset_readiness(coordinator, now))
+    {
+        before = coordinator->phase;
+        g_state.config_readiness_retry_ms = now + 1000u;
+    }
     if (coordinator->initialized && !coordinator->closing &&
         (before == LCS_CONFIG_COORD_COLLECTING || before == LCS_CONFIG_COORD_PERSISTING) &&
         !durable_readiness_available())
@@ -213,6 +220,13 @@ static void process_readiness(int epoll_fd)
         lcs_log_debug("all-member configuration readiness persisted; configuration vote prerequisites satisfied");
     else if (coordinator->phase != before && coordinator->phase == LCS_CONFIG_COORD_FAILED)
         lcs_log_error("configuration storage coordinator failed: %s", coordinator->error);
+    if (g_state.config_initialization_auto_resume && coordinator->phase == LCS_CONFIG_COORD_IDLE &&
+        !coordinator->closing && !coordinator->failed && now >= g_state.config_readiness_retry_ms &&
+        lcs_config_runtime_initialization_prepared(&g_state.config_runtime))
+    {
+        g_state.config_readiness_retry_ms = now + 1000u;
+        (void)config_peer_readiness_start();
+    }
     if (coordinator->initialized && coordinator->phase != LCS_CONFIG_COORD_COLLECTING)
         return;
     if (!state->active || lcs_config_readiness_complete(state))
@@ -325,7 +339,8 @@ int config_peer_resume_frozen(char *err, size_t err_len)
             grant->active || grant->owner_instance_id || grant->epoch || grant->lease_id || grant->deadline_ms || grant->promised_epoch) pristine = false;
     }
     if (!pristine || !runtime->requires_recovery || !runtime->base || activation->base != runtime->base ||
-        activation->store != &g_state.config_bootstrap.state || (!frozen && !lcs_config_runtime_initialization_prepared(runtime)) ||
+        activation->store != &g_state.config_bootstrap.state || (!frozen && !lcs_config_runtime_initialization_prepared(runtime) &&
+        !lcs_config_runtime_readiness_prepared(runtime)) ||
         activation->poisoned || !activation->requests_required || !activation->baseline.document ||
         g_state.self_index != lcs_config_self_index(runtime->base))
     { if (err && err_len) snprintf(err, err_len, "frozen startup requires pristine pre-listener state and an exact recovered freeze"); return -1; }
@@ -350,6 +365,8 @@ int config_peer_resume_frozen(char *err, size_t err_len)
     g_state.config_bootstrap.initialization_locked = true;
     g_state.config_bootstrap.prepared = false; g_state.config_bootstrap_initialized = true;
     lcs_config_coordinator_init(&g_state.config_coordinator, runtime, &g_state.config_readiness);
+    if (lcs_config_runtime_readiness_prepared(runtime) && lcs_config_coordinator_recover(&g_state.config_coordinator))
+    { if (err && err_len) snprintf(err, err_len, "cannot restore durable readiness coordinator"); return -1; }
     return 0;
 }
 
@@ -636,7 +653,8 @@ void config_peer_process(int epoll_fd)
     bool keepalive = g_state.config_application_remapping && !g_state.resource_generation_enabled &&
         g_state.config_runtime.activation.store && !g_state.config_runtime.activation.poisoned &&
         (g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
-         lcs_config_runtime_initialization_prepared(&g_state.config_runtime)) && now >= g_state.config_status_keepalive_ms;
+         lcs_config_runtime_initialization_prepared(&g_state.config_runtime) ||
+         lcs_config_runtime_readiness_prepared(&g_state.config_runtime)) && now >= g_state.config_status_keepalive_ms;
     if (keepalive)
     {
         uint64_t interval = g_state.cfg.peer_timeout_ms / 3u;
@@ -692,11 +710,14 @@ int config_peer_view(lcs_config_status_view_t *view)
     view->self = (uint16_t)g_state.self_index;
     if (g_state.config_runtime.activation.store && !g_state.config_runtime.activation.poisoned &&
         (g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
-         lcs_config_runtime_initialization_prepared(&g_state.config_runtime)))
+         lcs_config_runtime_initialization_prepared(&g_state.config_runtime) ||
+         lcs_config_runtime_readiness_prepared(&g_state.config_runtime)))
     {
         view->phase = LCS_CONFIG_DIAG_FROZEN;
         snprintf(view->error, sizeof(view->error), g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ?
             "resource definitions are frozen; awaiting coordinated initialization" :
+            lcs_config_runtime_readiness_prepared(&g_state.config_runtime) ?
+            "resource definitions are frozen; local initialization prepared and all-member readiness persisted; awaiting activation" :
             "resource definitions are frozen; local initialization prepared, awaiting all-member readiness");
     }
     for (size_t i = 0; i < g_state.cfg.node_count; i++)

@@ -23,7 +23,7 @@ import json,sys
 s=json.load(sys.stdin)
 assert s["application_state"]=="frozen" and s["authority"]=="ini" and not s["admitted"] and not s["dynamic_commands"]
 assert all(n["connected"] and n["metadata_known"] and n["protocol"]==6 for n in s["nodes"])
-assert "local initialization prepared" in s["error"]
+assert "all-member readiness persisted" in s["error"]
 ' "$1" 2>/dev/null
 }
 for node in node1 node2 node3; do wait_until 10 "$node partially initialized coordination" coordination_ready "$node"; done
@@ -41,7 +41,8 @@ import json,sys
 from pathlib import Path
 state=Path(sys.argv[1]); intent=json.loads((state/'activation.json').read_text())
 assert json.load(open(sys.argv[3])) == json.loads(intent['baseline'])
-assert not (state/'barrier.json').exists()
+barrier=json.loads((state/'barrier.json').read_text())
+assert barrier['ready_voters']==7 and barrier['membership']==intent['membership']
 assert intent['record_version']==2 and intent['phase']=='prepared'
 assert json.loads((state/'requests.json').read_text())['requests']==[]
 assert all((state/(name+'.json')).exists() for name in ('agreement','application'))
@@ -49,12 +50,12 @@ PY
 done
 # Revision-zero preparation survives restart without rewriting retained journals.
 for node in node1 node3; do
-    for file in activation agreement application requests; do cp "$(node_config "$node").state/$file.json" "$TEST_TMP/$node-$file.json"; done
+    for file in activation agreement application requests barrier; do cp "$(node_config "$node").state/$file.json" "$TEST_TMP/$node-$file.json"; done
     stop_node "$node"
     start_node "$node"
     index=$((${node#node}-1)); LCS_PIDS[$index]="${LCS_PIDS[-1]}"
     wait_until 10 "$node prepared restart" coordination_ready "$node"
-    for file in activation agreement application requests; do cmp "$(node_config "$node").state/$file.json" "$TEST_TMP/$node-$file.json" || die 'prepared restart rewrote history'; done
+    for file in activation agreement application requests barrier; do cmp "$(node_config "$node").state/$file.json" "$TEST_TMP/$node-$file.json" || die 'prepared restart rewrote history'; done
 done
 stop_node node1
 rm "$(node_config node1).state/requests.json"

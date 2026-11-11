@@ -35,6 +35,13 @@ including quorum-only voters. Pristine prepared nodes retain their journals and
 resource fences across restart. Automatic first-freeze creation and JSON
 activation remain unfinished; local preparation does not enable dynamic commands.
 
+After local preparation of an existing durable freeze, the scheduler automatically
+collects readiness from every configured member and persists its barrier.
+`config status` then reports `all-member readiness persisted; awaiting activation`
+while retaining frozen INI authority and resource/mutation fences. A valid barrier
+over pristine revision-zero history is recovered without rewriting it. In-memory
+collection timeouts can retry; uncertain persistence requires disk recovery.
+
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means
 its consensus decision was recorded, not resource application or final client

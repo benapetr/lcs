@@ -42,5 +42,8 @@ void lcs_config_runtime_close(lcs_config_runtime_t *runtime);
  * and no readiness barrier, promises, decisions or application work. No I/O.
  * This permits fenced coordination/reaffirming the freeze, never a vote. */
 bool lcs_config_runtime_initialization_prepared(const lcs_config_runtime_t *runtime);
+/* Same pristine revision-zero state plus its valid durable all-member barrier.
+ * Permits fenced coordination recovery, not resource/JSON admission. */
+bool lcs_config_runtime_readiness_prepared(const lcs_config_runtime_t *runtime);
 
 #endif

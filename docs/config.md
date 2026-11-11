@@ -31,6 +31,14 @@ reports `application_state: frozen`. Existing freezes resume local initializatio
 after fresh all-member confirmation, while pristine prepared restarts preserve
 their journals and fences. Automatic first-freeze creation and JSON activation
 remain unfinished. INI syntax/static validation still runs before recovery.
+
+After local preparation of an existing durable freeze, the scheduler automatically
+collects readiness from every configured member and persists its barrier.
+`config status` then reports `all-member readiness persisted; awaiting activation`
+while retaining frozen INI authority and resource/mutation fences. A valid barrier
+over pristine revision-zero history is recovered without rewriting it. In-memory
+collection timeouts can retry; uncertain persistence requires disk recovery.
+
 `lcs config request-status ID` (also with `--json`) reads published local request
 facts during normal operation or recovery. Missing/poisoned history and unrecorded
 outcomes remain unknown; a committed fact does not establish application or final

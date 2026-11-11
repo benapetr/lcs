@@ -121,6 +121,20 @@ int lcs_config_coordinator_start(lcs_config_coordinator_t *coordinator)
     return 0;
 }
 
+int lcs_config_coordinator_reset_readiness(lcs_config_coordinator_t *coordinator, uint64_t now_ms)
+{
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed ||
+        coordinator->storage.pid > 0 || coordinator->phase != LCS_CONFIG_COORD_COLLECTING ||
+        !coordinator->readiness || !coordinator->readiness->active || coordinator->readiness->round.sealed ||
+        (!coordinator->readiness->round.failed && now_ms < coordinator->readiness->deadline_ms) ||
+        !lcs_config_runtime_initialization_prepared(coordinator->runtime)) return -1;
+    coordinator->readiness->round.failed = true;
+    memset(&coordinator->persisted_round, 0, sizeof(coordinator->persisted_round));
+    coordinator->requester_instance = coordinator->attempt = 0;
+    coordinator->phase = LCS_CONFIG_COORD_IDLE;
+    return 0;
+}
+
 int lcs_config_coordinator_recover(lcs_config_coordinator_t *coordinator)
 {
     if (!coordinator->initialized || coordinator->closing || coordinator->failed ||

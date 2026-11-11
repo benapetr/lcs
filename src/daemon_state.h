@@ -498,6 +498,7 @@ typedef struct
     lcs_config_owner_network_t config_owners;
     uint64_t config_readiness_attempt;
     uint64_t config_readiness_next_send_ms;
+    uint64_t config_readiness_retry_ms;
     bool config_bootstrap_initialized;
 } daemon_state_t;
 

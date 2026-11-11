@@ -424,3 +424,13 @@ completion counter, returning to IDLE without configuration voting authority.
 Cold prepared restarts preserve journals and restore resource fences. These
 workflow changes add no wire/storage formats or release-version bump. First-freeze
 creation from INI and JSON activation remain unfinished.
+
+Automatic readiness now follows pristine mandatory-history preparation after an
+existing durable freeze, using existing wire-6 types 31/32 and barrier format 1.
+Failed/expired unsealed in-memory collection may retry with a new attempt; no
+retry resets an active writer, poisoned storage or uncertain persistence.
+Pristine revision-zero preparation with a valid barrier resumes the coordinator
+in READY without disk rewrites, under unchanged resource voting/placement fences.
+Diagnostic format 4 still reports frozen INI authority, no admission/revisions or
+dynamic commands, with readiness-persisted text while awaiting activation.
+These workflow changes require no wire/storage format or release-version bump.

@@ -65,6 +65,10 @@ void lcs_config_coordinator_init(lcs_config_coordinator_t *coordinator,
 /* Attach an explicitly started readiness attempt. No automatic initialization,
  * file I/O, authority switch or backend work occurs here. Returns 1 if busy. */
 int lcs_config_coordinator_start(lcs_config_coordinator_t *coordinator);
+/* Discard only a failed/expired unsealed in-memory readiness collection. Requires
+ * pristine initialization and no active writer/barrier. Never repairs uncertain
+ * persistence or clears failure/closing flags. A retry needs a newer attempt. */
+int lcs_config_coordinator_reset_readiness(lcs_config_coordinator_t *coordinator, uint64_t now_ms);
 /* Explicit responder operation after peer admission and exclusion of ALL local
  * reload work. Shared writer, no vote/initialization/activation permission.
  * Success returns to IDLE with the durable FROZEN runtime; failures retain locks. */

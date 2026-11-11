@@ -34,7 +34,7 @@ frozen_status() {
     "$LCS" -s "$(node_socket "$1")" --json config status 2>/dev/null | python3 -c '
 import json,sys
 s=json.load(sys.stdin); assert s["authority"]=="ini" and s["application_state"]=="frozen" and not s["admitted"] and not s["dynamic_commands"] and not s["prepared"]
-assert "local initialization prepared" in s["error"]
+assert "all-member readiness persisted" in s["error"]
 assert all(n["connected"] and n["metadata_known"] and n["protocol"]==6 for n in s["nodes"])
 ' 2>/dev/null
 }
@@ -59,9 +59,12 @@ from pathlib import Path
 state=Path(sys.argv[1]); old=json.load(open(sys.argv[2])); current=json.loads((state/'activation.json').read_text())
 assert current['record_version']==2 and current['phase']=='prepared'
 assert all(old[k]==current[k] for k in ('member','membership','baseline_digest','baseline'))
-assert json.loads((state/'requests.json').read_text())['requests']==[] and not (state/'barrier.json').exists()
+assert json.loads((state/'requests.json').read_text())['requests']==[]
+barrier=json.loads((state/'barrier.json').read_text())
+assert barrier['ready_voters']==7 and barrier['membership']==current['membership']
 PY
     cp "$(node_config "$node").state/activation.json" "$TEST_TMP/$node-prepared.json"
+    cp "$(node_config "$node").state/barrier.json" "$TEST_TMP/$node-barrier.json"
 done
 # Exercise multiple peer timeouts: metadata keeps the coordination channel alive
 # while resource heartbeats, votes and placement remain fenced.
@@ -78,7 +81,7 @@ for node in node1 node2 node3; do
     stop_node "$node"
     cmp "$state/activation.json" "$TEST_TMP/$node-prepared.json" || die 'restart or signal rewrote preparation'
     for record in agreement application requests; do [[ -e "$state/$record.json" ]] || die 'prepared history disappeared'; done
-    [[ ! -e "$state/barrier.json" ]] || die 'preparation alone created readiness'
+    cmp "$state/barrier.json" "$TEST_TMP/$node-barrier.json" || die 'restart rewrote durable readiness'
     printf '{}\n' >"$state/agreement.json"
     if LCS_VIP_DRY_RUN=1 "$LCSD" -c "$config" --no-syslog --no-timestamp >"$TEST_TMP/$node-conflict.log" 2>&1; then die 'frozen runtime accepted contradictory history'; fi
     cmp "$state/activation.json" "$TEST_TMP/$node-prepared.json" || die 'conflicting history replaced preparation'
