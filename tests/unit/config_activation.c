@@ -999,6 +999,144 @@ static void test_initialization_round_worker(void)
     cleanup();
 }
 
+static void assert_no_initialized_history(void)
+{
+    const char *names[] = {"agreement.json", "application.json", "requests.json", "barrier.json"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        assert(faccessat(store.directory_fd, names[i], F_OK, 0) == -1 && errno == ENOENT);
+}
+
+static void test_durable_freeze_worker_and_promotion(void)
+{
+    initialize();
+    lcs_config_bootstrap_t bootstrap = bootstrap_for_test();
+    lcs_config_runtime_t runtime = {0};
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    bootstrap.refresh_pending = true;
+    assert(lcs_config_agreement_worker_start_freeze(&worker, &runtime, &bootstrap, &config, error, sizeof(error)) == 1);
+    bootstrap.refresh_pending = false;
+    stop_sync = 1; forbid_parent_io = true;
+    assert(!lcs_config_agreement_worker_start_freeze(&worker, &runtime, &bootstrap, &config, error, sizeof(error)));
+    assert(bootstrap.initialization_locked && !bootstrap.prepared && runtime.requires_recovery && !runtime.base);
+    await_stopped(&worker);
+    int operation = -1;
+    assert(!lcs_config_agreement_worker_poll(&worker, &runtime.agreement, &operation, error, sizeof(error)));
+    assert(!runtime.activation.store); /* No acknowledgement while fsync/child is pending. */
+    assert(!kill(worker.pid, SIGCONT)); stop_sync = 0;
+    assert(await_initialization(&worker, &runtime) == 1);
+    assert(runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN && runtime.activation.requests_required);
+    assert(!runtime.agreement.store && !runtime.application.store && !runtime.requests.store && !runtime.barrier.store);
+    assert(!lcs_config_barrier_local_ready(&runtime.activation, &runtime.agreement, &runtime.application));
+    forbid_parent_io = false;
+    assert_no_initialized_history();
+    assert(lcs_config_activation_resume(&runtime.activation, &runtime.agreement, &runtime.application, error, sizeof(error)) == -1);
+    assert_no_initialized_history();
+    /* Restart retains frozen definitions despite edited INI; it never promotes
+     * the freeze or creates history just because all records are absent. */
+    lcs_config_runtime_close(&runtime);
+    fail_sync = 1;
+    assert(!lcs_config_runtime_open(&runtime, &bootstrap.state, &changed, error, sizeof(error)));
+    assert(fail_sync == 1); fail_sync = 0;
+    assert(runtime.requires_recovery && runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN);
+    assert(!strcmp(runtime.base->resources[0].address, config.resources[0].address));
+    assert_no_initialized_history();
+    assert(lcs_config_bootstrap_refresh(&bootstrap, &changed, error, sizeof(error)) == -1);
+    /* A changed candidate or incomplete round cannot promote a recovered freeze. */
+    assert(lcs_config_agreement_worker_start_initialization(&worker, &runtime, &bootstrap, &changed, true, error, sizeof(error)) == -1);
+    assert(lcs_config_agreement_worker_start_initialization(&worker, &runtime, &bootstrap, &config, false, error, sizeof(error)) == -1);
+    uint64_t instances[LCS_MAX_NODES] = {11, 22, 33};
+    lcs_config_initialization_round_t round = {0};
+    assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 1, 100, error, sizeof(error)));
+    assert(lcs_config_agreement_worker_start_initialization_round(&worker, &runtime, &bootstrap,
+        &config, &round, instances, 7, 101, error, sizeof(error)) == -1);
+    assert_no_initialized_history();
+    assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 2, 100, error, sizeof(error)));
+    freeze_all(&round);
+    forbid_parent_io = true;
+    assert(!lcs_config_agreement_worker_start_initialization_round(&worker, &runtime, &bootstrap,
+        &config, &round, instances, 7, 101, error, sizeof(error)));
+    assert(round.consumed && runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN);
+    assert(await_initialization(&worker, &runtime) == 1);
+    assert(runtime.activation.phase == LCS_CONFIG_ACTIVATION_PREPARED && runtime.requests.store && !runtime.requests.count);
+    forbid_parent_io = false;
+    lcs_config_runtime_close(&runtime); cleanup();
+}
+
+static void test_freeze_failures_and_promotion_crashes(void)
+{
+    for (int mode = 0; mode < 2; mode++)
+    for (int boundary = 1; boundary <= 2; boundary++)
+    {
+        initialize();
+        lcs_config_bootstrap_t bootstrap = bootstrap_for_test();
+        lcs_config_runtime_t runtime = {0};
+        lcs_config_agreement_worker_t worker; lcs_config_agreement_worker_init(&worker);
+        if (mode) crash_sync = boundary; else fail_sync = boundary;
+        forbid_parent_io = true;
+        assert(!lcs_config_agreement_worker_start_freeze(&worker, &runtime, &bootstrap, &config, error, sizeof(error)));
+        assert(await_initialization(&worker, &runtime) == -1);
+        assert(bootstrap.initialization_locked && runtime.requires_recovery && runtime.activation.poisoned && !runtime.base);
+        fail_sync = crash_sync = 0; forbid_parent_io = false;
+        lcs_config_runtime_close(&runtime);
+        assert(!lcs_config_runtime_open(&runtime, &store, &changed, error, sizeof(error)));
+        assert(runtime.requires_recovery == (boundary == 2));
+        if (boundary == 2) assert(runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN);
+        assert_no_initialized_history();
+        lcs_config_runtime_close(&runtime); cleanup();
+    }
+    for (int mode = 0; mode < 2; mode++)
+    for (int boundary = 1; boundary <= 10; boundary++)
+    {
+        initialize();
+        lcs_config_bootstrap_t bootstrap = bootstrap_for_test();
+        lcs_config_runtime_t runtime = {0};
+        lcs_config_agreement_worker_t worker; lcs_config_agreement_worker_init(&worker);
+        assert(!lcs_config_activation_freeze(&runtime.activation, &bootstrap.state, &config, &frozen, error, sizeof(error)));
+        lcs_config_activation_close(&runtime.activation);
+        assert(!lcs_config_runtime_open(&runtime, &bootstrap.state, &config, error, sizeof(error)));
+        bootstrap.initialization_locked = true; bootstrap.prepared = false;
+        if (mode) crash_sync = boundary; else fail_sync = boundary;
+        forbid_parent_io = true;
+        assert(!lcs_config_agreement_worker_start_initialization(&worker, &runtime, &bootstrap, &config, true, error, sizeof(error)));
+        assert(await_initialization(&worker, &runtime) == -1);
+        assert(runtime.activation.poisoned && bootstrap.initialization_locked);
+        fail_sync = crash_sync = 0; forbid_parent_io = false;
+        lcs_config_runtime_close(&runtime);
+        assert(!lcs_config_runtime_open(&runtime, &store, &changed, error, sizeof(error)));
+        assert(runtime.requires_recovery && !strcmp(runtime.base->resources[0].address, config.resources[0].address));
+        if (boundary == 1)
+        { assert(runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN); assert_no_initialized_history(); }
+        else
+            assert(runtime.activation.phase == LCS_CONFIG_ACTIVATION_PREPARED && runtime.requests.store && !runtime.requests.count);
+        lcs_config_runtime_close(&runtime); cleanup();
+    }
+}
+
+static void test_freeze_conflicts(void)
+{
+    const char *names[] = {"agreement.json", "application.json", "barrier.json", "requests.json"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+    {
+        initialize();
+        assert(!lcs_config_activation_freeze(&activation, &store, &config, &frozen, error, sizeof(error)));
+        lcs_config_activation_close(&activation);
+        fail_sync = 1; /* Exact retries recover without rewriting the freeze. */
+        assert(!lcs_config_activation_freeze(&activation, &store, &config, &frozen, error, sizeof(error)));
+        assert(fail_sync == 1); fail_sync = 0;
+        lcs_config_activation_close(&activation);
+        assert(lcs_config_activation_freeze(&activation, &store, &changed, &frozen, error, sizeof(error)) == -1);
+        assert(lcs_config_activation_open_requests(&activation, &store, &changed, &frozen, true, error, sizeof(error)) == -1);
+        assert_no_initialized_history();
+        assert(!lcs_config_store_write(&store, names[i], "{}", 2, error, sizeof(error)));
+        lcs_config_runtime_t runtime = {0};
+        assert(lcs_config_runtime_open(&runtime, &store, &config, error, sizeof(error)) == -1);
+        assert(!runtime.base);
+        assert(lcs_config_activation_freeze(&activation, &store, &config, &frozen, error, sizeof(error)) == -1);
+        cleanup();
+    }
+}
+
 int main(void)
 {
     test_parent = getpid();
@@ -1008,6 +1146,9 @@ int main(void)
     test_corrupt_foreign_and_missing_intent();
     test_initialization_round();
     test_initialization_round_worker();
+    test_durable_freeze_worker_and_promotion();
+    test_freeze_failures_and_promotion_crashes();
+    test_freeze_conflicts();
     test_initialization_worker_success();
     test_initialization_worker_sync_failures();
     test_initialization_worker_cancel_and_stale();

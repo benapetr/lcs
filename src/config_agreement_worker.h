@@ -58,6 +58,7 @@ typedef struct
     lcs_config_application_t *application; /* Borrowed until completion/cancellation is reaped. */
     lcs_config_runtime_t *initialization_target; /* Borrowed until reaped. */
     lcs_config_runtime_t *initialization_candidate; /* Private unpublished pristine state. */
+    bool initialization_from_freeze; /* Replace only the exact retained frozen runtime after reaping. */
     lcs_config_runtime_t *barrier_target; /* Borrowed, unchanged until reaped. */
     lcs_config_barrier_t barrier_candidate; /* Unpublished until successful child exit. */
 } lcs_config_agreement_worker_t;
@@ -67,7 +68,9 @@ void lcs_config_agreement_worker_init(lcs_config_agreement_worker_t *worker);
  * or an INI refresh is busy, -1 for preflight failure, 0 for started. Call ONLY
  * after coordinated authorization and while INI reload is excluded. This is a
  * low-level storage primitive; automatic upgrade uses the guarded round API below.
- * Capability advertisements do not authorize initialization. runtime must be fresh/empty.
+ * Capability advertisements do not authorize initialization. runtime must be
+ * fresh/empty or the exact retained FROZEN runtime, with its bootstrap already
+ * locked and explicit allow_initialize permission for promotion.
  * Once started, bootstrap refresh stays locked, even on failure/cancellation;
  * retain all handles/storage until the child is reaped, then recover from disk.
  * poll/cancel use &runtime->agreement. Success publishes only pristine revision
@@ -90,6 +93,14 @@ int lcs_config_agreement_worker_start_initialization_round(lcs_config_agreement_
     lcs_config_runtime_t *runtime, lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg,
     lcs_config_initialization_round_t *round, const uint64_t instances[LCS_MAX_NODES],
     uint64_t generation, uint64_t now_ms, char *err, size_t err_len);
+/* Serialized local responder primitive, called only after excluding all local
+ * reload work and validating an explicit peer freeze query. Persists FROZEN
+ * only; successful publication/reaping is required before acknowledging it.
+ * Locks reload immediately on fork, including on uncertainty/cancellation.
+ * It does not create journals, authorize initialization, or activate JSON. */
+int lcs_config_agreement_worker_start_freeze(lcs_config_agreement_worker_t *worker,
+    lcs_config_runtime_t *runtime, lcs_config_bootstrap_t *bootstrap,
+    const lcs_config_t *cfg, char *err, size_t err_len);
 /* Persist explicit all-member readiness through the SAME writer. runtime must
  * retain pristine initialization; an existing durable barrier is recovered via
  * runtime_open, not overwritten. poll/cancel use &runtime->agreement. Successful

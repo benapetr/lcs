@@ -10,11 +10,13 @@ typedef enum
 {
     LCS_CONFIG_ACTIVATION_INITIALIZING = 1,
     LCS_CONFIG_ACTIVATION_PREPARED = 2,
+    LCS_CONFIG_ACTIVATION_FROZEN = 3, /* Format 3: reload excluded, initialization NOT authorized. */
 } lcs_config_activation_phase_t;
 
-/* Local initialization intent, NOT a cluster activation decision. Its complete
+/* Local freeze/initialization intent, NOT a cluster activation decision. Its complete
  * revision-zero baseline freezes the predecessor before any journal is created.
  * Synchronous I/O: use before listeners open or in the serialized storage worker.
+ * FROZEN excludes reload only; initialization needs separate authorization.
  * Configuration votes require PREPARED plus the separate distributed barrier. */
 typedef struct
 {
@@ -24,7 +26,7 @@ typedef struct
     char member[LCS_NAME_MAX + 1];
     char membership[LCS_CONFIG_DIGEST_SIZE];
     lcs_config_activation_phase_t phase;
-    bool requests_required; /* Format 2: journal created before PREPARED; never recreate afterwards. */
+    bool requests_required; /* Formats 2/3: required once initialized, not created by FROZEN alone. */
     bool poisoned;
 } lcs_config_activation_t;
 
@@ -46,6 +48,14 @@ int lcs_config_activation_open_requests(lcs_config_activation_t *activation,
                                          lcs_config_store_t *store, const lcs_config_t *cfg,
                                          lcs_config_t *frozen_base, bool allow_initialize,
                                          char *err, size_t err_len);
+/* Persist only the reload freeze and exact baseline, before acknowledging it.
+ * Requires serialized local reload exclusion. Creates NO agreement/application/
+ * request history. Existing freeze is idempotent only for the exact baseline.
+ * A coordinated open_requests(..., true) promotes it to INITIALIZING; read-only
+ * recovery never promotes it. Runs before listeners or in the shared writer. */
+int lcs_config_activation_freeze(lcs_config_activation_t *activation,
+    lcs_config_store_t *store, const lcs_config_t *cfg, lcs_config_t *frozen_base,
+    char *err, size_t err_len);
 /* Resume initialization in agreement -> application -> required request history
  * -> prepared-record order. Format-1 intents retain their legacy semantics.
  * Missing records may be created ONLY while INITIALIZING and before any promise

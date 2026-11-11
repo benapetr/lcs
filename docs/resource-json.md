@@ -135,6 +135,14 @@ journal over existing reservations. The automatic all-member coordinator is stil
 unfinished; normal INI startup/peering does not invoke this worker or switch
 authority merely because every binary supports wire 6.
 
+The local freeze responder primitive uses format 3 with phase `frozen` before
+initialization authorization. It retains the exact INI baseline and prevents
+reloads, but creates no agreement/application/request history. Only an explicit
+all-member round may promote it to format-2 initialization; collector expiry or
+restart cannot thaw it. The current daemon refuses this pre-activation startup
+before listeners while live upgrade peering/resumption remains unfinished.
+See [durable reload freeze](dynamic-config-agreement.md#durable-reload-freeze-before-initialization).
+
 ## Activated startup recovery
 
 The separate [request-fact journal core](dynamic-config-agreement.md#local-durable-request-fact-journal-core)

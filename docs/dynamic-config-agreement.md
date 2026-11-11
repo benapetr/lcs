@@ -143,6 +143,9 @@ its digest, phase, and checksum. Record formats 1/2 use `initializing` and `prep
 phases. Format 1 is retained for compatibility; the coordinated initialization
 worker now uses format 2, requiring request history before preparation. These
 describe local storage preparation, not a chosen activation decision.
+Format 3 adds a prior `frozen` state: it preserves the exact effective definitions
+and excludes legacy reloads, without authorizing agreement/application/request
+history creation. This local responder primitive is not invoked automatically.
 First creation requires explicit coordinated authorization; advisory peer metadata
 is insufficient. Ordinary legacy startup does not create this record.
 
@@ -228,12 +231,46 @@ low-level explicitly authorized storage primitive; automatic upgrade must use
 the guarded round entry point instead.
 
 These are same-process collection objects, not serialized proofs or new wire
-messages. The peer freeze exchange and responder lifecycle are still unfinished:
-before automatic use, a responder must durably exclude reloads until coordinated
-initialization/recovery takes over, including across restart. Collector expiry
-alone must never authorize a responder to thaw. A completed collection authorizes
+messages. The peer freeze exchange and live startup lifecycle are still unfinished.
+The local durable responder primitive below preserves reload exclusion across
+restart. Collector expiry alone must never authorize a responder to thaw.
+A completed collection authorizes
 only local storage preparation; it is neither the durable readiness barrier nor
 a decision to switch to JSON authority.
+
+### Durable reload freeze before initialization
+
+`lcs_config_agreement_worker_start_freeze()` uses the same serialized writer as
+agreement and application work. The future transport must validate an explicit
+freeze query and exclude all active/queued legacy reload work before calling it.
+It waits for bootstrap refresh workers, freezes an immutable copy of the exact
+effective legacy resource definitions, and locks local reload immediately when
+the storage child starts. Only successful child exit and publication permit a
+freeze acknowledgement. A pending/failed/cancelled child cannot acknowledge or
+release the freeze; uncertainty requires disk recovery after reaping.
+
+The child writes format 3 of `activation.json` with phase `frozen` and the same
+member, membership, baseline and checksum fields as earlier intent formats.
+Agreement, application, request history and readiness barriers must all be absent;
+existing files are never overwritten. Exact retries of an existing freeze do not
+rewrite it, while a different baseline or advanced intent requires recovery.
+No resource backend is stopped and no journal, promise or activation decision is
+created by this operation.
+
+Runtime recovery reads a FROZEN intent without writes and restores its stored
+baseline despite later INI edits. It neither calls initialization resume nor
+creates missing history. Contradictory history is rejected. The current daemon
+still refuses this pre-activation runtime before listeners because live upgrade
+peering/resumption is unfinished; it never falls back to INI import/reload.
+
+After a complete current all-member authorization round, the guarded initializer
+may replace that exact frozen runtime. The child first syncs a format-2
+INITIALIZING intent, then creates agreement/application/request history and
+PREPARED in the existing order. A crash before that promotion leaves only FROZEN;
+after promotion, ordinary initialization recovery may finish from the durable
+authorization. The parent retains its old frozen handles until the child has
+exited and the exact complete result has been validated. Failed publication or
+I/O keeps reload excluded and requires recovery instead of thawing/reimporting.
 
 After preparation, nonzero committed/accepted values must use the dynamic schema;
 revision one must preserve the frozen definitions when assigning incarnations.

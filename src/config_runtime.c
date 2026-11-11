@@ -55,6 +55,13 @@ int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
         }
         int result = lcs_config_activation_open(&runtime->activation, store, cfg, runtime->base,
                                                  false, err, err_len);
+        if (!result && runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN)
+        {
+            /* Freeze alone is not all-member initialization permission. Opening
+             * it already verified there is no contradictory durable history. */
+            runtime->requires_recovery = true;
+            return 0;
+        }
         if (!result && !barrier && runtime->activation.phase != LCS_CONFIG_ACTIVATION_PREPARED)
         {
             if (err && err_len)

@@ -28,6 +28,9 @@ typedef struct
  * Missing history remains unavailable only for legacy format-1 initialization,
  * preserving older catalogs without inventing empty history. Format-2 intents
  * require history: resume creation only while INITIALIZING, never after PREPARED.
+ * Format-3 FROZEN recovers only the immutable baseline and reload exclusion,
+ * never creates history or promotes initialization. The daemon currently refuses
+ * this pre-activation state before listeners; live resumption is unfinished.
  * Partial/corrupt/foreign or contradictory records fail before listeners open. */
 int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                              lcs_config_store_t *store, const lcs_config_t *cfg,

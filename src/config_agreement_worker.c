@@ -126,6 +126,21 @@ static _Noreturn void execute_child(lcs_config_agreement_t *agreement,
     }
     if (initialization)
     {
+        if (initialization->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN)
+        {
+            lcs_config_runtime_t recovered = {0};
+            recovered.base = malloc(sizeof(*recovered.base));
+            if (!recovered.base || lcs_config_activation_freeze(&recovered.activation, agreement->store,
+                initialization->base, recovered.base, result.error, sizeof(result.error)) ||
+                recovered.activation.phase != LCS_CONFIG_ACTIVATION_FROZEN ||
+                !lcs_config_value_equal(&recovered.activation.baseline, &initialization->activation.baseline))
+            {
+                result.result = -1; result.poisoned = true;
+                if (!*result.error) snprintf(result.error, sizeof(result.error), "durable freeze differs from authorized effective definitions");
+            }
+            lcs_config_runtime_close(&recovered);
+            _exit(write_all(pipe_fd, &result, sizeof(result)) ? 1 : 0);
+        }
         /* This acknowledgement is same-host evidence only. The parent already
          * owns an immutable copy of exactly this pristine baseline. Never use
          * the compact acknowledgement to import promises or active history. */
@@ -418,32 +433,34 @@ static bool empty_runtime(const lcs_config_runtime_t *runtime)
         !runtime->agreement.poisoned && !runtime->application.poisoned && !runtime->activation.poisoned;
 }
 
-int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker_t *worker,
-                                                      lcs_config_runtime_t *runtime,
-                                                      lcs_config_bootstrap_t *bootstrap,
-                                                      const lcs_config_t *cfg,
-                                                      bool allow_initialize,
-                                                      char *err, size_t err_len)
+static bool frozen_runtime(const lcs_config_runtime_t *runtime, const lcs_config_value_t *baseline)
 {
-    if (worker->pid > 0 || bootstrap->worker_pid > 0 || bootstrap->refresh_pending)
-        return 1;
-    if (!empty_runtime(runtime) || runtime->requires_recovery ||
-        bootstrap->initialization_locked || !bootstrap->prepared ||
-        bootstrap->state.directory_fd < 0 || bootstrap->state.lock_fd < 0)
-        return fail(err, err_len, "initialization requires fresh runtime and prepared, idle bootstrap storage");
+    if (!runtime->requires_recovery || !runtime->base || runtime->activation.base != runtime->base ||
+        !runtime->activation.store || runtime->activation.poisoned || !runtime->activation.requests_required ||
+        runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN ||
+        !lcs_config_value_equal(&runtime->activation.baseline, baseline)) return false;
+    lcs_config_runtime_t view = *runtime;
+    view.base = NULL; memset(&view.activation, 0, sizeof(view.activation));
+    return empty_runtime(&view);
+}
+
+static lcs_config_runtime_t *initialization_candidate(lcs_config_bootstrap_t *bootstrap,
+    const lcs_config_t *cfg, bool freeze_only, char *err, size_t err_len)
+{
     lcs_config_runtime_t *candidate = calloc(1, sizeof(*candidate));
     if (!candidate)
-        return fail(err, err_len, "out of memory preparing initialization");
+    { fail(err, err_len, "out of memory preparing initialization"); return NULL; }
     candidate->base = malloc(sizeof(*candidate->base));
     char *document = NULL;
     size_t length;
     uint64_t revision;
-    int result = -1;
     if (!candidate->base ||
         lcs_resource_config_encode(cfg, 0, &document, &length, err, err_len) ||
         lcs_resource_config_decode(document, length, cfg, candidate->base, &revision, err, err_len) ||
         lcs_config_agreement_membership(candidate->base, candidate->activation.membership))
         goto out;
+    if (candidate->base->resource_schema_version != LCS_RESOURCE_SCHEMA_VERSION)
+    { fail(err, err_len, "initialization requires the legacy resource schema"); goto out; }
     int self = lcs_config_self_index(candidate->base);
     if (self < 0 || lcs_config_value_init(&candidate->activation.baseline, candidate->base,
                                           "bootstrap", document, length, err, err_len))
@@ -453,6 +470,13 @@ int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker
     candidate->activation.phase = LCS_CONFIG_ACTIVATION_PREPARED;
     candidate->activation.requests_required = true;
     snprintf(candidate->activation.member, sizeof(candidate->activation.member), "%s", candidate->base->nodes[self].name);
+    candidate->requires_recovery = true;
+    if (freeze_only)
+    {
+        candidate->activation.phase = LCS_CONFIG_ACTIVATION_FROZEN;
+        free(document);
+        return candidate;
+    }
     candidate->agreement.store = candidate->application.store = &bootstrap->state;
     candidate->agreement.base = candidate->application.base = candidate->base;
     snprintf(candidate->agreement.member, sizeof(candidate->agreement.member), "%s", candidate->activation.member);
@@ -465,23 +489,71 @@ int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker
     if (lcs_config_value_copy(&candidate->agreement.committed, &candidate->activation.baseline) ||
         lcs_config_value_copy(&candidate->application.applied, &candidate->activation.baseline))
         goto out;
-    candidate->requires_recovery = true;
-    result = start(worker, &candidate->agreement, NULL, NULL, NULL, runtime, candidate,
+    free(document);
+    return candidate;
+out:
+    free(document);
+    lcs_config_runtime_close(candidate); free(candidate);
+    return NULL;
+}
+
+int lcs_config_agreement_worker_start_initialization(lcs_config_agreement_worker_t *worker,
+    lcs_config_runtime_t *runtime, lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg,
+    bool allow_initialize, char *err, size_t err_len)
+{
+    if (worker->pid > 0 || bootstrap->worker_pid > 0 || bootstrap->refresh_pending) return 1;
+    bool from_freeze = frozen_runtime(runtime, &runtime->activation.baseline);
+    if ((!from_freeze && (!empty_runtime(runtime) || runtime->requires_recovery ||
+         bootstrap->initialization_locked || !bootstrap->prepared)) ||
+        (from_freeze && (!allow_initialize || !bootstrap->initialization_locked || bootstrap->prepared ||
+         runtime->activation.store != &bootstrap->state)) ||
+        bootstrap->state.directory_fd < 0 || bootstrap->state.lock_fd < 0)
+        return fail(err, err_len, "initialization requires fresh prepared storage or an explicitly authorized durable freeze");
+    lcs_config_runtime_t *candidate = initialization_candidate(bootstrap, cfg, false, err, err_len);
+    if (!candidate) return -1;
+    if (from_freeze && !lcs_config_value_equal(&runtime->activation.baseline, &candidate->activation.baseline))
+    {
+        lcs_config_runtime_close(candidate); free(candidate);
+        return fail(err, err_len, "initialization differs from retained durable freeze");
+    }
+    int result = start(worker, &candidate->agreement, NULL, NULL, NULL, runtime, candidate,
                      allow_initialize, NULL, err, err_len);
     if (!result)
     {
+        worker->initialization_from_freeze = from_freeze;
         candidate = NULL; /* Owned by the worker until successful publication. */
         runtime->requires_recovery = true;
         bootstrap->initialization_locked = true;
         bootstrap->prepared = false;
     }
-out:
-    free(document);
     if (candidate)
     {
         lcs_config_runtime_close(candidate);
         free(candidate);
     }
+    return result;
+}
+
+int lcs_config_agreement_worker_start_freeze(lcs_config_agreement_worker_t *worker,
+    lcs_config_runtime_t *runtime, lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg,
+    char *err, size_t err_len)
+{
+    if (worker->pid > 0 || bootstrap->worker_pid > 0 || bootstrap->refresh_pending) return 1;
+    if (!empty_runtime(runtime) || runtime->requires_recovery || bootstrap->initialization_locked ||
+        !bootstrap->prepared || bootstrap->state.directory_fd < 0 || bootstrap->state.lock_fd < 0)
+        return fail(err, err_len, "freeze requires fresh runtime and prepared idle storage");
+    lcs_config_runtime_t *candidate = initialization_candidate(bootstrap, cfg, true, err, err_len);
+    if (!candidate) return -1;
+    /* Carrier is only inherited child plumbing; the published frozen runtime
+     * deliberately has no agreement/application/request handles. */
+    lcs_config_agreement_t carrier = { .store = &bootstrap->state, .base = candidate->base };
+    int result = start(worker, &carrier, NULL, NULL, NULL, runtime, candidate, false, NULL, err, err_len);
+    if (!result)
+    {
+        runtime->requires_recovery = bootstrap->initialization_locked = true;
+        bootstrap->prepared = false;
+    }
+    else { lcs_config_runtime_close(candidate); free(candidate); }
     return result;
 }
 
@@ -656,8 +728,11 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
     if (worker->initialization_target)
     {
         lcs_config_runtime_t *target = worker->initialization_target;
-        if (result.result || result.length || !target->requires_recovery || !empty_runtime(target))
+        if (result.result || result.length || !target->requires_recovery ||
+            (worker->initialization_from_freeze ?
+             !frozen_runtime(target, &worker->initialization_candidate->activation.baseline) : !empty_runtime(target)))
             goto broken;
+        if (worker->initialization_from_freeze) lcs_config_runtime_close(target);
         *target = *worker->initialization_candidate;
         memset(worker->initialization_candidate, 0, sizeof(*worker->initialization_candidate));
         *operation_result = 0;

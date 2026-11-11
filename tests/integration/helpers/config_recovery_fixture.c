@@ -12,10 +12,11 @@ static char error[256];
 int main(int argc, char **argv)
 {
     bool required_history = argc == 3 && !strcmp(argv[2], "required-history");
+    bool freeze = argc == 3 && !strcmp(argv[2], "freeze");
     bool advance = argc == 3 && !strcmp(argv[2], "advance");
     bool reserved = argc == 3 && !strcmp(argv[2], "reserved");
     bool history = reserved || (argc == 3 && !strcmp(argv[2], "history"));
-    if (argc != 2 && !advance && !history && !required_history) return 2;
+    if (argc != 2 && !advance && !history && !required_history && !freeze) return 2;
     lcs_config_t *cfg = calloc(5, sizeof(*cfg));
     if (!cfg) return 1;
     CHECK(lcs_config_load(argv[1], &cfg[0], error, sizeof(error)));
@@ -27,6 +28,11 @@ int main(int argc, char **argv)
     lcs_config_barrier_round_t round = {0};
     lcs_config_barrier_t barrier = {0};
     CHECK(lcs_config_store_open(&store, directory, error, sizeof(error)));
+    if (freeze)
+    {
+        CHECK(lcs_config_activation_freeze(&activation, &store, &cfg[0], &cfg[1], error, sizeof(error)));
+        goto done;
+    }
     if (required_history)
         CHECK(lcs_config_activation_open_requests(&activation, &store, &cfg[0], &cfg[1], true, error, sizeof(error)));
     else

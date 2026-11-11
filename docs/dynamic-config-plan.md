@@ -409,8 +409,17 @@ durable distributed configuration protocol.
   local reload generation and a fixed deadline. Revalidate sealed rounds before
   forking, consume authorization once, and reject incomplete member sets, stale
   replies, restarts, disconnects, changed definitions and withdrawn freezes.
-  This core does not send freeze messages or establish the responder's durable
-  reload exclusion/restart lifecycle; those remain required before automatic use.
+  This core does not send freeze messages. Responder persistence is implemented
+  below; peer exchange and live startup coordination remain required before use.
+- [x] Add the durable local freeze responder storage primitive on the shared
+  writer. Persist only a format-3 FROZEN baseline before acknowledging; create
+  no journals and never thaw/promote it on restart or collector timeout. Retain
+  reload exclusion through uncertain writes and require exact all-member
+  authorization to promote the retained runtime to format-2 initialization.
+  Verify both freeze sync boundaries and all ten promotion sync boundaries with
+  failures/crashes, immutable baselines, empty-history exclusion, and daemon
+  refusal before listeners when live frozen-startup recovery is unavailable.
+  Peer freeze framing/exchange and automatic live restart resumption remain open.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

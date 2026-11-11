@@ -350,3 +350,21 @@ low-level creation primitive remains available for compatibility fixtures. Forma
 not just files which existed before recovery began. Older readers reject format 2.
 This is a private intent-record change, not a peer/CLI wire, resource-schema or
 release-version change. Automatic all-member activation remains unfinished.
+
+## Reload freeze intent record format 3
+
+`activation.json` format 3 uses the same exact keys and checksum as formats 1/2,
+but permits only phase `frozen`. It records local durable reload exclusion and
+the complete legacy baseline before all-member initialization authorization.
+Agreement, application, requests and barrier files must all be absent. It does
+not authorize creating any of them. Exact freeze retries and startup recovery
+read without rewriting; mismatched baselines or contradictory history fail.
+
+The shared freeze worker syncs the file and directory before parent publication
+and acknowledgement (two sync boundaries). After explicit coordinated
+authorization, promotion syncs a format-2 INITIALIZING intent and follows the
+existing initialization order (ten further boundaries). A FROZEN restart never
+promotes itself. Older readers reject format 3 instead of silently importing INI.
+The current daemon refuses frozen startup before listeners until live upgrade
+peering/resumption is implemented. No peer/CLI wire, resource-schema or release
+version changes accompany this private storage-format addition.

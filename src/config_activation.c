@@ -56,8 +56,10 @@ static int checksum(json_t *root, char hash[65])
 static int persist(lcs_config_activation_t *activation, lcs_config_activation_phase_t phase,
                      char *err, size_t err_len)
 {
-    json_t *root = json_pack("{s:i,s:s,s:s,s:s,s:s,s:s}", "record_version", activation->requests_required ? 2 : 1,
-        "phase", phase == LCS_CONFIG_ACTIVATION_PREPARED ? "prepared" : "initializing",
+    json_t *root = json_pack("{s:i,s:s,s:s,s:s,s:s,s:s}", "record_version",
+        phase == LCS_CONFIG_ACTIVATION_FROZEN ? 3 : activation->requests_required ? 2 : 1,
+        "phase", phase == LCS_CONFIG_ACTIVATION_FROZEN ? "frozen" :
+                 phase == LCS_CONFIG_ACTIVATION_PREPARED ? "prepared" : "initializing",
         "member", activation->member, "membership", activation->membership,
         "baseline_digest", activation->baseline.digest, "baseline", activation->baseline.document);
     char hash[65], *text = NULL;
@@ -103,7 +105,8 @@ static int decode(lcs_config_activation_t *activation, const char *text, size_t 
     json_t *stored = json_object_get(root, "checksum");
     const char *hash = json_string_value(stored);
     char expected[65], actual[65];
-    bool valid = keys_match(root, keys) && json_is_integer(format) && (json_integer_value(format) == 1 || json_integer_value(format) == 2) &&
+    bool valid = keys_match(root, keys) && json_is_integer(format) &&
+        json_integer_value(format) >= 1 && json_integer_value(format) <= 3 &&
         string_matches(json_object_get(root, "member"), activation->member) &&
         string_matches(json_object_get(root, "membership"), activation->membership) &&
         hash && json_string_length(stored) == 64 && strlen(hash) == 64;
@@ -113,10 +116,12 @@ static int decode(lcs_config_activation_t *activation, const char *text, size_t 
         json_object_del(root, "checksum");
         valid = !checksum(root, actual) && !strcmp(expected, actual);
     }
-    if (valid) activation->requests_required = json_integer_value(format) == 2;
-    if (valid && string_matches(json_object_get(root, "phase"), "initializing"))
+    if (valid) activation->requests_required = json_integer_value(format) >= 2;
+    if (valid && json_integer_value(format) == 3 && string_matches(json_object_get(root, "phase"), "frozen"))
+        activation->phase = LCS_CONFIG_ACTIVATION_FROZEN;
+    else if (valid && json_integer_value(format) != 3 && string_matches(json_object_get(root, "phase"), "initializing"))
         activation->phase = LCS_CONFIG_ACTIVATION_INITIALIZING;
-    else if (valid && string_matches(json_object_get(root, "phase"), "prepared"))
+    else if (valid && json_integer_value(format) != 3 && string_matches(json_object_get(root, "phase"), "prepared"))
         activation->phase = LCS_CONFIG_ACTIVATION_PREPARED;
     else
         valid = false;
@@ -135,12 +140,40 @@ static int decode(lcs_config_activation_t *activation, const char *text, size_t 
     return valid ? 0 : fail(err, err_len, "invalid, corrupt, or foreign frozen baseline; recovery required");
 }
 
+static int no_history(lcs_config_store_t *store, char *err, size_t err_len)
+{
+    const char *names[] = {"agreement.json", "application.json", "barrier.json", "requests.json"};
+    const size_t limits[] = {LCS_CONFIG_JOURNAL_MAX, LCS_CONFIG_APPLICATION_MAX,
+        LCS_CONFIG_BARRIER_MAX, LCS_CONFIG_REQUEST_RECORD_MAX};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+    {
+        int present = exists(store, names[i], limits[i], err, err_len);
+        if (present < 0) return -1;
+        if (present) return fail(err, err_len, "cannot initialize over existing agreement/application/request history");
+    }
+    return 0;
+}
+
+static int same_baseline(const lcs_config_activation_t *activation, const lcs_config_t *cfg,
+                         char *err, size_t err_len)
+{
+    char *document = NULL;
+    size_t length;
+    int result = lcs_resource_config_encode(cfg, 0, &document, &length, err, err_len);
+    if (!result && (length != activation->baseline.length || memcmp(document, activation->baseline.document, length)))
+        result = fail(err, err_len, "effective configuration differs from durable reload freeze");
+    free(document);
+    return result;
+}
+
 static int activation_open(lcs_config_activation_t *activation,
                                 lcs_config_store_t *store, const lcs_config_t *cfg,
-                                lcs_config_t *frozen_base, bool allow_initialize, bool require_requests,
+                                lcs_config_t *frozen_base, bool allow_initialize, bool require_requests, bool freeze_only,
                                 char *err, size_t err_len)
 {
     lcs_config_activation_t next = { .store = store, .requests_required = require_requests };
+    if (freeze_only && cfg->resource_schema_version && cfg->resource_schema_version != LCS_RESOURCE_SCHEMA_VERSION)
+        return fail(err, err_len, "reload freeze requires the legacy resource schema");
     int self = lcs_config_self_index(cfg);
     if (self < 0 || lcs_config_agreement_membership(cfg, next.membership))
         return fail(err, err_len, "invalid static membership");
@@ -153,6 +186,16 @@ static int activation_open(lcs_config_activation_t *activation,
         result = decode(&next, text, length, cfg, err, err_len);
         if (!result && require_requests && !next.requests_required)
             result = fail(err, err_len, "legacy initialization cannot authorize new request history; recover existing state instead of upgrading/resetting it");
+        if (!result && freeze_only && next.phase != LCS_CONFIG_ACTIVATION_FROZEN)
+            result = fail(err, err_len, "initialization has already advanced beyond reload freeze; recover existing state");
+        if (!result && next.phase == LCS_CONFIG_ACTIVATION_FROZEN)
+        {
+            result = no_history(store, err, err_len);
+            if (!result && (freeze_only || allow_initialize))
+                result = same_baseline(&next, cfg, err, err_len);
+            if (!result && !freeze_only && allow_initialize && !require_requests)
+                result = fail(err, err_len, "reload freeze requires coordinated mandatory-history initialization");
+        }
     }
     else if (result == 1)
     {
@@ -160,15 +203,8 @@ static int activation_open(lcs_config_activation_t *activation,
             result = fail(err, err_len, "frozen initialization record is missing; explicit coordination/recovery required");
         else
         {
-            int journal = exists(store, "agreement.json", LCS_CONFIG_JOURNAL_MAX, err, err_len);
-            int catalog = journal < 0 ? -1 : exists(store, "application.json", LCS_CONFIG_APPLICATION_MAX, err, err_len);
-            int barrier = catalog < 0 ? -1 : exists(store, "barrier.json", LCS_CONFIG_BARRIER_MAX, err, err_len);
-            int requests = barrier < 0 ? -1 : exists(store, "requests.json", LCS_CONFIG_REQUEST_RECORD_MAX, err, err_len);
-            if (journal < 0 || catalog < 0 || barrier < 0 || requests < 0)
-                result = -1;
-            else if (journal || catalog || barrier || requests)
-                result = fail(err, err_len, "cannot initialize over existing agreement/application history");
-            else
+            result = no_history(store, err, err_len);
+            if (!result)
             {
                 char *document = NULL;
                 size_t document_length;
@@ -177,7 +213,7 @@ static int activation_open(lcs_config_activation_t *activation,
                     result = lcs_config_value_init(&next.baseline, cfg, "bootstrap", document, document_length, err, err_len);
                 free(document);
                 if (!result)
-                    result = persist(&next, LCS_CONFIG_ACTIVATION_INITIALIZING, err, err_len);
+                    result = persist(&next, freeze_only ? LCS_CONFIG_ACTIVATION_FROZEN : LCS_CONFIG_ACTIVATION_INITIALIZING, err, err_len);
             }
         }
     }
@@ -194,6 +230,8 @@ static int activation_open(lcs_config_activation_t *activation,
                                                  cfg, decoded, &revision, err, err_len);
         if (!result && decoded->resource_schema_version != LCS_RESOURCE_SCHEMA_VERSION)
             result = fail(err, err_len, "initialization must freeze the legacy schema");
+        if (!result && next.phase == LCS_CONFIG_ACTIVATION_FROZEN && !freeze_only && allow_initialize)
+            result = persist(&next, LCS_CONFIG_ACTIVATION_INITIALIZING, err, err_len);
     }
     if (result)
         lcs_config_activation_close(&next);
@@ -212,7 +250,7 @@ int lcs_config_activation_open(lcs_config_activation_t *activation,
                                 lcs_config_t *frozen_base, bool allow_initialize,
                                 char *err, size_t err_len)
 {
-    return activation_open(activation, store, cfg, frozen_base, allow_initialize, false, err, err_len);
+    return activation_open(activation, store, cfg, frozen_base, allow_initialize, false, false, err, err_len);
 }
 
 int lcs_config_activation_open_requests(lcs_config_activation_t *activation,
@@ -220,7 +258,14 @@ int lcs_config_activation_open_requests(lcs_config_activation_t *activation,
                                          lcs_config_t *frozen_base, bool allow_initialize,
                                          char *err, size_t err_len)
 {
-    return activation_open(activation, store, cfg, frozen_base, allow_initialize, true, err, err_len);
+    return activation_open(activation, store, cfg, frozen_base, allow_initialize, true, false, err, err_len);
+}
+
+int lcs_config_activation_freeze(lcs_config_activation_t *activation,
+    lcs_config_store_t *store, const lcs_config_t *cfg, lcs_config_t *frozen_base,
+    char *err, size_t err_len)
+{
+    return activation_open(activation, store, cfg, frozen_base, true, true, true, err, err_len);
 }
 
 static int validate_dynamic_value(const lcs_config_activation_t *activation,
