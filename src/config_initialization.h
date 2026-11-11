@@ -13,7 +13,8 @@ enum { LCS_INITIALIZATION_FROZEN = 1, LCS_INITIALIZATION_BUSY, LCS_INITIALIZATIO
  * advertisements into receipts. Acknowledging a freeze must exclude INI reload
  * until durable initialization/recovery takes over; a collector timeout does NOT
  * authorize the responder to thaw. The durable FROZEN storage primitive exists;
- * its peer exchange and live startup lifecycle are not implemented.
+ * its explicit peer exchange exists, but automatic coordination/live startup
+ * resumption are not implemented.
  * begin requires the caller to exclude local reload, including queued requests. */
 typedef struct
 {

@@ -44,6 +44,17 @@ static bool current_attempt(const lcs_config_coordinator_t *coordinator)
         readiness->round.required == coordinator->persisted_round.required;
 }
 
+int lcs_config_coordinator_start_freeze(lcs_config_coordinator_t *coordinator,
+    lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg, char *err, size_t err_len)
+{
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed) return -1;
+    if (coordinator->phase != LCS_CONFIG_COORD_IDLE || coordinator->storage.pid > 0 || coordinator->application_owner) return 1;
+    int result = lcs_config_agreement_worker_start_freeze(&coordinator->storage, coordinator->runtime,
+        bootstrap, cfg, err, err_len);
+    if (!result) coordinator->phase = LCS_CONFIG_COORD_FREEZING;
+    return result;
+}
+
 static void clear_accept(lcs_config_coordinator_t *coordinator)
 {
     lcs_config_value_clear(&coordinator->accepting);
@@ -348,6 +359,21 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
     if (coordinator->phase == LCS_CONFIG_COORD_READY)
         return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
     lcs_config_runtime_t *runtime = coordinator->runtime;
+    if (coordinator->phase == LCS_CONFIG_COORD_FREEZING)
+    {
+        int operation = -1;
+        int result = lcs_config_agreement_worker_poll(&coordinator->storage, &runtime->agreement,
+            &operation, coordinator->error, sizeof(coordinator->error));
+        if (!result) return 0;
+        if (result < 0 || operation || runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN || runtime->activation.poisoned)
+        {
+            lcs_config_coordinator_abort(coordinator, "freeze persistence failed; retain reload exclusion and recover disk state");
+            return coordinator->storage.pid > 0 ? 0 : -1;
+        }
+        coordinator->completed_freezes++;
+        coordinator->phase = LCS_CONFIG_COORD_IDLE;
+        return 0;
+    }
     if (coordinator->phase == LCS_CONFIG_COORD_VOTING || coordinator->phase == LCS_CONFIG_COORD_APPLYING ||
         coordinator->phase == LCS_CONFIG_COORD_PROJECTING || coordinator->phase == LCS_CONFIG_COORD_REQUESTING ||
         coordinator->phase == LCS_CONFIG_COORD_ACCEPT_RESERVING || coordinator->phase == LCS_CONFIG_COORD_OBSERVING)

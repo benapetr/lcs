@@ -5,7 +5,7 @@
 #include "config_status_protocol.h"
 #include "config_agreement.h"
 
-/* Diagnostic metadata and explicit readiness have distinct message types.
+/* Diagnostic metadata, freeze and explicit readiness have distinct message types.
  * Metadata never authorizes activation or resource mutations. */
 int config_peer_refresh(void);
 void config_peer_process(int epoll_fd);
@@ -16,6 +16,12 @@ int config_peer_view(lcs_config_status_view_t *view);
  * local initialization and serializing INI reload. A completed in-memory round
  * still requires the shared barrier storage worker before configuration votes. */
 int config_peer_readiness_start(void);
+/* Explicit freeze collection only, after the local freeze is durable. Requires
+ * every current member (including quorum-only) to negotiate freeze support.
+ * Completion never automatically initializes journals or changes authority. */
+int config_peer_freeze_start(void);
+int config_peer_receive_freeze(int epoll_fd, int node, uint16_t type,
+    const void *payload, size_t length);
 /* Internal entry point for one whole-snapshot proposal using currently admitted
  * wire-6 instances. Requires durable readiness and serialized INI reload.
  * Completion is available from config_transactions; it does not apply resources. */

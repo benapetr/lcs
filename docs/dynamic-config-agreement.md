@@ -230,9 +230,9 @@ I/O and disk recovery. The older boolean initialization function remains a
 low-level explicitly authorized storage primitive; automatic upgrade must use
 the guarded round entry point instead.
 
-These are same-process collection objects, not serialized proofs or new wire
-messages. The peer freeze exchange and live startup lifecycle are still unfinished.
-The local durable responder primitive below preserves reload exclusion across
+These are same-process collection objects, not serialized proofs. The explicit
+peer freeze exchange is implemented below; automatic coordination and the live
+startup lifecycle remain unfinished. The local durable responder preserves reload exclusion across
 restart. Collector expiry alone must never authorize a responder to thaw.
 A completed collection authorizes
 only local storage preparation; it is neither the durable readiness barrier nor
@@ -271,6 +271,45 @@ after promotion, ordinary initialization recovery may finish from the durable
 authorization. The parent retains its old frozen handles until the child has
 exited and the exact complete result has been validated. Failed publication or
 I/O keeps reload excluded and requires recovery instead of thawing/reimporting.
+
+### Explicit peer freeze exchange
+
+Wire-6 frame types 47/48 carry a separate strict format-1 freeze query/reply body.
+Queries bind both daemon instances, increasing attempt, membership and complete
+baseline; their destination instance is nonzero and status is zero. Replies echo
+the tuple with FROZEN, BUSY or MISMATCH. The established peer source, frame type,
+kind, negotiated version, exact length and canonical digests are checked before
+any storage operation. Only full members initiate queries, while both full and
+quorum-only members persist and acknowledge freezes.
+
+The responder requires every configured member to have an admitted upgrade-capable
+session before starting storage. Unknown/offline/old quorum-only members therefore
+block it too. Active or queued INI reloads and bootstrap refreshes return BUSY;
+definitions are compared again before starting the worker. Existing durable
+FROZEN state may be acknowledged without another write. It never counts as
+post-initialization readiness or permission to vote on configuration.
+
+`config_coordinator` owns the freeze job on its existing shared writer, excluding
+all concurrent agreement/catalog/history jobs and retaining shutdown/reaping
+rules. Before successful publication the responder can report only BUSY. If the
+writer fails or is cancelled, reload remains excluded, recovery is required and
+no FROZEN acknowledgement is sent. A requester disconnect or replacement cannot
+cancel durable work or redirect its acknowledgement to another instance.
+
+One bounded waiter per configured node retains the newest correlated query.
+Exact retries do not extend its fixed ten-second deadline. Lower attempts are
+ignored; reusing an attempt with different definitions is rejected. Terminal
+replies survive output backpressure until the deadline, and obsolete or expired
+waiters are dropped without thawing the durable freeze. Fresh attempts can query
+already durable FROZEN state without rewriting it.
+
+`config_peer_freeze_start()` explicitly starts collection only after the local
+freeze is durable and all configured sessions support it. The scheduler sends
+queries and passes correlated replies to the all-member collector, invalidating
+it on session/generation changes or deadline expiry. Completion does not start
+initialization or change resource authority. Ordinary startup does not invoke
+this entry point; live frozen-startup recovery and automatic upgrade activation
+remain required before enabling that behavior.
 
 After preparation, nonzero committed/accepted values must use the dynamic schema;
 revision one must preserve the frozen definitions when assigning incarnations.

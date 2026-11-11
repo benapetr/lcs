@@ -62,7 +62,7 @@ digests; a query has zero responder/status, while a reply carries `READY`,
 `NOT_READY` or `MISMATCH`. Strict lengths, canonical digest strings, source
 identity and wire-6 admission are required. The complete payload is 158 bytes.
 
-A query never initializes storage. INI-only nodes answer `NOT_READY`, and wire-5
+A readiness query never initializes storage. INI-only nodes answer `NOT_READY`, and wire-5
 sessions reject these types. Collection starts only through the internal
 coordinator entry point after durable local initialization and exclusion of INI
 reload; ordinary daemon startup does not trigger it yet. Retries share a fixed
@@ -70,6 +70,28 @@ ten-second deadline and cannot convert bootstrap status into readiness. Complete
 collection now goes through the scheduler's barrier storage worker before local
 configuration-vote eligibility is available. No application or
 local CLI protocol version changes accompany this exchange.
+
+`CONFIG_FREEZE_QUERY` (47) and `CONFIG_FREEZE_REPLY` (48) add the separate
+pre-initialization exchange. Their format-1 payload is also exactly 158 bytes:
+u16 format, u8 kind, u64 requester instance, u64 increasing attempt, u64 responder
+instance, u8 status, and two canonical 65-byte membership/baseline digests.
+Unlike readiness queries, freeze queries explicitly name a nonzero destination
+instance and have status zero. Replies retain that tuple with `FROZEN`, `BUSY`
+or `MISMATCH`. The type and kind must agree; malformed, foreign-instance and
+wire-5 requests are rejected before storage. Only full members initiate queries;
+quorum-only members may respond and must participate in collection.
+
+An INI responder starts the shared freeze writer only after every configured
+member has an established upgrade-capable session and local reload/refresh work
+is excluded. FROZEN requires successful durable worker publication, not file
+visibility or version advertisements. Bounded waiters correlate attempts and
+instances, do not extend deadlines on exact retries, and drop obsolete replies.
+Writer work survives requester loss; deadline/cancellation never thaws storage.
+The explicit collector requires its own durable local freeze and never promotes
+initialization or switches authority by itself. Ordinary startup does not start
+freeze collection; automatic activation/live frozen-startup recovery are still
+unfinished. HELLO, released wire-5 messages, local protocol and release version
+are unchanged; these types belong to unreleased wire 6.
 
 Wire 6 also reserves `CONFIG_TX_CONTROL` (33), `CONFIG_TX_BEGIN` (34),
 `CONFIG_TX_CHUNK` (35), and `CONFIG_TX_END` (36) for acceptor transactions.

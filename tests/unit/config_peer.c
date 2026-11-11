@@ -9,11 +9,33 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include "util.h"
 
 daemon_state_t g_state;
 static bool reload_busy;
 static unsigned queued;
+static bool freeze_backpressure, stop_freeze_sync;
+static unsigned freezes_queued;
+static lcs_config_freeze_message_t last_freeze[LCS_MAX_NODES];
+int __real_fsync(int fd);
+int __wrap_fsync(int fd)
+{
+    if (stop_freeze_sync) { stop_freeze_sync = false; raise(SIGSTOP); }
+    return __real_fsync(fd);
+}
+int peer_queue_config_freeze(int epoll_fd, int node, uint16_t type, const void *payload, uint32_t length)
+{
+    (void)epoll_fd;
+    if (freeze_backpressure) return 1;
+    lcs_config_freeze_message_t message;
+    assert(!lcs_config_freeze_decode(payload, length, &message));
+    assert(message.kind == (type == LCS_MSG_CONFIG_FREEZE_QUERY ? LCS_FREEZE_QUERY : LCS_FREEZE_REPLY));
+    last_freeze[node] = message; freezes_queued++;
+    return 0;
+}
 
 bool config_reload_in_progress(void) { return reload_busy; }
 void lcs_log_debug(const char *fmt, ...) { (void)fmt; }
@@ -534,6 +556,170 @@ static void test_owner_transport_admission(void)
     assert(config_peer_receive_owner(-1, 1, payload, length) < 0);
 }
 
+static lcs_config_freeze_message_t freeze_query(uint64_t attempt)
+{
+    lcs_config_freeze_message_t message = {.kind = LCS_FREEZE_QUERY,
+        .receipt = {.requester_instance = 200, .responder_instance = 100, .attempt = attempt}};
+    strcpy(message.receipt.membership, g_state.config_status.membership);
+    strcpy(message.receipt.baseline, g_state.config_status.baseline);
+    return message;
+}
+
+static int receive_freeze(lcs_config_freeze_message_t *message, int node)
+{
+    unsigned char payload[LCS_CONFIG_FREEZE_SIZE]; size_t length;
+    assert(!lcs_config_freeze_encode(message, payload, sizeof(payload), &length));
+    return config_peer_receive_freeze(-1, node,
+        message->kind == LCS_FREEZE_QUERY ? LCS_MSG_CONFIG_FREEZE_QUERY : LCS_MSG_CONFIG_FREEZE_REPLY, payload, length);
+}
+
+static void test_freeze_codec(void)
+{
+    initialize();
+    lcs_config_freeze_message_t message = freeze_query(1), decoded;
+    unsigned char bytes[LCS_CONFIG_FREEZE_SIZE + 1], saved[LCS_CONFIG_FREEZE_SIZE]; size_t length;
+    assert(!lcs_config_freeze_encode(&message, bytes, sizeof(bytes), &length) && length == LCS_CONFIG_FREEZE_SIZE);
+    memcpy(saved, bytes, length);
+    assert(!lcs_config_freeze_decode(bytes, length, &decoded));
+    assert(decoded.receipt.responder_instance == 100 && !decoded.receipt.status);
+    for (size_t i = 0; i < length; i++) assert(lcs_config_freeze_decode(bytes, i, &decoded) < 0);
+    assert(lcs_config_freeze_decode(bytes, length + 1, &decoded) < 0);
+    const size_t offsets[] = {1, 2, 27, 28, 92, 93, 157};
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++)
+    {
+        memcpy(bytes, saved, length); bytes[offsets[i]] = 255;
+        assert(lcs_config_freeze_decode(bytes, length, &decoded) < 0);
+    }
+    for (size_t offset = 3; offset < 27; offset += 8)
+    { memcpy(bytes, saved, length); memset(bytes + offset, 0, 8); assert(lcs_config_freeze_decode(bytes, length, &decoded) < 0); }
+    message.receipt.responder_instance = 0;
+    assert(lcs_config_freeze_encode(&message, bytes, sizeof(bytes), &length) < 0);
+    message = freeze_query(1); message.kind = LCS_FREEZE_REPLY;
+    for (unsigned status = 1; status <= 3; status++)
+    {
+        message.receipt.status = status;
+        assert(!lcs_config_freeze_encode(&message, bytes, sizeof(bytes), &length));
+        assert(!lcs_config_freeze_decode(bytes, length, &decoded));
+    }
+}
+
+static void test_freeze_peer_admission(void)
+{
+    initialize(); g_state.self_index = 0; g_state.instance_id = 100;
+    establish(1, 6); establish(2, 5);
+    g_state.peers[1].instance_id = 200; g_state.peers[2].instance_id = 300;
+    freezes_queued = 0;
+    lcs_config_freeze_message_t query = freeze_query(1);
+    assert(!receive_freeze(&query, 1));
+    assert(freezes_queued == 1 && last_freeze[1].receipt.status == LCS_INITIALIZATION_BUSY);
+    assert(!g_state.config_coordinator.storage.pid && !g_state.config_bootstrap.initialization_locked);
+    uint64_t deadline = g_state.config_freeze_waiters[1].deadline_ms;
+    assert(!receive_freeze(&query, 1) && g_state.config_freeze_waiters[1].deadline_ms == deadline);
+    query.receipt.baseline[0] ^= 1;
+    assert(receive_freeze(&query, 1) < 0); /* Same attempt cannot change its identity. */
+    query.receipt.attempt = 2;
+    assert(!receive_freeze(&query, 1) && last_freeze[1].receipt.status == LCS_INITIALIZATION_MISMATCH);
+    query = freeze_query(3); query.receipt.responder_instance++;
+    assert(receive_freeze(&query, 1) < 0);
+    query = freeze_query(3); query.receipt.requester_instance++;
+    assert(receive_freeze(&query, 1) < 0);
+    query = freeze_query(3); g_state.peers[1].protocol_version = 5;
+    assert(receive_freeze(&query, 1) < 0); g_state.peers[1].protocol_version = 6;
+    query.receipt.requester_instance = 300; assert(receive_freeze(&query, 2) < 0);
+    /* A blocked/queued INI reload prevents even starting the worker. */
+    query = freeze_query(3); establish(2, 6); reload_busy = true;
+    assert(!receive_freeze(&query, 1) && last_freeze[1].receipt.status == LCS_INITIALIZATION_BUSY);
+    assert(!g_state.config_coordinator.initialized && !g_state.config_bootstrap.initialization_locked);
+    reload_busy = false;
+    g_state.config_freeze_waiters[1].deadline_ms = 0; /* Expiry never starts a late write. */
+    assert(!receive_freeze(&query, 1)); config_peer_process(-1);
+    assert(!g_state.config_coordinator.initialized && !g_state.config_freeze_waiters[1].pending);
+}
+
+static void test_durable_freeze_exchange(void)
+{
+    initialize(); g_state.self_index = 0; g_state.instance_id = 100;
+    establish(1, 6); establish(2, 6);
+    g_state.peers[1].instance_id = 200; g_state.peers[2].instance_id = 300;
+    strcpy(readiness_directory, "/tmp/lcs-freeze-peer.XXXXXX"); assert(mkdtemp(readiness_directory));
+    char error[256]; assert(!lcs_config_store_open(&readiness_store, readiness_directory, error, sizeof(error)));
+    g_state.config_bootstrap.state = readiness_store;
+    stop_freeze_sync = true; freezes_queued = 0;
+    lcs_config_freeze_message_t query = freeze_query(1);
+    assert(!receive_freeze(&query, 1));
+    pid_t child = g_state.config_coordinator.storage.pid; assert(child > 0);
+    assert(last_freeze[1].receipt.status == LCS_INITIALIZATION_BUSY && !g_state.config_runtime.activation.store);
+    int status = 0; pid_t result = 0;
+    for (unsigned i = 0; i < 5000 && !result; i++)
+    { result = waitpid(child, &status, WNOHANG | WUNTRACED); if (!result) usleep(1000); }
+    assert(result == child && WIFSTOPPED(status));
+    assert(g_state.config_bootstrap.initialization_locked && g_state.config_runtime.requires_recovery);
+    assert(!kill(child, SIGCONT)); stop_freeze_sync = false;
+    /* Output backpressure and a replaced requester cannot publish a stale ACK. */
+    freeze_backpressure = true; g_state.peers[1].instance_id = 201;
+    for (unsigned i = 0; i < 5000 && g_state.config_coordinator.storage.pid; i++) { config_peer_process(-1); usleep(1000); }
+    assert(!g_state.config_coordinator.storage.pid && g_state.config_coordinator.completed_freezes == 1);
+    assert(g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN);
+    assert(!g_state.config_freeze_waiters[1].pending && !config_peer_configuration_vote_ready());
+    assert(g_state.resources[0].epoch == 123 && g_state.lease_grants[0].promised_epoch == 456);
+    query.receipt.requester_instance = 201; query.receipt.attempt = 2;
+    assert(!receive_freeze(&query, 1) && g_state.config_freeze_waiters[1].pending);
+    freeze_backpressure = false; g_state.config_freeze_waiters[1].next_send_ms = 0;
+    config_peer_process(-1);
+    assert(last_freeze[1].receipt.status == LCS_INITIALIZATION_FROZEN && !g_state.config_freeze_waiters[1].pending);
+    assert(!config_peer_freeze_start());
+    config_peer_process(-1);
+    assert(last_freeze[1].kind == LCS_FREEZE_QUERY && last_freeze[2].kind == LCS_FREEZE_QUERY);
+    lcs_config_freeze_message_t replies[2] = {last_freeze[1], last_freeze[2]};
+    for (size_t i = 0; i < 2; i++)
+    { replies[i].kind = LCS_FREEZE_REPLY; replies[i].receipt.status = LCS_INITIALIZATION_FROZEN; assert(!receive_freeze(&replies[i], (int)i + 1)); }
+    assert(g_state.config_initialization.sealed && !g_state.config_runtime.agreement.store);
+    /* A sealed freeze collection alone still cannot initialize or activate. */
+    g_state.config_freeze_waiters[1].deadline_ms = 0; config_peer_process(-1);
+    assert(g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN);
+    config_peer_stop();
+    for (unsigned i = 0; i < 5000 && !config_peer_stopped(); i++) { config_peer_shutdown_process(); usleep(1000); }
+    assert(config_peer_stopped()); lcs_config_runtime_close(&g_state.config_runtime);
+    const char *absent[] = {"agreement.json", "application.json", "requests.json", "barrier.json"};
+    for (size_t i = 0; i < sizeof(absent) / sizeof(absent[0]); i++) assert(faccessat(readiness_store.directory_fd, absent[i], F_OK, 0) == -1 && errno == ENOENT);
+    assert(!unlinkat(readiness_store.directory_fd, "activation.json", 0)); assert(!unlinkat(readiness_store.directory_fd, "lock", 0));
+    lcs_config_store_close(&readiness_store); assert(!rmdir(readiness_directory));
+}
+
+static void test_freeze_failure_and_shutdown(void)
+{
+    for (unsigned mode = 0; mode < 2; mode++)
+    {
+        initialize(); g_state.self_index = 0; g_state.instance_id = 100;
+        establish(1, 6); establish(2, 6);
+        g_state.peers[1].instance_id = 200; g_state.peers[2].instance_id = 300;
+        strcpy(readiness_directory, "/tmp/lcs-freeze-failure.XXXXXX"); assert(mkdtemp(readiness_directory));
+        char error[256]; assert(!lcs_config_store_open(&readiness_store, readiness_directory, error, sizeof(error)));
+        g_state.config_bootstrap.state = readiness_store; stop_freeze_sync = true;
+        lcs_config_freeze_message_t query = freeze_query(1);
+        assert(!receive_freeze(&query, 1));
+        pid_t child = g_state.config_coordinator.storage.pid; assert(child > 0);
+        int status = 0; pid_t result = 0;
+        for (unsigned i = 0; i < 5000 && !result; i++)
+        { result = waitpid(child, &status, WNOHANG | WUNTRACED); if (!result) usleep(1000); }
+        assert(result == child && WIFSTOPPED(status));
+        if (mode) config_peer_stop(); else assert(!kill(child, SIGKILL));
+        stop_freeze_sync = false;
+        for (unsigned i = 0; i < 5000 && !config_peer_stopped(); i++)
+        { if (mode) config_peer_shutdown_process(); else config_peer_process(-1); usleep(1000); }
+        assert(config_peer_stopped() && g_state.config_bootstrap.initialization_locked);
+        assert(g_state.config_runtime.requires_recovery && g_state.config_runtime.activation.poisoned);
+        assert(!g_state.config_coordinator.completed_freezes && last_freeze[1].receipt.status == LCS_INITIALIZATION_BUSY);
+        config_peer_process(-1); assert(!g_state.config_freeze_waiters[1].pending);
+        assert(g_state.resources[0].epoch == 123 && g_state.lease_grants[0].promised_epoch == 456);
+        lcs_config_runtime_close(&g_state.config_runtime);
+        assert(faccessat(readiness_store.directory_fd, "activation.json", F_OK, 0) == -1 && errno == ENOENT);
+        assert(!unlinkat(readiness_store.directory_fd, ".activation.json.tmp", 0));
+        assert(!unlinkat(readiness_store.directory_fd, "lock", 0));
+        lcs_config_store_close(&readiness_store); assert(!rmdir(readiness_directory));
+    }
+}
+
 int main(void)
 {
     test_metadata_and_reload();
@@ -543,6 +729,10 @@ int main(void)
     test_readiness_round();
     test_explicit_peer_readiness();
     test_owner_transport_admission();
+    test_freeze_codec();
+    test_freeze_peer_admission();
+    test_durable_freeze_exchange();
+    test_freeze_failure_and_shutdown();
     puts("configuration peer metadata and explicit readiness unit tests passed");
     return 0;
 }

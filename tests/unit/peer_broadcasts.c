@@ -96,6 +96,8 @@ static void test_config_status_feature_gate(void)
         assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 1);
         assert(peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_QUERY, payload, sizeof(payload)) == 1);
         assert(peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_REPLY, payload, sizeof(payload)) == 1);
+        assert(peer_queue_config_freeze(-1, 1, LCS_MSG_CONFIG_FREEZE_QUERY, payload, sizeof(payload)) == 1);
+        assert(peer_queue_config_freeze(-1, 1, LCS_MSG_CONFIG_FREEZE_REPLY, payload, sizeof(payload)) == 1);
         assert(peer_queue_config_transaction(-1, 1, LCS_MSG_CONFIG_TX_CONTROL, payload, sizeof(payload)) == 1);
         assert(!peer->out_len);
     }
@@ -104,9 +106,14 @@ static void test_config_status_feature_gate(void)
     assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 1);
     assert(peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_QUERY, payload, sizeof(payload)) == 1);
     assert(peer_queue_config_readiness(-1, 1, LCS_MSG_CONFIG_READINESS_REPLY, payload, sizeof(payload)) == 1);
+    assert(peer_queue_config_freeze(-1, 1, LCS_MSG_CONFIG_FREEZE_QUERY, payload, sizeof(payload)) == 1);
     assert(peer_queue_config_transaction(-1, 1, LCS_MSG_CONFIG_TX_CONTROL, payload, sizeof(payload)) == 1);
     assert(!peer->out_len);
     peer->protocol_version = 6;
+    peer->instance_id = 123;
+    assert(!peer_queue_config_freeze(-1, 1, LCS_MSG_CONFIG_FREEZE_QUERY, payload, sizeof(payload)));
+    lcs_frame_header_t freeze_header; memcpy(&freeze_header, peer->outbuf, sizeof(freeze_header));
+    assert(ntohs(freeze_header.type) == LCS_MSG_CONFIG_FREEZE_QUERY); peer->out_len = 0;
     assert(peer_queue_config_status(-1, 1, payload, sizeof(payload)) == 0);
     lcs_frame_header_t header;
     memcpy(&header, peer->outbuf, sizeof(header));

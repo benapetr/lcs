@@ -141,6 +141,10 @@ reloads, but creates no agreement/application/request history. Only an explicit
 all-member round may promote it to format-2 initialization; collector expiry or
 restart cannot thaw it. The current daemon refuses this pre-activation startup
 before listeners while live upgrade peering/resumption remains unfinished.
+Explicit wire-6 freeze queries now reach this writer after validating the admitted
+source/destination instances, exact definitions, all-member support and reload
+exclusion. Only a successful storage completion produces FROZEN. Ordinary startup
+still does not initiate freeze collection or automatically switch authority.
 See [durable reload freeze](dynamic-config-agreement.md#durable-reload-freeze-before-initialization).
 
 ## Activated startup recovery

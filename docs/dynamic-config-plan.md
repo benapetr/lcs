@@ -419,7 +419,19 @@ durable distributed configuration protocol.
   Verify both freeze sync boundaries and all ten promotion sync boundaries with
   failures/crashes, immutable baselines, empty-history exclusion, and daemon
   refusal before listeners when live frozen-startup recovery is unavailable.
-  Peer freeze framing/exchange and automatic live restart resumption remain open.
+  Explicit peer exchange is implemented below; automatic live restart resumption
+  remains open.
+- [x] Add explicit wire-6 freeze query/reply framing and admitted peer dispatch,
+  with destination/source instances, monotonic attempt correlation, strict codecs
+  and complete baseline/membership binding. Route responder persistence through
+  the coordinator's existing shared writer, count quorum-only members, and refuse
+  storage while any configured member is offline/old or local reload is pending.
+  Send FROZEN only after child publication, retain bounded replies across output
+  backpressure, and drop stale/expired requesters without thawing durable state.
+  Add the explicit scheduler-driven collector after local durable freeze; do not
+  automatically initialize or switch authority when collection completes.
+  Exercise real full/quorum-only daemons, wire-5 refusal, retries, mismatches,
+  replaced instances, worker failure/shutdown and retained startup fences.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

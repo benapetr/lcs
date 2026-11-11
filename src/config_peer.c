@@ -275,6 +275,156 @@ int config_peer_receive_readiness(int epoll_fd, int node, uint16_t type,
                                         response, (uint32_t)response_length) ? -1 : 0;
 }
 
+static bool freeze_instances(uint64_t instances[LCS_MAX_NODES])
+{
+    memset(instances, 0, sizeof(uint64_t) * LCS_MAX_NODES);
+    if (g_state.self_index < 0 || !g_state.instance_id) return false;
+    instances[g_state.self_index] = g_state.instance_id;
+    bool complete = true;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index) continue;
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if (peer->fd >= 0 && peer->conn_state == LCS_PEER_ESTABLISHED && peer->instance_id &&
+            peer->protocol_version >= LCS_PROTO_FEATURE_CONFIG_FREEZE) instances[i] = peer->instance_id;
+        else complete = false;
+    }
+    return complete;
+}
+
+int config_peer_freeze_start(void)
+{
+    lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    if (g_state.self_index < 0 || g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL ||
+        coordinator->closing || coordinator->failed || coordinator->storage.pid > 0 ||
+        config_reload_in_progress() || !g_state.config_bootstrap.initialization_locked ||
+        runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN || runtime->activation.poisoned ||
+        !runtime->base || !runtime->activation.store || g_state.config_initialization_attempt == UINT64_MAX) return -1;
+    uint64_t now = lcs_now_ms(), instances[LCS_MAX_NODES];
+    if (!freeze_instances(instances)) return 1;
+    if (g_state.config_initialization.active && !g_state.config_initialization.failed &&
+        !g_state.config_initialization.consumed && now < g_state.config_initialization.deadline_ms) return 1;
+    char error[256];
+    int result = lcs_config_initialization_begin(&g_state.config_initialization, runtime->base,
+        instances, g_state.config_reload.active_generation, ++g_state.config_initialization_attempt,
+        now, error, sizeof(error));
+    if (!result) g_state.config_initialization_next_send_ms = 0;
+    return result;
+}
+
+/* This function is called only for a current admitted query or its bounded
+ * waiter. It never turns advertisements into initialization authorization. */
+static uint8_t freeze_status(const lcs_config_freeze_message_t *query)
+{
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    const lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    if (coordinator->closing || coordinator->failed || config_reload_in_progress() || config_peer_refresh())
+        return LCS_INITIALIZATION_BUSY;
+    const char *membership = runtime->activation.store ? runtime->activation.membership : g_state.config_status.membership;
+    const char *baseline = runtime->activation.store ? runtime->activation.baseline.digest : g_state.config_status.baseline;
+    if (strcmp(query->receipt.membership, membership) || strcmp(query->receipt.baseline, baseline))
+        return LCS_INITIALIZATION_MISMATCH;
+    if (runtime->activation.store && runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN &&
+        !runtime->activation.poisoned && g_state.config_bootstrap.initialization_locked && !coordinator->storage.pid)
+        return LCS_INITIALIZATION_FROZEN;
+    uint64_t instances[LCS_MAX_NODES];
+    if (!freeze_instances(instances) || g_state.resource_generation_enabled || runtime->requires_recovery ||
+        runtime->base || !g_state.config_bootstrap_initialized || !g_state.config_bootstrap.prepared ||
+        g_state.config_bootstrap.initialization_locked || g_state.config_bootstrap.refresh_pending ||
+        g_state.config_bootstrap.worker_pid > 0) return LCS_INITIALIZATION_BUSY;
+    if (!coordinator->initialized)
+        lcs_config_coordinator_init(coordinator, &g_state.config_runtime, &g_state.config_readiness);
+    char error[256];
+    if (lcs_config_coordinator_start_freeze(coordinator, &g_state.config_bootstrap, &g_state.cfg, error, sizeof(error)) < 0)
+        lcs_log_debug("configuration freeze preflight refused: %s", error);
+    return LCS_INITIALIZATION_BUSY;
+}
+
+static int send_freeze(int epoll_fd, size_t node, const lcs_config_freeze_message_t *message)
+{
+    unsigned char payload[LCS_CONFIG_FREEZE_SIZE]; size_t length;
+    if (lcs_config_freeze_encode(message, payload, sizeof(payload), &length)) return -1;
+    return peer_queue_config_freeze(epoll_fd, (int)node,
+        message->kind == LCS_FREEZE_QUERY ? LCS_MSG_CONFIG_FREEZE_QUERY : LCS_MSG_CONFIG_FREEZE_REPLY,
+        payload, (uint32_t)length);
+}
+
+static void process_freeze(int epoll_fd)
+{
+    uint64_t now = lcs_now_ms();
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if (!g_state.config_freeze_waiters[i].pending) continue;
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if (now >= g_state.config_freeze_waiters[i].deadline_ms || g_state.config_coordinator.closing ||
+            (peer->instance_id && peer->instance_id != g_state.config_freeze_waiters[i].query.receipt.requester_instance))
+        { g_state.config_freeze_waiters[i].pending = false; continue; }
+        if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED ||
+            peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_FREEZE ||
+            peer->instance_id != g_state.config_freeze_waiters[i].query.receipt.requester_instance ||
+            now < g_state.config_freeze_waiters[i].next_send_ms) continue;
+        lcs_config_freeze_message_t reply = g_state.config_freeze_waiters[i].query;
+        reply.kind = LCS_FREEZE_REPLY; reply.receipt.status = freeze_status(&reply);
+        g_state.config_freeze_waiters[i].next_send_ms = now + 250u;
+        if (!send_freeze(epoll_fd, i, &reply) && reply.receipt.status != LCS_INITIALIZATION_BUSY)
+            g_state.config_freeze_waiters[i].pending = false;
+    }
+    lcs_config_initialization_round_t *round = &g_state.config_initialization;
+    if (!round->active || round->failed || round->consumed) return;
+    uint64_t instances[LCS_MAX_NODES]; (void)freeze_instances(instances);
+    if (g_state.config_coordinator.closing || config_reload_in_progress()) { round->failed = true; return; }
+    if (lcs_config_initialization_poll(round, instances, g_state.config_reload.active_generation, now, NULL, 0) ||
+        now < g_state.config_initialization_next_send_ms) return;
+    g_state.config_initialization_next_send_ms = now + 250u;
+    for (size_t i = 0; i < round->count; i++)
+    {
+        if (i == round->self) continue;
+        lcs_config_freeze_message_t query = {.kind = LCS_FREEZE_QUERY};
+        if (!lcs_config_initialization_query(round, i, instances[i], now, &query.receipt, NULL, 0))
+            (void)send_freeze(epoll_fd, i, &query);
+    }
+}
+
+int config_peer_receive_freeze(int epoll_fd, int node, uint16_t type, const void *payload, size_t length)
+{
+    if (node < 0 || (size_t)node >= g_state.cfg.node_count || node == g_state.self_index) return -1;
+    const peer_runtime_t *peer = &g_state.peers[node];
+    lcs_config_freeze_message_t message;
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED || !peer->instance_id ||
+        peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_FREEZE || lcs_config_freeze_decode(payload, length, &message)) return -1;
+    if (type == LCS_MSG_CONFIG_FREEZE_REPLY && message.kind == LCS_FREEZE_REPLY)
+    {
+        if (message.receipt.responder_instance != peer->instance_id) return -1;
+        if (message.receipt.requester_instance != g_state.instance_id) return 0;
+        int result = lcs_config_initialization_receipt(&g_state.config_initialization, (size_t)node,
+            peer->instance_id, &message.receipt, lcs_now_ms(), NULL, 0);
+        return result < 0 ? -1 : 0;
+    }
+    if (type != LCS_MSG_CONFIG_FREEZE_QUERY || message.kind != LCS_FREEZE_QUERY ||
+        message.receipt.requester_instance != peer->instance_id || message.receipt.responder_instance != g_state.instance_id ||
+        g_state.cfg.nodes[node].role != LCS_NODE_FULL) return -1;
+    uint64_t now = lcs_now_ms();
+    lcs_config_freeze_message_t *previous = &g_state.config_freeze_waiters[node].query;
+    if (previous->receipt.requester_instance == peer->instance_id)
+    {
+        if (message.receipt.attempt < previous->receipt.attempt) return 0;
+        if (message.receipt.attempt == previous->receipt.attempt)
+        {
+            if (strcmp(message.receipt.membership, previous->receipt.membership) ||
+                strcmp(message.receipt.baseline, previous->receipt.baseline)) return -1;
+            if (now >= g_state.config_freeze_waiters[node].deadline_ms) return 0;
+        }
+        else g_state.config_freeze_waiters[node].deadline_ms = now + LCS_CONFIG_INITIALIZATION_TIMEOUT_MS;
+    }
+    else g_state.config_freeze_waiters[node].deadline_ms = now + LCS_CONFIG_INITIALIZATION_TIMEOUT_MS;
+    *previous = message;
+    g_state.config_freeze_waiters[node].pending = true;
+    g_state.config_freeze_waiters[node].next_send_ms = 0;
+    process_freeze(epoll_fd);
+    return 0;
+}
+
 static int withdraw_preparation(void)
 {
     if (g_state.config_status.prepared && g_state.config_status.serial != UINT64_MAX)
@@ -356,6 +506,7 @@ static void process_checkpoint_sync(void)
 void config_peer_process(int epoll_fd)
 {
     process_readiness(epoll_fd);
+    process_freeze(epoll_fd);
     process_owners(epoll_fd);
     lcs_config_transactions_process(&g_state.config_transactions, lcs_now_ms(), send_transaction, &epoll_fd);
     process_checkpoint_sync();

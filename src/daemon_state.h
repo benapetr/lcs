@@ -10,6 +10,7 @@
 #include "protocol.h"
 #include "config_status_protocol.h"
 #include "config_readiness.h"
+#include "config_freeze_protocol.h"
 #include "config_coordinator.h"
 #include "config_transaction.h"
 #include "config_owner_network.h"
@@ -480,6 +481,14 @@ typedef struct
     uint64_t config_status_generation;
     uint64_t config_status_retry_ms;
     lcs_config_readiness_t config_readiness;
+    lcs_config_initialization_round_t config_initialization;
+    uint64_t config_initialization_attempt, config_initialization_next_send_ms;
+    struct
+    {
+        lcs_config_freeze_message_t query;
+        uint64_t deadline_ms, next_send_ms;
+        bool pending;
+    } config_freeze_waiters[LCS_MAX_NODES];
     lcs_config_coordinator_t config_coordinator;
     lcs_config_transactions_t config_transactions;
     lcs_config_owner_network_t config_owners;

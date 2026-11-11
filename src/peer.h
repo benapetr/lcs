@@ -34,6 +34,8 @@ int peer_queue_config_owner(int epoll_fd, int node_idx, const void *payload, uin
 int peer_queue_config_status(int epoll_fd, int node_idx, const void *payload, uint32_t length);
 int peer_queue_config_readiness(int epoll_fd, int node_idx, uint16_t type,
                                  const void *payload, uint32_t length);
+int peer_queue_config_freeze(int epoll_fd, int node_idx, uint16_t type,
+    const void *payload, uint32_t length);
 int peer_queue_config_transaction(int epoll_fd, int node_idx, uint16_t type,
                                    const void *payload, uint32_t length);
 /* Fixed resource-generation envelope admission, before dispatch/RPC completion.

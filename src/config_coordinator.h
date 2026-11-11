@@ -20,6 +20,7 @@ typedef enum
     LCS_CONFIG_COORD_CANCELLING,
     LCS_CONFIG_COORD_STOPPED,
     LCS_CONFIG_COORD_FAILED,
+    LCS_CONFIG_COORD_FREEZING,
 } lcs_config_coordinator_phase_t;
 
 typedef struct
@@ -31,6 +32,7 @@ typedef struct
     uint64_t requester_instance;
     uint64_t attempt;
     uint64_t completed_votes; /* Process-local completion counter, not durable request history. */
+    uint64_t completed_freezes;
     int last_vote_result;
     bool record_vote_decision; /* LEARN/checkpoint completion schedules history observation. */
     uint64_t completed_applications;
@@ -61,6 +63,11 @@ void lcs_config_coordinator_init(lcs_config_coordinator_t *coordinator,
 /* Attach an explicitly started readiness attempt. No automatic initialization,
  * file I/O, authority switch or backend work occurs here. Returns 1 if busy. */
 int lcs_config_coordinator_start(lcs_config_coordinator_t *coordinator);
+/* Explicit responder operation after peer admission and exclusion of ALL local
+ * reload work. Shared writer, no vote/initialization/activation permission.
+ * Success returns to IDLE with the durable FROZEN runtime; failures retain locks. */
+int lcs_config_coordinator_start_freeze(lcs_config_coordinator_t *coordinator,
+    lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg, char *err, size_t err_len);
 /* After runtime_open, adopt an existing valid durable barrier without collecting
  * readiness again or I/O. Application may lag for sync recovery; votes stay gated. */
 int lcs_config_coordinator_recover(lcs_config_coordinator_t *coordinator);

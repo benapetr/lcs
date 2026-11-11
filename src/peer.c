@@ -355,6 +355,8 @@ static bool peer_is_request_type(uint16_t type)
         case LCS_MSG_CONFIG_OWNER_BARRIER:
         case LCS_MSG_CONFIG_READINESS_QUERY:
         case LCS_MSG_CONFIG_READINESS_REPLY:
+        case LCS_MSG_CONFIG_FREEZE_QUERY:
+        case LCS_MSG_CONFIG_FREEZE_REPLY:
         case LCS_MSG_CONFIG_TX_CONTROL:
         case LCS_MSG_CONFIG_TX_BEGIN:
         case LCS_MSG_CONFIG_TX_CHUNK:
@@ -751,6 +753,17 @@ int peer_queue_config_readiness(int epoll_fd, int node_idx, uint16_t type,
         return 1;
     /* Both envelopes use fresh frame sequences; request correlation and replay
      * protection are carried by the daemon-instance/attempt fields. */
+    return peer_queue_frame(epoll_fd, node_idx, type, lcs_next_seq(), payload, length);
+}
+
+int peer_queue_config_freeze(int epoll_fd, int node_idx, uint16_t type,
+    const void *payload, uint32_t length)
+{
+    if (node_idx < 0 || (size_t)node_idx >= g_state.cfg.node_count || node_idx == g_state.self_index ||
+        (type != LCS_MSG_CONFIG_FREEZE_QUERY && type != LCS_MSG_CONFIG_FREEZE_REPLY)) return 1;
+    const peer_runtime_t *peer = &g_state.peers[node_idx];
+    if (peer->fd < 0 || peer->conn_state != LCS_PEER_ESTABLISHED || !peer->instance_id ||
+        peer->protocol_version < LCS_PROTO_FEATURE_CONFIG_FREEZE) return 1;
     return peer_queue_frame(epoll_fd, node_idx, type, lcs_next_seq(), payload, length);
 }
 
@@ -1214,6 +1227,9 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
     if (hdr->type >= LCS_MSG_CONFIG_TX_CONTROL && hdr->type <= LCS_MSG_CONFIG_TX_END &&
         g_state.peers[source_node_idx].protocol_version < LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS)
         return -1;
+    if ((hdr->type == LCS_MSG_CONFIG_FREEZE_QUERY || hdr->type == LCS_MSG_CONFIG_FREEZE_REPLY) &&
+        g_state.peers[source_node_idx].protocol_version < LCS_PROTO_FEATURE_CONFIG_FREEZE)
+        return -1;
     if (hdr->type == LCS_MSG_CONFIG_OWNER_BARRIER &&
         g_state.peers[source_node_idx].protocol_version < LCS_PROTO_FEATURE_CONFIG_OWNERS)
         return -1;
@@ -1231,6 +1247,9 @@ static int peer_handle_request_frame(int epoll_fd, int source_node_idx, const lc
     {
         case LCS_MSG_CONFIG_OWNER_BARRIER:
             return config_peer_receive_owner(epoll_fd, source_node_idx, payload, hdr->length);
+        case LCS_MSG_CONFIG_FREEZE_QUERY:
+        case LCS_MSG_CONFIG_FREEZE_REPLY:
+            return config_peer_receive_freeze(epoll_fd, source_node_idx, hdr->type, payload, hdr->length);
         case LCS_MSG_CONFIG_BOOTSTRAP_STATUS:
             return config_peer_receive(source_node_idx, payload, hdr->length);
         case LCS_MSG_CONFIG_READINESS_QUERY:
