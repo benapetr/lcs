@@ -174,6 +174,8 @@ int config_peer_readiness_start(void)
 
 void config_peer_stop(void)
 {
+    g_state.config_initialization_requested = false;
+    g_state.config_initialization.failed = true;
     g_state.config_coordinator.closing = true;
     lcs_config_coordinator_stop(&g_state.config_coordinator);
     lcs_config_transactions_close(&g_state.config_transactions);
@@ -298,6 +300,11 @@ int config_peer_resume_frozen(char *err, size_t err_len)
 {
     lcs_config_runtime_t *runtime = &g_state.config_runtime;
     const lcs_config_activation_t *activation = &runtime->activation;
+    bool frozen = activation->phase == LCS_CONFIG_ACTIVATION_FROZEN &&
+        !runtime->agreement.store && !runtime->agreement.poisoned && !runtime->agreement.committed.document &&
+        !runtime->agreement.accepted.document && !runtime->agreement.promised && !runtime->application.store &&
+        !runtime->application.poisoned && !runtime->application.applied.document && !runtime->application.pending.document &&
+        !runtime->requests.store && !runtime->requests.count && !runtime->requests.poisoned && !runtime->barrier.store && !runtime->barrier.poisoned;
     bool pristine = !g_state.config_coordinator.initialized && !g_state.config_coordinator.closing &&
         !g_state.config_coordinator.failed && !g_state.config_coordinator.storage.pid && !g_state.config_status.serial &&
         !g_state.resource_generation_enabled && !g_state.voting_ready && !g_state.votes_seen && g_state.instance_id &&
@@ -318,12 +325,8 @@ int config_peer_resume_frozen(char *err, size_t err_len)
             grant->active || grant->owner_instance_id || grant->epoch || grant->lease_id || grant->deadline_ms || grant->promised_epoch) pristine = false;
     }
     if (!pristine || !runtime->requires_recovery || !runtime->base || activation->base != runtime->base ||
-        activation->store != &g_state.config_bootstrap.state || activation->phase != LCS_CONFIG_ACTIVATION_FROZEN ||
+        activation->store != &g_state.config_bootstrap.state || (!frozen && !lcs_config_runtime_initialization_prepared(runtime)) ||
         activation->poisoned || !activation->requests_required || !activation->baseline.document ||
-        runtime->agreement.store || runtime->agreement.poisoned || runtime->agreement.committed.document ||
-        runtime->agreement.accepted.document || runtime->agreement.promised || runtime->application.store ||
-        runtime->application.poisoned || runtime->application.applied.document || runtime->application.pending.document ||
-        runtime->requests.store || runtime->requests.count || runtime->requests.poisoned || runtime->barrier.store || runtime->barrier.poisoned ||
         g_state.self_index != lcs_config_self_index(runtime->base))
     { if (err && err_len) snprintf(err, err_len, "frozen startup requires pristine pre-listener state and an exact recovered freeze"); return -1; }
     char *document = NULL; size_t length; lcs_config_value_t value = {0};
@@ -354,7 +357,7 @@ int config_peer_freeze_start(void)
 {
     lcs_config_runtime_t *runtime = &g_state.config_runtime;
     lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
-    if (g_state.self_index < 0 || g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL ||
+    if (g_state.self_index < 0 ||
         coordinator->closing || coordinator->failed || coordinator->storage.pid > 0 ||
         config_reload_in_progress() || !g_state.config_bootstrap.initialization_locked ||
         runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN || runtime->activation.poisoned ||
@@ -371,6 +374,25 @@ int config_peer_freeze_start(void)
     return result;
 }
 
+int config_peer_initialization_start(void)
+{
+    if (g_state.config_initialization_requested ||
+        g_state.config_coordinator.phase == LCS_CONFIG_COORD_INITIALIZING) return 1;
+    int result = config_peer_freeze_start();
+    if (result < 0) return -1;
+    if (result == 1)
+    {
+        uint64_t instances[LCS_MAX_NODES];
+        if (!freeze_instances(instances) || !g_state.config_initialization.active ||
+            g_state.config_coordinator.closing || g_state.config_coordinator.failed ||
+            g_state.config_coordinator.storage.pid > 0 || config_reload_in_progress() ||
+            lcs_config_initialization_poll(&g_state.config_initialization, instances,
+                g_state.config_reload.active_generation, lcs_now_ms(), NULL, 0) < 0) return 1;
+    }
+    g_state.config_initialization_requested = true;
+    return 0;
+}
+
 /* This function is called only for a current admitted query or its bounded
  * waiter. It never turns advertisements into initialization authorization. */
 static uint8_t freeze_status(const lcs_config_freeze_message_t *query)
@@ -383,7 +405,8 @@ static uint8_t freeze_status(const lcs_config_freeze_message_t *query)
     const char *baseline = runtime->activation.store ? runtime->activation.baseline.digest : g_state.config_status.baseline;
     if (strcmp(query->receipt.membership, membership) || strcmp(query->receipt.baseline, baseline))
         return LCS_INITIALIZATION_MISMATCH;
-    if (runtime->activation.store && runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN &&
+    if (runtime->activation.store && (runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
+        lcs_config_runtime_initialization_prepared(runtime)) &&
         !runtime->activation.poisoned && g_state.config_bootstrap.initialization_locked && !coordinator->storage.pid)
         return LCS_INITIALIZATION_FROZEN;
     uint64_t instances[LCS_MAX_NODES];
@@ -411,6 +434,17 @@ static int send_freeze(int epoll_fd, size_t node, const lcs_config_freeze_messag
 static void process_freeze(int epoll_fd)
 {
     uint64_t now = lcs_now_ms();
+    /* A durable freeze is the prerequisite, never version advertisements alone.
+     * Unit/internal collectors may remain explicit; ordinary daemon operation
+     * resumes each member's preparation after collecting fresh all-member proof. */
+    if (g_state.config_initialization_auto_resume && !g_state.config_initialization_requested &&
+        g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN &&
+        !g_state.config_coordinator.closing && !g_state.config_coordinator.failed &&
+        g_state.config_coordinator.storage.pid <= 0 && now >= g_state.config_initialization_retry_ms)
+    {
+        g_state.config_initialization_retry_ms = now + 1000u;
+        (void)config_peer_initialization_start();
+    }
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         if (!g_state.config_freeze_waiters[i].pending) continue;
@@ -429,11 +463,28 @@ static void process_freeze(int epoll_fd)
             g_state.config_freeze_waiters[i].pending = false;
     }
     lcs_config_initialization_round_t *round = &g_state.config_initialization;
-    if (!round->active || round->failed || round->consumed) return;
+    if (!round->active || round->failed || round->consumed)
+    { g_state.config_initialization_requested = false; return; }
     uint64_t instances[LCS_MAX_NODES]; (void)freeze_instances(instances);
-    if (g_state.config_coordinator.closing || config_reload_in_progress()) { round->failed = true; return; }
-    if (lcs_config_initialization_poll(round, instances, g_state.config_reload.active_generation, now, NULL, 0) ||
-        now < g_state.config_initialization_next_send_ms) return;
+    if (g_state.config_coordinator.closing || config_reload_in_progress())
+    { round->failed = true; g_state.config_initialization_requested = false; return; }
+    int ready = lcs_config_initialization_poll(round, instances, g_state.config_reload.active_generation, now, NULL, 0);
+    if (ready < 0) { g_state.config_initialization_requested = false; return; }
+    if (ready == 1)
+    {
+        if (g_state.config_initialization_requested)
+        {
+            char error[256] = {0};
+            int result = lcs_config_coordinator_start_initialization(&g_state.config_coordinator,
+                &g_state.config_bootstrap, &g_state.cfg, round, instances,
+                g_state.config_reload.active_generation, now, error, sizeof(error));
+            if (result <= 0) g_state.config_initialization_requested = false;
+            if (result < 0)
+            { round->failed = true; lcs_log_error("coordinated local initialization refused: %s", error); }
+        }
+        return;
+    }
+    if (now < g_state.config_initialization_next_send_ms) return;
     g_state.config_initialization_next_send_ms = now + 250u;
     for (size_t i = 0; i < round->count; i++)
     {
@@ -460,8 +511,7 @@ int config_peer_receive_freeze(int epoll_fd, int node, uint16_t type, const void
         return result < 0 ? -1 : 0;
     }
     if (type != LCS_MSG_CONFIG_FREEZE_QUERY || message.kind != LCS_FREEZE_QUERY ||
-        message.receipt.requester_instance != peer->instance_id || message.receipt.responder_instance != g_state.instance_id ||
-        g_state.cfg.nodes[node].role != LCS_NODE_FULL) return -1;
+        message.receipt.requester_instance != peer->instance_id || message.receipt.responder_instance != g_state.instance_id) return -1;
     uint64_t now = lcs_now_ms();
     lcs_config_freeze_message_t *previous = &g_state.config_freeze_waiters[node].query;
     if (previous->receipt.requester_instance == peer->instance_id)
@@ -585,7 +635,8 @@ void config_peer_process(int epoll_fd)
     uint64_t now = lcs_now_ms();
     bool keepalive = g_state.config_application_remapping && !g_state.resource_generation_enabled &&
         g_state.config_runtime.activation.store && !g_state.config_runtime.activation.poisoned &&
-        g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN && now >= g_state.config_status_keepalive_ms;
+        (g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
+         lcs_config_runtime_initialization_prepared(&g_state.config_runtime)) && now >= g_state.config_status_keepalive_ms;
     if (keepalive)
     {
         uint64_t interval = g_state.cfg.peer_timeout_ms / 3u;
@@ -640,10 +691,13 @@ int config_peer_view(lcs_config_status_view_t *view)
     view->count = (uint16_t)g_state.cfg.node_count;
     view->self = (uint16_t)g_state.self_index;
     if (g_state.config_runtime.activation.store && !g_state.config_runtime.activation.poisoned &&
-        g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN)
+        (g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
+         lcs_config_runtime_initialization_prepared(&g_state.config_runtime)))
     {
         view->phase = LCS_CONFIG_DIAG_FROZEN;
-        snprintf(view->error, sizeof(view->error), "resource definitions are frozen; awaiting coordinated initialization");
+        snprintf(view->error, sizeof(view->error), g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ?
+            "resource definitions are frozen; awaiting coordinated initialization" :
+            "resource definitions are frozen; local initialization prepared, awaiting all-member readiness");
     }
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {

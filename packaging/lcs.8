@@ -144,6 +144,9 @@ A durable pre-initialization freeze reports application_state frozen, INI
 authority, no admission and no dynamic command capability. On restart it restores
 the retained baseline for coordination, with resource voting, placement and
 mutations fenced; later valid INI resource edits do not replace that baseline.
+Existing freezes can resume local preparation after fresh confirmation from every
+member, including quorum-only voters. Pristine prepared restarts preserve history;
+preparation does not enable JSON authority or definition commands.
 .TP
 .B resource create NAME vip|service key=value...
 Create one definition through majority agreement and local configuration admission.

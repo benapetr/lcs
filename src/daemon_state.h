@@ -484,6 +484,9 @@ typedef struct
     lcs_config_readiness_t config_readiness;
     lcs_config_initialization_round_t config_initialization;
     uint64_t config_initialization_attempt, config_initialization_next_send_ms;
+    bool config_initialization_requested;
+    bool config_initialization_auto_resume;
+    uint64_t config_initialization_retry_ms;
     struct
     {
         lcs_config_freeze_message_t query;

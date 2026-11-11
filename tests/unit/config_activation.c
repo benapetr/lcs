@@ -1054,10 +1054,13 @@ static void test_durable_freeze_worker_and_promotion(void)
     assert(!lcs_config_initialization_begin(&round, &config, instances, 7, 2, 100, error, sizeof(error)));
     freeze_all(&round);
     forbid_parent_io = true;
+    const lcs_config_t *retained_base = runtime.base;
     assert(!lcs_config_agreement_worker_start_initialization_round(&worker, &runtime, &bootstrap,
         &config, &round, instances, 7, 101, error, sizeof(error)));
     assert(round.consumed && runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN);
     assert(await_initialization(&worker, &runtime) == 1);
+    assert(runtime.base == retained_base && runtime.activation.base == retained_base && runtime.agreement.base == retained_base &&
+        runtime.application.base == retained_base && runtime.requests.base == retained_base);
     assert(runtime.activation.phase == LCS_CONFIG_ACTIVATION_PREPARED && runtime.requests.store && !runtime.requests.count);
     forbid_parent_io = false;
     lcs_config_runtime_close(&runtime); cleanup();

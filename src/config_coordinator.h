@@ -21,6 +21,7 @@ typedef enum
     LCS_CONFIG_COORD_STOPPED,
     LCS_CONFIG_COORD_FAILED,
     LCS_CONFIG_COORD_FREEZING,
+    LCS_CONFIG_COORD_INITIALIZING,
 } lcs_config_coordinator_phase_t;
 
 typedef struct
@@ -33,6 +34,7 @@ typedef struct
     uint64_t attempt;
     uint64_t completed_votes; /* Process-local completion counter, not durable request history. */
     uint64_t completed_freezes;
+    uint64_t completed_initializations;
     int last_vote_result;
     bool record_vote_decision; /* LEARN/checkpoint completion schedules history observation. */
     uint64_t completed_applications;
@@ -68,6 +70,12 @@ int lcs_config_coordinator_start(lcs_config_coordinator_t *coordinator);
  * Success returns to IDLE with the durable FROZEN runtime; failures retain locks. */
 int lcs_config_coordinator_start_freeze(lcs_config_coordinator_t *coordinator,
     lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg, char *err, size_t err_len);
+/* Explicit local promotion after a complete current all-member freeze round.
+ * Uses the same writer; completion returns IDLE, not voting-ready. */
+int lcs_config_coordinator_start_initialization(lcs_config_coordinator_t *coordinator,
+    lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg,
+    lcs_config_initialization_round_t *round, const uint64_t instances[LCS_MAX_NODES],
+    uint64_t generation, uint64_t now_ms, char *err, size_t err_len);
 /* After runtime_open, adopt an existing valid durable barrier without collecting
  * readiness again or I/O. Application may lag for sync recovery; votes stay gated. */
 int lcs_config_coordinator_recover(lcs_config_coordinator_t *coordinator);

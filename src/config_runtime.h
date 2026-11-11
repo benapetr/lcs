@@ -30,12 +30,17 @@ typedef struct
  * require history: resume creation only while INITIALIZING, never after PREPARED.
  * Format-3 FROZEN recovers only the immutable baseline and reload exclusion,
  * never creates history or promotes initialization. The daemon can restore this
- * state for coordination with resource voting/placement fenced; automatic
- * initialization and activation remain separate unfinished steps.
+ * state for coordination with resource voting/placement fenced. Fresh all-member
+ * freeze evidence may authorize local initialization through the shared writer;
+ * automatic first-freeze creation and JSON activation remain unfinished.
  * Partial/corrupt/foreign or contradictory records fail before listeners open. */
 int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
                              lcs_config_store_t *store, const lcs_config_t *cfg,
                              char *err, size_t err_len);
 void lcs_config_runtime_close(lcs_config_runtime_t *runtime);
+/* Healthy format-2 revision-zero preparation, with empty bound request history
+ * and no readiness barrier, promises, decisions or application work. No I/O.
+ * This permits fenced coordination/reaffirming the freeze, never a vote. */
+bool lcs_config_runtime_initialization_prepared(const lcs_config_runtime_t *runtime);
 
 #endif

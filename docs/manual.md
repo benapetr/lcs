@@ -29,8 +29,11 @@ A node restarting from a durable resource freeze can rejoin wire-6 coordination
 with voting, resource placement and mutations fenced. It restores the retained
 baseline before startup cleanup, reports `application_state: frozen` in
 `lcs --json config status`, and exports that baseline through `lcs config export`.
-Later valid INI resource edits do not replace it. Automatic progression to
-initialization and activation remains unfinished.
+Later valid INI resource edits do not replace it. Existing durable freezes resume
+local initialization after fresh confirmations from every configured member,
+including quorum-only voters. Pristine prepared nodes retain their journals and
+resource fences across restart. Automatic first-freeze creation and JSON
+activation remain unfinished; local preparation does not enable dynamic commands.
 
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means

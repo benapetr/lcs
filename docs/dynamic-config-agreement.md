@@ -4,9 +4,10 @@ Implementation status: the agreement core, storage worker, and snapshot-transfer
 codecs, incarnation validation, local readiness barrier and application catalog
 are implemented and unit-tested. Explicit peer readiness queries/replies are wired
 into admitted wire-6 sessions. The network acceptor/learner is registered with
-daemon peer sessions. Automatic
-proposal coordination, activation, resource application and CLI mutation endpoints
-remain unfinished. Separate
+daemon peer sessions. Runtime definition commands and application/recovery are
+available for already-activated JSON catalogs. Existing durable freezes can now
+resume local preparation through fresh all-member confirmation; automatic first
+freeze, readiness/activation and initial application orchestration remain unfinished. Separate
 wire-6 bootstrap metadata now reports prepared definitions diagnostically; wire-5
 compatibility and INI authority remain. This document
 records the rules the remaining integration must preserve.
@@ -162,8 +163,10 @@ Any uncertain write requires reopening disk state before proceeding.
 
 Startup resumes an existing initialization before opening listeners. Healthy
 format-3 FROZEN state can resume its coordination channel with resource voting
-and placement fenced. Other unactivated initialization states still require
-the remaining activation-aware peering/application integration. INI snapshot refresh refuses any existing intent.
+and placement fenced. Pristine format-2 PREPARED revision-zero state with healthy
+empty request history also resumes coordination. States with promises, request
+reservations, readiness barriers or decisions still require their separate
+activation-aware recovery integration. INI snapshot refresh refuses any existing intent.
 The synchronous primitive runs only during startup or in the serialized storage
 worker; it must not be called directly from the live event loop.
 
@@ -197,9 +200,10 @@ including any retained reservations; normal runtime recovery reads those facts
 without writes. Initialization's compact acknowledgement accepts only empty
 history and sends nonempty state through normal recovery instead.
 
-The automatic initialization coordinator remains to be implemented. Its worker
-is not yet invoked by ordinary daemon startup/peering. Preparing local files alone does not permit configuration voting
-or switch resource authority.
+The daemon now resumes already-durable freezes through fresh all-member collection
+and the initialization writer. Ordinary INI startup does not create the first
+freeze from version/bootstrap advertisements. Preparing local files alone never
+permits configuration voting or switches resource authority.
 
 ### First-initialization authorization round
 
@@ -233,7 +237,7 @@ the guarded round entry point instead.
 
 These are same-process collection objects, not serialized proofs. The explicit
 peer freeze exchange and fenced startup resumption are implemented below;
-automatic initialization/activation coordination remains unfinished. The local durable responder preserves reload exclusion across
+automatic first-freeze and JSON activation coordination remains unfinished. The local durable responder preserves reload exclusion across
 restart. Collector expiry alone must never authorize a responder to thaw.
 A completed collection authorizes
 only local storage preparation; it is neither the durable readiness barrier nor
@@ -280,8 +284,9 @@ Queries bind both daemon instances, increasing attempt, membership and complete
 baseline; their destination instance is nonzero and status is zero. Replies echo
 the tuple with FROZEN, BUSY or MISMATCH. The established peer source, frame type,
 kind, negotiated version, exact length and canonical digests are checked before
-any storage operation. Only full members initiate queries, while both full and
-quorum-only members persist and acknowledge freezes.
+any storage operation. Full and quorum-only members may collect confirmations for
+their own local metadata initialization; both persist and acknowledge freezes.
+Quorum-only nodes still cannot initiate resource definition mutations.
 
 The responder requires every configured member to have an admitted upgrade-capable
 session before starting storage. Unknown/offline/old quorum-only members therefore
@@ -308,16 +313,20 @@ already durable FROZEN state without rewriting it.
 freeze is durable and all configured sessions support it. The scheduler sends
 queries and passes correlated replies to the all-member collector, invalidating
 it on session/generation changes or deadline expiry. Completion does not start
-initialization or change resource authority. Ordinary startup does not invoke
-this entry point; automatic initialization and upgrade activation remain unfinished.
+initialization or change resource authority by itself. The daemon's separate
+resumption workflow below explicitly couples collection to local initialization
+only after a durable freeze exists; automatic first-freeze/activation is unfinished.
 
 ### Fenced restart resumption
 
 Before listeners or backend workers, `config_peer_resume_frozen()` accepts only a
-healthy recovered format-3 runtime bound to the locked bootstrap store. It checks
+healthy recovered format-3 runtime or pristine mandatory-history format-2
+revision-zero preparation bound to the locked bootstrap store. It checks
 pristine daemon tables, no pending reload/refresh, no open peer/client sessions,
-and the exact canonical frozen baseline. Existing leases, epochs, workers or
-journal handles are rejected instead of being reset through this startup entry.
+and the exact canonical frozen baseline. Existing resource leases, epochs and
+workers are rejected instead of being reset. Prepared journals are retained;
+promises, barriers, reservations and advanced application state are not treated
+as pristine preparation.
 
 The daemon then installs those frozen definitions and empty runtime indices under
 resource voting/placement fences, locks bootstrap refresh, and restores the
@@ -330,18 +339,52 @@ not ignored by this stage.
 The restored node opens its coordination and read-only CLI channels, responds
 to correlated freeze queries from its durable record, and can participate in an
 explicit new freeze round. It neither grants resource leases nor hosts resources,
-admits configuration votes, initializes journals or switches to JSON authority.
+admits configuration votes or switches to JSON authority. Initial startup
+restoration does not initialize missing journals from a FROZEN intent.
 Existing resource-frame fences remain intact. Periodic unchanged advisory
 metadata maintains the separate wire-6 coordination channel without resource
 heartbeats or voting readiness; cold frozen nodes reject wire-5 HELLO admission.
-Automatic progression from freeze to initialization/activation remains unfinished.
+The separate resumption workflow can subsequently initialize local journals only
+after fresh all-member confirmation. Activation remains unfinished.
 
 `config status` uses local diagnostic format 4 for phase `frozen`, with INI
 authority, no admission, no revisions and no dynamic command capability. Read-only
 export returns the retained baseline. Mutation/reload commands and SIGHUP cannot
-thaw it. Repeated restart does not rewrite its record or create history. Existing
-INITIALIZING/PREPARED runtimes without an activated application still fail closed
-until their separate live resumption path is implemented.
+thaw it. Prepared restarts do not rewrite history. An authorized INITIALIZING
+intent may finish its existing preparation during recovery; PREPARED requires
+existing healthy empty history. Promised/reserved/barrier-bearing or advanced
+unactivated state still fails closed pending separate recovery integration.
+
+### Coordinated local preparation after a durable freeze
+
+`config_peer_initialization_start()` couples a fresh/current all-member freeze
+collection to local journal preparation. Ordinary daemons automatically resume
+this workflow once their durable FROZEN state exists, including after restart;
+they never create the first freeze from matching version/status advertisements.
+Unknown, offline, incompatible or mismatched members prevent completion.
+
+Each configured member, including quorum-only voters, collects its own explicit
+instance/attempt-bound confirmations. Once complete, the scheduler rechecks all
+current instances and the local generation/baseline before the coordinator starts
+its existing guarded initialization writer. Failed/expired collections can retry
+with new attempts. Losing a member before the write prevents promotion. After
+the writer starts, durable work is retained across requester loss and must be
+recovered after failure/cancellation; no uncertain result counts as preparation.
+
+Successful publication increments a separate process-local initialization
+completion counter and returns the coordinator to IDLE. It does not create a
+readiness barrier, grant configuration/resource votes, alter running backends,
+admit definition commands or activate JSON. Promotion preserves the immutable
+base pointer borrowed by owner/coordination adapters, while rebinding all journal
+handles to it; that base must not be freed while adapters still borrow it.
+
+Members finishing earlier continue to acknowledge their unchanged durable freeze
+only while revision-zero preparation remains pristine: empty healthy bound
+request history, no promise/accepted successor, no pending application, no barrier
+or chosen decision. This lets other members finish independent collections after
+partial progress/restart. Reserved or advanced state returns BUSY instead of
+reinitializing it. Cold prepared nodes restore their frozen definitions with
+resource voting/placement and mutation fences, just like cold FROZEN nodes.
 
 After preparation, nonzero committed/accepted values must use the dynamic schema;
 revision one must preserve the frozen definitions when assigning incarnations.
@@ -357,7 +400,8 @@ equivalent to an ordinary daemon restart and must not silently reset promises.
 ## Durable all-member activation barrier
 
 The barrier core, serialized persistence worker, and explicit peer readiness
-exchange are implemented. Automatic initialization and activation are not enabled. A readiness round begins only after local frozen initialization is
+exchange are implemented. Initialization can resume existing freezes, but automatic
+readiness and activation are not enabled. A readiness round begins only after local frozen initialization is
 durable and pristine. It counts that local member and explicit durable-readiness
 receipts for the same membership and full baseline digest from every configured
 member, including quorum-only members. A majority is insufficient. Duplicate

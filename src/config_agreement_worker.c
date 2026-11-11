@@ -732,7 +732,16 @@ int lcs_config_agreement_worker_poll(lcs_config_agreement_worker_t *worker,
             (worker->initialization_from_freeze ?
              !frozen_runtime(target, &worker->initialization_candidate->activation.baseline) : !empty_runtime(target)))
             goto broken;
-        if (worker->initialization_from_freeze) lcs_config_runtime_close(target);
+        if (worker->initialization_from_freeze)
+        {
+            /* Owner/coordination adapters may borrow the immutable frozen base.
+             * Promotion changes journals, not that base's lifetime or contents. */
+            lcs_config_t *base = target->base;
+            target->base = NULL; lcs_config_runtime_close(target);
+            lcs_config_runtime_t *candidate = worker->initialization_candidate;
+            free(candidate->base); candidate->base = base;
+            candidate->activation.base = candidate->agreement.base = candidate->application.base = candidate->requests.base = base;
+        }
         *target = *worker->initialization_candidate;
         memset(worker->initialization_candidate, 0, sizeof(*worker->initialization_candidate));
         *operation_result = 0;

@@ -22,11 +22,19 @@ PY
     # New INI backends must not replace the durable baseline on restart.
     sed -i 's@127.0.0.200/32@127.0.0.201/32@g' "$config"
 done
-for node in node1 node2 node3; do start_node "$node"; done
+# A lone frozen node cannot initialize without every configured member.
+start_node node1
+wait_for_socket node1
+sleep .2
+cmp "$(node_config node1).state/activation.json" "$TEST_TMP/node1-frozen.json" || die 'offline members did not block initialization'
+[[ ! -e "$(node_config node1).state/requests.json" ]] || die 'lone frozen node initialized history'
+start_node node2
+start_node node3
 frozen_status() {
     "$LCS" -s "$(node_socket "$1")" --json config status 2>/dev/null | python3 -c '
 import json,sys
 s=json.load(sys.stdin); assert s["authority"]=="ini" and s["application_state"]=="frozen" and not s["admitted"] and not s["dynamic_commands"] and not s["prepared"]
+assert "local initialization prepared" in s["error"]
 assert all(n["connected"] and n["metadata_known"] and n["protocol"]==6 for n in s["nodes"])
 ' 2>/dev/null
 }
@@ -45,13 +53,21 @@ import json,sys
 export=json.load(open(sys.argv[1])); frozen=json.loads(json.load(open(sys.argv[2]))['baseline'])
 assert export==frozen
 PY
-    cmp "$(node_config "$node").state/activation.json" "$TEST_TMP/$node-frozen.json" || die 'startup changed freeze'
+    python3 - "$(node_config "$node").state" "$TEST_TMP/$node-frozen.json" <<'PY'
+import json,sys
+from pathlib import Path
+state=Path(sys.argv[1]); old=json.load(open(sys.argv[2])); current=json.loads((state/'activation.json').read_text())
+assert current['record_version']==2 and current['phase']=='prepared'
+assert all(old[k]==current[k] for k in ('member','membership','baseline_digest','baseline'))
+assert json.loads((state/'requests.json').read_text())['requests']==[] and not (state/'barrier.json').exists()
+PY
+    cp "$(node_config "$node").state/activation.json" "$TEST_TMP/$node-prepared.json"
 done
 # Exercise multiple peer timeouts: metadata keeps the coordination channel alive
 # while resource heartbeats, votes and placement remain fenced.
 sleep 2
 for node in node1 node2 node3; do frozen_status "$node" || die 'frozen coordination channel lost liveness'; done
-# Signals also retain the freeze; no journal appears when every binary is online.
+# Signals and restart retain preparation without activating JSON.
 kill -HUP "${LCS_PIDS[0]}"
 stop_node node3
 start_node node3
@@ -60,13 +76,14 @@ wait_until 10 'quorum-only frozen restart' frozen_status node3
 for node in node1 node2 node3; do
     config="$(node_config "$node")"; state="$config.state"
     stop_node "$node"
-    cmp "$state/activation.json" "$TEST_TMP/$node-frozen.json" || die 'restart or signal promoted freeze'
-    for record in agreement application requests barrier; do [[ ! -e "$state/$record.json" ]] || die 'freeze alone created history'; done
+    cmp "$state/activation.json" "$TEST_TMP/$node-prepared.json" || die 'restart or signal rewrote preparation'
+    for record in agreement application requests; do [[ -e "$state/$record.json" ]] || die 'prepared history disappeared'; done
+    [[ ! -e "$state/barrier.json" ]] || die 'preparation alone created readiness'
     printf '{}\n' >"$state/agreement.json"
     if LCS_VIP_DRY_RUN=1 "$LCSD" -c "$config" --no-syslog --no-timestamp >"$TEST_TMP/$node-conflict.log" 2>&1; then die 'frozen runtime accepted contradictory history'; fi
-    cmp "$state/activation.json" "$TEST_TMP/$node-frozen.json" || die 'conflicting history replaced freeze'
+    cmp "$state/activation.json" "$TEST_TMP/$node-prepared.json" || die 'conflicting history replaced preparation'
     [[ "$(cat "$state/agreement.json")" == '{}' ]] || die 'conflicting history was overwritten'
-    grep -Fq 'existing agreement/application/request history' "$TEST_TMP/$node-conflict.log" || die 'missing freeze/history conflict diagnostic'
+    grep -Fq 'cannot recover distributed resource configuration' "$TEST_TMP/$node-conflict.log" || die 'missing history recovery diagnostic'
 done
 assert_no_vip_ops_in_log node3
-log 'durable freeze survives restart without promotion or fallback, including quorum-only members'
+log 'all-member freezes automatically prepare journals, preserve baselines and retain fences through restart'

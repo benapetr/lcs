@@ -13,10 +13,12 @@ int main(int argc, char **argv)
 {
     bool required_history = argc == 3 && !strcmp(argv[2], "required-history");
     bool freeze = argc == 3 && !strcmp(argv[2], "freeze");
+    bool prepared = argc == 3 && !strcmp(argv[2], "prepared");
+    bool initializing = argc == 3 && !strcmp(argv[2], "initializing");
     bool advance = argc == 3 && !strcmp(argv[2], "advance");
     bool reserved = argc == 3 && !strcmp(argv[2], "reserved");
     bool history = reserved || (argc == 3 && !strcmp(argv[2], "history"));
-    if (argc != 2 && !advance && !history && !required_history && !freeze) return 2;
+    if (argc != 2 && !advance && !history && !required_history && !freeze && !prepared && !initializing) return 2;
     lcs_config_t *cfg = calloc(5, sizeof(*cfg));
     if (!cfg) return 1;
     CHECK(lcs_config_load(argv[1], &cfg[0], error, sizeof(error)));
@@ -33,11 +35,13 @@ int main(int argc, char **argv)
         CHECK(lcs_config_activation_freeze(&activation, &store, &cfg[0], &cfg[1], error, sizeof(error)));
         goto done;
     }
-    if (required_history)
+    if (required_history || prepared || initializing)
         CHECK(lcs_config_activation_open_requests(&activation, &store, &cfg[0], &cfg[1], true, error, sizeof(error)));
     else
         CHECK(lcs_config_activation_open(&activation, &store, &cfg[0], &cfg[1], !history, error, sizeof(error)));
+    if (initializing) goto done;
     CHECK(lcs_config_activation_resume(&activation, &agreement, &application, error, sizeof(error)));
+    if (prepared) goto done;
     if (history)
     {
         lcs_config_requests_t requests = {0};

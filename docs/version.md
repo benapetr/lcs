@@ -78,8 +78,9 @@ instance, u8 status, and two canonical 65-byte membership/baseline digests.
 Unlike readiness queries, freeze queries explicitly name a nonzero destination
 instance and have status zero. Replies retain that tuple with `FROZEN`, `BUSY`
 or `MISMATCH`. The type and kind must agree; malformed, foreign-instance and
-wire-5 requests are rejected before storage. Only full members initiate queries;
-quorum-only members may respond and must participate in collection.
+wire-5 requests are rejected before storage. Full and quorum-only members may
+collect confirmations for their local initialization. Both must participate;
+quorum-only nodes still cannot initiate resource definition mutations.
 
 An INI responder starts the shared freeze writer only after every configured
 member has an established upgrade-capable session and local reload/refresh work
@@ -87,9 +88,11 @@ is excluded. FROZEN requires successful durable worker publication, not file
 visibility or version advertisements. Bounded waiters correlate attempts and
 instances, do not extend deadlines on exact retries, and drop obsolete replies.
 Writer work survives requester loss; deadline/cancellation never thaws storage.
-The explicit collector requires its own durable local freeze and never promotes
-initialization or switches authority by itself. Ordinary startup does not start
-freeze collection; automatic initialization/activation is still unfinished.
+The collection-only entry requires its own durable local freeze and never
+initializes or switches authority by itself. A separate daemon workflow now
+resumes existing durable freezes through fresh all-member collection and local
+initialization. Ordinary INI startup does not create the first freeze from version
+advertisements; automatic first-freeze/JSON activation remains unfinished.
 Fenced frozen-startup resumption uses only wire-6 coordination. HELLO layouts,
 released wire-5 messages, local protocol and release version
 are unchanged; these types belong to unreleased wire 6.
@@ -387,7 +390,8 @@ The shared freeze worker syncs the file and directory before parent publication
 and acknowledgement (two sync boundaries). After explicit coordinated
 authorization, promotion syncs a format-2 INITIALIZING intent and follows the
 existing initialization order (ten further boundaries). A FROZEN restart never
-promotes itself. Older readers reject format 3 instead of silently importing INI.
+promotes from disk state alone; its resumed coordinator must obtain fresh
+all-member confirmation. Older readers reject format 3 instead of importing INI.
 Healthy frozen startup can resume coordination with resource voting/placement
 fenced, without rewriting the record or creating journals; contradictory history
 still fails before listeners. This private storage format does not change the
@@ -396,7 +400,8 @@ resource schema or release version. Automatic activation remains unfinished.
 ## Frozen configuration diagnostic format 4
 
 Local `config status` types 14/15 add diagnostic format 4 for a durable FROZEN
-runtime. It retains the member-view prefix and format-2 extension layout, but
+runtime or pristine mandatory-history revision-zero PREPARED state. It retains
+the member-view prefix and format-2 extension layout, but
 requires INI authority, phase `frozen` (7), admitted zero, zero revisions and empty
 committed/applied/pending digests. Dynamic command capability is absent/false;
 the local shadow-prepared flag must be false. Error text explains the pending
@@ -409,3 +414,13 @@ export remains schema-1/revision-zero baseline data. No peer message layout or
 ordinary local protocol number changes. Cold frozen startup permits only wire-6
 HELLO admission and repeats unchanged advisory status for liveness while resource
 frames remain fenced.
+
+Existing durable freezes now resume per-member initialization through the same
+wire-6 freeze query/reply format. A healthy pristine prepared member may reaffirm
+FROZEN while lacking any promise, accepted successor, barrier, reservation or
+chosen decision; more advanced state returns BUSY rather than being reinitialized.
+The coordinator uses a separate shared-writer INITIALIZING phase and process-local
+completion counter, returning to IDLE without configuration voting authority.
+Cold prepared restarts preserve journals and restore resource fences. These
+workflow changes add no wire/storage formats or release-version bump. First-freeze
+creation from INI and JSON activation remain unfinished.

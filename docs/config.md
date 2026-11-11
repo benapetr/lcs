@@ -27,8 +27,10 @@ compatibility. See [required initialization history](resource-json.md#required-r
 A recovered format-3 freeze uses its retained resource/group definitions despite
 later valid INI resource edits. It opens wire-6 coordination and read-only CLI
 access with resource voting/placement, reload and mutations fenced. `config status`
-reports `application_state: frozen`; automatic initialization/activation remains
-unfinished. INI syntax/static validation still runs before recovery.
+reports `application_state: frozen`. Existing freezes resume local initialization
+after fresh all-member confirmation, while pristine prepared restarts preserve
+their journals and fences. Automatic first-freeze creation and JSON activation
+remain unfinished. INI syntax/static validation still runs before recovery.
 `lcs config request-status ID` (also with `--json`) reads published local request
 facts during normal operation or recovery. Missing/poisoned history and unrecorded
 outcomes remain unknown; a committed fact does not establish application or final

@@ -62,6 +62,20 @@ static void clear_accept(lcs_config_coordinator_t *coordinator)
     memset(coordinator->accepting_parent, 0, sizeof(coordinator->accepting_parent));
 }
 
+int lcs_config_coordinator_start_initialization(lcs_config_coordinator_t *coordinator,
+    lcs_config_bootstrap_t *bootstrap, const lcs_config_t *cfg,
+    lcs_config_initialization_round_t *round, const uint64_t instances[LCS_MAX_NODES],
+    uint64_t generation, uint64_t now_ms, char *err, size_t err_len)
+{
+    if (!coordinator->initialized || coordinator->closing || coordinator->failed ||
+        coordinator->runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN) return -1;
+    if (coordinator->phase != LCS_CONFIG_COORD_IDLE || coordinator->storage.pid > 0 || coordinator->application_owner) return 1;
+    int result = lcs_config_agreement_worker_start_initialization_round(&coordinator->storage,
+        coordinator->runtime, bootstrap, cfg, round, instances, generation, now_ms, err, err_len);
+    if (!result) coordinator->phase = LCS_CONFIG_COORD_INITIALIZING;
+    return result;
+}
+
 void lcs_config_coordinator_stop(lcs_config_coordinator_t *coordinator)
 {
     if (!coordinator->initialized)
@@ -359,18 +373,23 @@ int lcs_config_coordinator_process(lcs_config_coordinator_t *coordinator, uint64
     if (coordinator->phase == LCS_CONFIG_COORD_READY)
         return lcs_config_coordinator_can_vote(coordinator) ? 1 : 0;
     lcs_config_runtime_t *runtime = coordinator->runtime;
-    if (coordinator->phase == LCS_CONFIG_COORD_FREEZING)
+    if (coordinator->phase == LCS_CONFIG_COORD_FREEZING || coordinator->phase == LCS_CONFIG_COORD_INITIALIZING)
     {
+        bool initialization = coordinator->phase == LCS_CONFIG_COORD_INITIALIZING;
         int operation = -1;
         int result = lcs_config_agreement_worker_poll(&coordinator->storage, &runtime->agreement,
             &operation, coordinator->error, sizeof(coordinator->error));
         if (!result) return 0;
-        if (result < 0 || operation || runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN || runtime->activation.poisoned)
+        if (result < 0 || operation || (initialization ? !lcs_config_runtime_initialization_prepared(runtime) :
+            (runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN || runtime->activation.poisoned)))
         {
-            lcs_config_coordinator_abort(coordinator, "freeze persistence failed; retain reload exclusion and recover disk state");
+            lcs_config_coordinator_abort(coordinator, initialization ?
+                "initialization persistence failed; retain fences and recover disk state" :
+                "freeze persistence failed; retain reload exclusion and recover disk state");
             return coordinator->storage.pid > 0 ? 0 : -1;
         }
-        coordinator->completed_freezes++;
+        if (initialization) coordinator->completed_initializations++;
+        else coordinator->completed_freezes++;
         coordinator->phase = LCS_CONFIG_COORD_IDLE;
         return 0;
     }

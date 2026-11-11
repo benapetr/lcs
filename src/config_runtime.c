@@ -6,6 +6,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+bool lcs_config_runtime_initialization_prepared(const lcs_config_runtime_t *runtime)
+{
+    return runtime && runtime->requires_recovery && runtime->base &&
+        runtime->activation.base == runtime->base && runtime->activation.requests_required &&
+        lcs_config_barrier_local_ready(&runtime->activation, &runtime->agreement, &runtime->application) &&
+        !runtime->barrier.store && !runtime->barrier.poisoned && !runtime->agreement.committed_ballot &&
+        !runtime->agreement.committed_voters && !*runtime->agreement.parent_digest &&
+        runtime->requests.store == runtime->activation.store && runtime->requests.base == runtime->base &&
+        !runtime->requests.poisoned && !runtime->requests.count &&
+        !strcmp(runtime->requests.member, runtime->activation.member) &&
+        !strcmp(runtime->requests.membership, runtime->activation.membership);
+}
+
 void lcs_config_runtime_close(lcs_config_runtime_t *runtime)
 {
     lcs_config_requests_close(&runtime->requests);

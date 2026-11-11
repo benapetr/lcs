@@ -191,7 +191,7 @@ durable distributed configuration protocol.
   application records. Resume interrupted local initialization from that frozen
   value, reject missing records after preparation, and block INI snapshot refresh
   once the intent exists. This local prerequisite does not authorize activation;
-  coordinated initialization remains unfinished.
+  automatic first-freeze/activation coordination remains unfinished.
 - [x] Run local initialization through the shared nonblocking storage worker,
   excluding INI refresh and withholding prepared handles until successful child
   exit. Preserve recovery requirements on cancellation, uncertain writes and
@@ -419,7 +419,7 @@ durable distributed configuration protocol.
   Verify both freeze sync boundaries and all ten promotion sync boundaries with
   failures/crashes, immutable baselines, empty-history exclusion, and recovery
   before listeners. Explicit peer exchange and fenced restart resumption are
-  implemented below; automatic initialization/activation remains open.
+  implemented below; first-freeze/activation coordination remains open.
 - [x] Add explicit wire-6 freeze query/reply framing and admitted peer dispatch,
   with destination/source instances, monotonic attempt correlation, strict codecs
   and complete baseline/membership binding. Route responder persistence through
@@ -427,8 +427,9 @@ durable distributed configuration protocol.
   storage while any configured member is offline/old or local reload is pending.
   Send FROZEN only after child publication, retain bounded replies across output
   backpressure, and drop stale/expired requesters without thawing durable state.
-  Add the explicit scheduler-driven collector after local durable freeze; do not
-  automatically initialize or switch authority when collection completes.
+  Add the explicit scheduler-driven collector after local durable freeze. A
+  collection-only entry does not initialize or switch authority; the separate
+  initialization resumption workflow below explicitly authorizes local writes.
   Exercise real full/quorum-only daemons, wire-5 refusal, retries, mismatches,
   replaced instances, worker failure/shutdown and retained startup fences.
 - [x] Restore healthy format-3 freezes before listeners for coordination-only
@@ -439,8 +440,19 @@ durable distributed configuration protocol.
   while resource frames remain fenced. Report local phase frozen via diagnostic
   format 4 and export the retained baseline. Test stable all-member connections,
   repeated/quorum-only restart, INI edits/SIGHUP, absent history, unchanged durable
-  intent and pre-listener rejection of contradictory records. This does not
-  automatically collect freezes, initialize history or activate JSON authority.
+  intent and pre-listener rejection of contradictory records. The restore itself
+  does not collect freezes, initialize history or activate JSON authority.
+- [x] Resume already-durable freezes automatically through per-member all-member
+  confirmation and guarded initialization on the coordinator's shared writer.
+  Include quorum-only collectors; keep earlier pristine prepared nodes confirming
+  their unchanged freeze so partial progress/restarts cannot deadlock collection.
+  Preserve borrowed immutable base pointers across publication, keep prepared
+  restarts read-only, and resume authorized interrupted INITIALIZING state. Refuse
+  missing history, promises, reservations, barriers and advanced state rather than
+  resetting them. Exercise full/quorum-only workflows, stale/replaced instances,
+  shared-writer interruption/shutdown, all sync/crash boundaries, real three-node
+  automatic preparation and mixed frozen/prepared/interrupted restart. This does
+  not initiate the first freeze from INI, create readiness, or activate JSON.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.
