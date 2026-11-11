@@ -290,7 +290,8 @@ files, refreshing a projection, initializing state or submitting a transaction.
 The document contains resource/group definitions; static daemon settings and
 agreement/application recovery records are managed separately. Use shell
 redirection to save it, for example `lcs config export > resources-export.json`.
-Offline validation is described below; bulk import remains unfinished.
+Offline validation is described below; [atomic import](#atomic-bulk-import) submits
+a complete replacement through the distributed transaction path.
 
 ## Validating a document offline
 
@@ -321,7 +322,8 @@ syntax errors. Plain failures are written to stderr; JSON results go to stdout.
 Validation establishes document validity in that static context. It does not
 check a live expected revision, historical incarnation lineage, agreement/quorum,
 backend permissions, hook availability or whether a future import can commit.
-Bulk import remains unfinished. Public definition edits use the transaction path below.
+Validation does not submit definitions. Use [atomic import](#atomic-bulk-import)
+or the definition edits below for live changes.
 
 ## Schema version 2: backend incarnations
 
@@ -513,4 +515,57 @@ Malformed, unsupported and uncorrelated replies produce an unknown result with
 the original ID. Read-only request-status keeps its separate exit-0 query semantics.
 `config status` reports `dynamic_commands` only for locally admitted full members
 with healthy history; quorum, idle writer and peer capability checks still apply
-at submission. Automatic activation and bulk import remain unfinished.
+at submission. Automatic activation remains unfinished.
+
+
+## Atomic bulk import
+
+```sh
+lcs config export > resources.json
+# Edit the complete resources/groups document, then submit with a fresh ID:
+lcs --json --request-id replace-definitions --expected-revision 7 config import resources.json
+# Input can also come from stdin:
+lcs --request-id replace-from-stdin config import - < resources.json
+```
+
+`config import FILE|-` replaces the entire resource and group definition in one
+majority transaction. Omitted resources/groups are deleted; this is not a merge.
+An empty `resources` and `groups` object deliberately removes all definitions.
+The old-owner cleanup, projection and admission barriers also apply to imports;
+dependent resources can be removed together only when the final complete document
+has valid dependencies. Resource/group/backend validation is shared with the
+individual commands. The file must belong to the same cluster and satisfy schema
+1 or 2. Unknown fields, invalid references, duplicate JSON keys and collection
+limits fail without a request reservation or partial edit. Static membership,
+networking, secrets, daemon options and other INI settings cannot be imported.
+There is no automatic activation, fallback to INI, or initialization of missing
+request history through import.
+
+Source revision/incarnation fields must be valid for the input schema but do not
+authorize a rollback, jump or identity reuse. The daemon assigns exactly the next
+committed revision. Unchanged backends retain their current birth revision; new or
+replaced backends receive the new revision, regardless of imported identities.
+Policy/group changes keep backend identities as with individual updates.
+
+The options `--request-id`, `--expected-revision` and `--expected-digest` and the
+four mutation outcomes/exits are the same as for resource edits. The expected
+base is checked after the complete upload; an intervening edit can therefore
+cause a conflict. Import retry identity binds the exact input bytes, including
+whitespace, along with the original expected base, membership and ID. Local file
+names are not part of the identity: retrying an identical copy from another path
+or stdin is allowed. Byte-different input with the same ID conflicts, even if its
+JSON is semantically equivalent. Keep the original file until the outcome is
+resolved, and retry on the original coordinator. A known exact retry never
+reapplies an old document after subsequent edits or restart.
+
+Input is limited to 512 KiB, read fully before connection. Local file/input errors
+return exit 1 before any submission (`--json` reports `ok: false` and `message`).
+The daemon accepts a bounded, contiguous upload with a fixed 10-second deadline;
+chunks cannot extend it. Malformed, interleaved, oversized or incomplete uploads
+are discarded without reservation or proposal. The daemon validates and proposes
+only after receiving every byte, then uses the normal 30-second admission wait.
+A receiver that disconnects or rejects the import while it is still being
+streamed also leaves a structured unknown result with the original request ID.
+An uncertain transport result is not an abort. No peer wire or
+package dependency changes are required; import uses the existing local Unix
+socket access policy and wire-6 configuration transaction path.

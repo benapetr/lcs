@@ -61,9 +61,11 @@ static void cli_server_free_buffers(cli_server_runtime_t *client)
     free(client->inbuf);
     free(client->outbuf);
     free(client->export_document);
+    free(client->import_document);
     client->inbuf = NULL;
     client->outbuf = NULL;
     client->export_document = NULL;
+    client->import_document = NULL;
 }
 
 static int cli_server_alloc_buffers(cli_server_runtime_t *client)
@@ -422,11 +424,13 @@ static int cli_server_mutation_result(int epoll_fd, int slot_idx, uint32_t seq, 
     if (lcs_config_mutation_result_encode(&response, payload, sizeof(payload), &length)) return -1;
     return cli_server_queue_frame(epoll_fd, slot_idx, LCS_MSG_CONFIG_MUTATION_RESP, seq, payload, (uint32_t)length);
 }
-static int cli_server_mutation(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
+static int cli_server_mutation(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload,
+                                  const char *import_document, size_t import_length)
 {
     lcs_config_mutation_t *request = malloc(sizeof(*request));
     if (!request) return -1;
-    if (lcs_config_mutation_decode(payload, hdr->length, request))
+    if (lcs_config_mutation_decode(payload, hdr->length, request) ||
+        (!import_document && strcmp(request->argv[0], "resource")))
     { free(request); cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, "invalid bounded definition mutation");
       g_state.cli_servers[slot_idx].close_after_flush = true; return 0; }
     lcs_config_runtime_t *runtime = &g_state.config_runtime;
@@ -444,8 +448,11 @@ static int cli_server_mutation(int epoll_fd, int slot_idx, const lcs_frame_heade
         if ((request->revision_set && request->revision != revision) ||
             (request->digest_set && strcmp(request->digest, parent)))
             snprintf(error, sizeof(error), "expected configuration base conflicts; refresh configuration status (known IDs retain their original base)");
-        else if (lcs_config_requests_client_digest(runtime->base, request->id, revision, parent,
-            request->argc, request->argv, descriptor, error, sizeof(error))) { /* Invalid descriptor. */ }
+        else if (import_document ?
+            lcs_config_requests_import_client_digest(runtime->base, request->id, revision, parent, import_document,
+                import_length, descriptor, error, sizeof(error)) :
+            lcs_config_requests_client_digest(runtime->base, request->id, revision, parent,
+                request->argc, request->argv, descriptor, error, sizeof(error))) { /* Invalid descriptor. */ }
         else if (known)
         {
             if (!known->client_digest[0])
@@ -479,7 +486,9 @@ static int cli_server_mutation(int epoll_fd, int slot_idx, const lcs_frame_heade
             if (!configs) snprintf(error, sizeof(error), "cannot allocate definition candidate");
             else if (lcs_resource_config_decode(runtime->agreement.committed.document, runtime->agreement.committed.length,
                 runtime->base, &configs[0], &decoded, error, sizeof(error)) || decoded != revision ||
-                lcs_resource_config_edit(&configs[0], revision, revision, request->argc, request->argv, &configs[1], error, sizeof(error)) ||
+                (import_document ? lcs_resource_config_import(&configs[0], revision, revision, import_document, import_length,
+                    &configs[1], error, sizeof(error)) : lcs_resource_config_edit(&configs[0], revision, revision,
+                    request->argc, request->argv, &configs[1], error, sizeof(error))) ||
                 lcs_resource_config_encode(&configs[1], revision + 1, &document, &length, error, sizeof(error)) ||
                 lcs_config_value_init(&value, runtime->base, request->id, document, length, error, sizeof(error))) { /* No submission. */ }
             else if (g_state.config_transactions.proposer.id == UINT64_MAX ||
@@ -499,6 +508,40 @@ static int cli_server_mutation(int epoll_fd, int slot_idx, const lcs_frame_heade
     int status = cli_server_mutation_result(epoll_fd, slot_idx, hdr->seq, request->id, result, error);
     free(request); return status;
 }
+static int cli_server_import(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
+{
+    cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
+    if (hdr->type == LCS_MSG_CONFIG_IMPORT_BEGIN)
+    {
+        if (client->import_document || client->mutation_waiting) return -1;
+        lcs_config_mutation_t *request = malloc(sizeof(*request)); uint32_t total;
+        if (!request) return -1;
+        int result = lcs_config_import_begin_decode(payload, hdr->length, request, &total);
+        free(request); if (result) return -1;
+        client->import_document = malloc(total);
+        if (!client->import_document) return -1;
+        client->import_total = total; client->import_used = 0; client->import_seq = hdr->seq;
+        client->import_metadata_length = hdr->length - 6u;
+        memcpy(client->import_metadata, payload + 6, client->import_metadata_length);
+        client->deadline_ms = lcs_now_ms() + 10000u; /* Fixed upload deadline, never extended by chunks. */
+        return 0;
+    }
+    uint32_t offset; const void *data; size_t size;
+    if (!client->import_document || lcs_now_ms() >= client->deadline_ms || hdr->seq != client->import_seq ||
+        lcs_config_import_chunk_decode(payload, hdr->length, &offset, &data, &size) ||
+        offset != client->import_used || size > client->import_total - client->import_used) return -1;
+    memcpy(client->import_document + offset, data, size); client->import_used += (uint32_t)size;
+    if (client->import_used < client->import_total) return 0;
+    /* Compilation/reservation starts ONLY after the exact complete upload.
+     * Socket closure before this point has no consensus or journal side effect. */
+    char *document = client->import_document; client->import_document = NULL;
+    lcs_frame_header_t request_header = {.type = LCS_MSG_CONFIG_MUTATION_REQ, .seq = client->import_seq,
+        .length = (uint32_t)client->import_metadata_length};
+    int result = cli_server_mutation(epoll_fd, slot_idx, &request_header, client->import_metadata, document, client->import_total);
+    free(document); client->import_total = client->import_used = 0; client->import_metadata_length = 0;
+    return result;
+}
+
 static int cli_server_mutation_poll(int epoll_fd, int slot_idx, uint64_t now)
 {
     cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
@@ -520,7 +563,10 @@ static int cli_server_mutation_poll(int epoll_fd, int slot_idx, uint64_t now)
 static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
 {
     cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
-    if (hdr->type == LCS_MSG_CONFIG_MUTATION_REQ) return cli_server_mutation(epoll_fd, slot_idx, hdr, payload);
+    if (client->import_document && hdr->type != LCS_MSG_CONFIG_IMPORT_CHUNK) return -1;
+    if (hdr->type == LCS_MSG_CONFIG_IMPORT_BEGIN || hdr->type == LCS_MSG_CONFIG_IMPORT_CHUNK)
+        return cli_server_import(epoll_fd, slot_idx, hdr, payload);
+    if (hdr->type == LCS_MSG_CONFIG_MUTATION_REQ) return cli_server_mutation(epoll_fd, slot_idx, hdr, payload, NULL, 0);
     if ((g_state.config_runtime.requires_recovery || config_manager_applying() ||
          (g_state.resource_generation_enabled && g_state.config_application_remapping)) &&
         hdr->type != LCS_MSG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_EXPORT_REQ &&

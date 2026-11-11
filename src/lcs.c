@@ -11,6 +11,7 @@
 
 #include <errno.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,7 @@ static void usage(FILE *out)
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config status\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config request-status ID\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config export [committed|applied]\n");
+    fprintf(out, "       lcs [--socket SOCKET] [--json] [--request-id ID] [--expected-revision N] [--expected-digest SHA256] config import FILE|-\n");
     fprintf(out, "       lcs [-c CONFIG|--config CONFIG] [--json] config validate FILE|-\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource list\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource move RESOURCE NODE\n");
@@ -1128,7 +1130,8 @@ static int print_mutation_result(const lcs_config_mutation_result_t *response, b
     return response->result;
 }
 static int cmd_definition_mutation(const char *socket_path, int argc, char **argv, const char *id,
-                                     bool revision_set, uint64_t revision, const char *digest, bool json_output)
+                                     bool revision_set, uint64_t revision, const char *digest, bool json_output,
+                                     const char *import_document, size_t import_length)
 {
     lcs_config_mutation_t *request = calloc(1, sizeof(*request));
     if (!request) { fprintf(stderr, "lcs: cannot allocate request\n"); return 1; }
@@ -1146,7 +1149,8 @@ static int cmd_definition_mutation(const char *socket_path, int argc, char **arg
     if (argc > LCS_CONFIG_MUTATION_ARG_MAX) { free(request); fprintf(stderr, "lcs: too many definition arguments\n"); return 2; }
     for (int i = 0; i < argc; i++) request->argv[i] = argv[i];
     unsigned char payload[LCS_MAX_FRAME]; size_t length;
-    if (lcs_config_mutation_encode(request, payload, sizeof(payload), &length))
+    if (import_document ? lcs_config_import_begin_encode(request, (uint32_t)import_length, payload, sizeof(payload), &length) :
+        lcs_config_mutation_encode(request, payload, sizeof(payload), &length))
     { free(request); fprintf(stderr, "lcs: invalid or oversized definition request/base\n"); return 2; }
     lcs_config_mutation_result_t response = {.result = LCS_CONFIG_MUTATION_UNKNOWN};
     strcpy(response.request.id, request->id); free(request);
@@ -1158,9 +1162,22 @@ static int cmd_definition_mutation(const char *socket_path, int argc, char **arg
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)))
     { close(fd); return print_mutation_result(&response, json_output); }
+    /* A peer may reject BEGIN or disconnect while a bulk body is still being
+     * written. Preserve the request ID/unknown outcome rather than dying on EPIPE. */
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
+    { close(fd); return print_mutation_result(&response, json_output); }
     uint32_t seq = lcs_next_seq(); lcs_frame_header_t header;
-    int failed = lcs_write_frame(fd, LCS_MSG_CONFIG_MUTATION_REQ, seq, payload, (uint32_t)length) ||
-        lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0;
+    int failed = lcs_write_frame(fd, import_document ? LCS_MSG_CONFIG_IMPORT_BEGIN : LCS_MSG_CONFIG_MUTATION_REQ,
+        seq, payload, (uint32_t)length);
+    for (size_t offset = 0; import_document && !failed && offset < import_length; )
+    {
+        size_t count = import_length - offset;
+        if (count > LCS_MAX_FRAME - LCS_CONFIG_IMPORT_CHUNK_HEADER) count = LCS_MAX_FRAME - LCS_CONFIG_IMPORT_CHUNK_HEADER;
+        failed = lcs_config_import_chunk_encode((uint32_t)offset, import_document + offset, count, payload, sizeof(payload), &length) ||
+            lcs_write_frame(fd, LCS_MSG_CONFIG_IMPORT_CHUNK, seq, payload, (uint32_t)length);
+        offset += count;
+    }
+    if (!failed) failed = lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0;
     close(fd);
     if (failed) return print_mutation_result(&response, json_output);
     lcs_config_mutation_result_t decoded;
@@ -1171,6 +1188,37 @@ static int cmd_definition_mutation(const char *socket_path, int argc, char **arg
         return print_mutation_result(&response, json_output);
     }
     return print_mutation_result(&decoded, json_output);
+}
+
+static int cmd_config_import(const char *socket_path, const char *path, const char *id,
+                                bool revision_set, uint64_t revision, const char *digest, bool json_output)
+{
+    FILE *input = !strcmp(path, "-") ? stdin : fopen(path, "rb");
+    char *document = NULL, error[256] = ""; size_t length = 0;
+    if (!input) snprintf(error, sizeof(error), "cannot open resource JSON: %s", strerror(errno));
+    else if (!(document = malloc(LCS_RESOURCE_DOCUMENT_MAX + 1u))) snprintf(error, sizeof(error), "cannot allocate import input");
+    else
+    {
+        while (length <= LCS_RESOURCE_DOCUMENT_MAX)
+        {
+            size_t count = fread(document + length, 1, LCS_RESOURCE_DOCUMENT_MAX + 1u - length, input);
+            length += count;
+            if (ferror(input)) { snprintf(error, sizeof(error), "cannot read import input"); break; }
+            if (!count) break;
+        }
+        if (!*error && (!length || length > LCS_RESOURCE_DOCUMENT_MAX))
+            snprintf(error, sizeof(error), "import document must contain 1 to 524288 bytes");
+    }
+    if (input && input != stdin) fclose(input);
+    if (*error)
+    {
+        if (json_output) print_simple_response_json(false, error); else fprintf(stderr, "lcs: %s\n", error);
+        free(document); return 1; /* No request was constructed or sent. */
+    }
+    char *arguments[] = {"config", "import", "json"};
+    int result = cmd_definition_mutation(socket_path, 3, arguments, id, revision_set, revision, digest,
+        json_output, document, length);
+    free(document); return result;
 }
 
 static int cmd_resource(const char *socket_path, int argc, char **argv, int optind, bool json_output)
@@ -1332,10 +1380,17 @@ int main(int argc, char **argv)
     {
         if (config_path) { fprintf(stderr, "lcs: --config is only supported for config validate\n"); return 2; }
         return cmd_definition_mutation(socket_path, argc - optind + 1, argv + optind - 1, request_id,
+            expected_revision_set, expected_revision, expected_digest, json_output, NULL, 0);
+    }
+    bool import_command = !strcmp(cmd, "config") && optind < argc && !strcmp(argv[optind], "import");
+    if (import_command)
+    {
+        if (config_path || optind + 2 != argc) { usage(stderr); return 2; }
+        return cmd_config_import(socket_path, argv[optind + 1], request_id,
             expected_revision_set, expected_revision, expected_digest, json_output);
     }
     if (request_id || expected_revision_set || expected_digest)
-    { fprintf(stderr, "lcs: request/base options require a resource definition command\n"); return 2; }
+    { fprintf(stderr, "lcs: request/base options require a resource definition or config import command\n"); return 2; }
     bool validation_command = !strcmp(cmd, "config") && optind < argc && !strcmp(argv[optind], "validate");
     if (config_path && !validation_command)
     { fprintf(stderr, "lcs: --config is only supported for config validate\n"); return 2; }

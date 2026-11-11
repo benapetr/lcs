@@ -175,6 +175,50 @@ static void test_incarnations(void)
     assert(memcmp(&active, &next, sizeof(active)) == 0);
 }
 
+static void test_import(void)
+{
+    static lcs_config_t active, proposed, imported, unchanged;
+    char err[256], *document; size_t length;
+    load_base();
+    assert(!lcs_resource_config_assign_identities(&base, 0, &base, &active, err, sizeof(err)));
+    for (size_t i = 0; i < active.resource_count; i++) active.resources[i].birth_revision = 3;
+    proposed = active;
+    int public = lcs_config_resource_index(&proposed, "public"), app = lcs_config_resource_index(&proposed, "app");
+    strcpy(proposed.resources[public].address, "192.0.2.99/24");
+    proposed.resources[app].priority = 42; proposed.resources[app].priority_set = true;
+    proposed.resources[proposed.resource_count] = proposed.resources[app];
+    strcpy(proposed.resources[proposed.resource_count].name, "extra");
+    proposed.resources[proposed.resource_count].priority = 41;
+    strcpy(proposed.resources[proposed.resource_count++].systemd_unit, "extra.service");
+    for (size_t i = 0; i < proposed.resource_count; i++) proposed.resources[i].birth_revision = 100;
+    assert(!lcs_resource_config_encode(&proposed, 400, &document, &length, err, sizeof(err)));
+    assert(!lcs_resource_config_import(&active, 7, 7, document, length, &imported, err, sizeof(err)));
+    assert(imported.resources[lcs_config_resource_index(&imported, "public")].birth_revision == 8);
+    assert(imported.resources[lcs_config_resource_index(&imported, "extra")].birth_revision == 8);
+    assert(imported.resources[lcs_config_resource_index(&imported, "app")].birth_revision == 3);
+    assert(imported.resources[lcs_config_resource_index(&imported, "app")].priority == 42);
+    assert(imported.node_count == active.node_count && imported.port == active.port);
+    memset(&unchanged, 0x5b, sizeof(unchanged)); imported = unchanged;
+    assert(lcs_resource_config_import(&active, 7, 6, document, length, &imported, err, sizeof(err)) < 0);
+    assert(!memcmp(&imported, &unchanged, sizeof(imported)));
+    assert(lcs_resource_config_import(&base, 0, 0, document, length, &imported, err, sizeof(err)) < 0);
+    assert(!memcmp(&imported, &unchanged, sizeof(imported))); free(document);
+    /* Schema-1 source metadata is accepted as definition input, not authority. */
+    assert(!lcs_resource_config_encode(&base, 0, &document, &length, err, sizeof(err)));
+    assert(!lcs_resource_config_import(&active, 7, 7, document, length, &imported, err, sizeof(err)));
+    for (size_t i = 0; i < imported.resource_count; i++) assert(imported.resources[i].birth_revision == 3);
+    free(document);
+    const char invalid[] = "{\"schema_version\":1,\"schema_version\":2}";
+    imported = unchanged;
+    assert(lcs_resource_config_import(&active, 7, 7, invalid, strlen(invalid), &imported, err, sizeof(err)) < 0);
+    assert(!memcmp(&imported, &unchanged, sizeof(imported)));
+    proposed = base; proposed.resource_count = proposed.group_count = 0;
+    assert(!lcs_resource_config_encode(&proposed, 0, &document, &length, err, sizeof(err)));
+    assert(!lcs_resource_config_import(&active, 7, 7, document, length, &imported, err, sizeof(err)));
+    assert(!imported.resource_count && !imported.group_count && imported.resource_schema_version == 2);
+    free(document);
+}
+
 int main(void)
 {
     load_base();
@@ -308,6 +352,7 @@ int main(void)
         LCS_RESOURCE_REVISION_MAX, 3, remove_extra, &candidate, err, sizeof(err)) == -1);
     assert(strstr(err, "exhausted"));
     test_incarnations();
+    test_import();
     puts("resource JSON unit tests passed");
     return 0;
 }

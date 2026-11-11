@@ -34,6 +34,11 @@ Use `lcs config export` to save locally committed resource/group JSON, or
 both export effective running definitions at revision zero. Export is read-only
 and available during recovery and blocked application; `--json` gives the same
 document. See [export details](resource-json.md#exporting-definitions).
+Use `lcs --request-id ID [--expected-revision N] config import FILE|-` for an
+atomic complete resource/group replacement on an admitted JSON full member.
+Import validates the whole document and assigns the next revision/identities;
+missing definitions are deleted. Retry requires the exact original file bytes.
+See [atomic bulk import](resource-json.md#atomic-bulk-import).
 Use `lcs --config /path/node.conf config validate FILE` for offline validation
 against that cluster's static context, or omit `--config` to use `/etc/lcs/lcs.conf`.
 `FILE` may be `-` for stdin; `--json` reports validity, revision and counts or an

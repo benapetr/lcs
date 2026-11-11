@@ -339,6 +339,20 @@ done:
     json_decref(root); json_decref(arguments);
     return result ? fail(err, err_len, "invalid or oversized client descriptor") : 0;
 }
+int lcs_config_requests_import_client_digest(const lcs_config_t *base, const char *id,
+                                               uint64_t expected_revision, const char *expected_digest,
+                                               const char *document, size_t length,
+                                               char digest[LCS_CONFIG_DIGEST_SIZE], char *err, size_t err_len)
+{
+    if (!document || !length || length > LCS_RESOURCE_DOCUMENT_MAX)
+        return fail(err, err_len, "invalid bounded import document");
+    unsigned char hash[SHA256_DIGEST_LENGTH]; char content[65]; const char hex[] = "0123456789abcdef";
+    if (!SHA256((const unsigned char *)document, length, hash)) return fail(err, err_len, "cannot hash import document");
+    for (size_t i = 0; i < sizeof(hash); i++) { content[2*i] = hex[hash[i] >> 4]; content[2*i+1] = hex[hash[i] & 15]; }
+    content[64] = 0;
+    const char *argv[] = {"config", "import", content};
+    return lcs_config_requests_client_digest(base, id, expected_revision, expected_digest, 3, argv, digest, err, err_len);
+}
 int lcs_config_requests_observe(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement, char *err, size_t err_len)
 {
     if (!bound(history, agreement) || !agreement->committed.document || !agreement->committed.revision ||

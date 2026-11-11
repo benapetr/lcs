@@ -297,3 +297,22 @@ uncorrelated responses retain the original ID with unknown outcome/exit 3.
 There is no peer mutation endpoint or protocol-version bump. CLI flags, message
 types and local config-status format 3 are additive unreleased features; release
 version and resource JSON schema are unchanged.
+
+
+## Local atomic import payloads
+
+Unix-socket-only types 45/46 are import BEGIN/CHUNK with payload format 1. BEGIN
+is at most 256 bytes: u16 format, u32 total document bytes (1–524288), followed by
+an ordinary format-1 mutation descriptor with exactly the arguments `config`,
+`import`, `json`. This placeholder is validated and never becomes the origin
+fingerprint. The server hashes exact completed document bytes for that descriptor.
+
+Each CHUNK contains u16 format, u32 offset and nonempty data, fitting one 64-KiB
+frame. All chunks share BEGIN's sequence and must be contiguous from zero without
+duplicates, gaps, interleaved commands or overflow of the announced total. The
+exact final byte completes the upload; there is no separate END or reservation
+before complete validation. Upload has a fixed ten-second deadline. A partial
+connection cannot leave durable import staging. The final response uses the
+existing mutation type 44 and result format 1, correlated to BEGIN's ID/sequence.
+These are additive local formats, with no peer wire, journal record, resource
+schema, ordinary status or release-version change.

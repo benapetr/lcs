@@ -162,7 +162,20 @@ admission. Exit codes: 0 applied, 1 rejected, 2 committed but pending admission,
 3 unknown. Usage errors retain exit 2. Supports
 .BR --json .
 Timeout/disconnect never cancels storage or proves abort. Query request-status
-with the same ID. Automatic activation and bulk import remain unavailable.
+with the same ID. Automatic activation remains unavailable.
+.TP
+.B config import FILE|-
+Atomically replace all resource/group definitions from a schema-1/2 JSON document
+(up to 512 KiB), using the same activated JSON full-member, quorum and request-history
+gates as definition edits. Omitted definitions are deleted; static INI settings
+cannot be imported. Source revision and identities are validated but the daemon
+assigns the next revision and backend identities from the committed predecessor.
+Accepts --request-id, --expected-revision, --expected-digest and --json, with the same
+mutation outcomes/exits. Retry requires exact original bytes, including whitespace;
+the local filename is not part of the identity. A partial/invalid upload cannot
+reserve or propose. Upload deadline is ten seconds, followed by the ordinary
+thirty-second admission wait. Input errors before submission exit 1. This command
+does not activate a cluster or initialize missing request history.
 .TP
 .B config request-status ID
 Read published local request facts from daemon memory, also available with
@@ -189,7 +202,7 @@ snapshot and supports bounded transfers larger than one frame. Transfer failure
 returns status 1 without partial stdout; invalid syntax returns status 2.
 .B \-\-json
 produces the same document. Static daemon settings and recovery journals are
-managed separately. Bulk import remains unavailable.
+managed separately. Use config import for an atomic replacement.
 .TP
 .B config validate FILE|-
 Validate resource/group JSON offline against the static context from

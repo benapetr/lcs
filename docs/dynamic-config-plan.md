@@ -410,7 +410,7 @@ durable distributed configuration protocol.
 ## 5. Add runtime management commands
 
 Definition commands below are available for already-activated JSON clusters.
-Automatic activation and bulk import remain separate unfinished phases. Existing
+Automatic activation remains a separate unfinished phase. Existing
 `resource start/stop/move` remain runtime controls with their current semantics.
 
 - [x] Model new resource/group definition commands on `pcs` syntax and conventions
@@ -435,8 +435,16 @@ Automatic activation and bulk import remain separate unfinished phases. Existing
   the shared strict JSON/candidate parser, bounded input, schema/incarnation and
   group/dependency checks, structured results and documented exit codes. Require
   no daemon connection and perform no writes, activation or resource operations.
-- [ ] Add atomic bulk import through the distributed transaction path. Read-only
-  committed/applied export and offline document validation are implemented above.
+- [x] Add atomic bulk import through the distributed transaction path. Stream
+  bounded complete schema-1/2 documents with fixed upload deadlines; validate all
+  definitions before reservation. Ignore imported authority metadata when assigning
+  the next revision/backend identities from the committed predecessor. Bind retry
+  identity to exact input bytes rather than filename, including after restart or
+  later revisions. Exercise the full 512-KiB limit, malformed/expired/interleaved
+  partial uploads, invalid whole candidates, stdin, empty replacement and retries.
+  Verify disconnected/unsupported receivers preserve a structured unknown client
+  result and the original request ID while the body is still being streamed.
+  Read-only committed/applied export and offline validation remain separate.
 - [x] Support expected-revision checks and idempotent request IDs; expose a
   transaction status command so interrupted clients can determine the outcome.
   Exact retries require local origin descriptor evidence; other nodes retain an

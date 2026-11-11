@@ -287,6 +287,10 @@ typedef struct
     size_t out_off;
     size_t out_len;
     bool close_after_flush;
+    char *import_document;
+    uint32_t import_total, import_used, import_seq;
+    unsigned char import_metadata[256];
+    size_t import_metadata_length;
     bool mutation_waiting;
     char mutation_id[LCS_CONFIG_REQUEST_MAX + 1];
     uint32_t mutation_seq;

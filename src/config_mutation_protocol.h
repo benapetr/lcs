@@ -27,4 +27,18 @@ int lcs_config_mutation_encode(const lcs_config_mutation_t *request, void *paylo
 int lcs_config_mutation_decode(const void *payload, size_t length, lcs_config_mutation_t *request);
 int lcs_config_mutation_result_encode(const lcs_config_mutation_result_t *result, void *payload, size_t cap, size_t *length);
 int lcs_config_mutation_result_decode(const void *payload, size_t length, lcs_config_mutation_result_t *result);
+
+#define LCS_CONFIG_IMPORT_FORMAT 1
+#define LCS_CONFIG_IMPORT_BEGIN_MAX 256u
+#define LCS_CONFIG_IMPORT_CHUNK_HEADER 6u
+/* BEGIN wraps a fixed config/import/json mutation descriptor and total length.
+ * CHUNK carries an offset and nonempty bytes. No commit before complete upload. */
+int lcs_config_import_begin_encode(const lcs_config_mutation_t *request, uint32_t total,
+                                     void *payload, size_t cap, size_t *length);
+int lcs_config_import_begin_decode(const void *payload, size_t length,
+                                     lcs_config_mutation_t *request, uint32_t *total);
+int lcs_config_import_chunk_encode(uint32_t offset, const void *data, size_t size,
+                                     void *payload, size_t cap, size_t *length);
+int lcs_config_import_chunk_decode(const void *payload, size_t length,
+                                     uint32_t *offset, const void **data, size_t *size);
 #endif

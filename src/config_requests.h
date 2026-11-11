@@ -84,6 +84,12 @@ int lcs_config_requests_client_digest(const lcs_config_t *base, const char *id,
                                         uint64_t expected_revision, const char *expected_digest,
                                         int argc, const char *const *argv,
                                         char digest[LCS_CONFIG_DIGEST_SIZE], char *err, size_t err_len);
+/* Origin import descriptor binds exact document bytes, not the client's path.
+ * A byte-different retry conflicts even when its JSON would be equivalent. */
+int lcs_config_requests_import_client_digest(const lcs_config_t *base, const char *id,
+                                               uint64_t expected_revision, const char *expected_digest,
+                                               const char *document, size_t length,
+                                               char digest[LCS_CONFIG_DIGEST_SIZE], char *err, size_t err_len);
 /* Only the current exact learned majority decision can become committed. No
  * acceptance/promise, revision comparison or timer proves commitment/admission. */
 int lcs_config_requests_observe(lcs_config_requests_t *history, const lcs_config_agreement_t *agreement,

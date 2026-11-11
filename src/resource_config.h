@@ -22,12 +22,19 @@ int lcs_resource_config_decode(const char *document, size_t length,
                                uint64_t *revision, char *err, size_t err_len);
 
 /* Construct a validated candidate from pcs-style argv (starting with resource).
- * This is deliberately not a live CLI endpoint. A future distributed transaction
- * must authorize and durably commit the result before runtime application. */
+ * This helper does not submit: the live CLI must authorize and durably commit
+ * the result through the shared transaction path before runtime application. */
 int lcs_resource_config_edit(const lcs_config_t *base, uint64_t current_revision,
                              uint64_t expected_revision, int argc,
                              const char *const *argv, lcs_config_t *candidate,
                              char *err, size_t err_len);
+
+/* Replace all resource/group definitions from a schema-1/2 document. Source
+ * revision/incarnations are validated but never used as successor authority.
+ * Allocate identities from the active predecessor; output unchanged on failure. */
+int lcs_resource_config_import(const lcs_config_t *base, uint64_t current_revision,
+                                 uint64_t expected_revision, const char *document, size_t length,
+                                 lcs_config_t *candidate, char *err, size_t err_len);
 
 /* Identity-aware candidates for future dynamic authority. Activation is a
  * definitions-preserving successor from schema 1 to 2; later edits allocate

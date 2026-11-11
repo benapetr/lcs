@@ -652,6 +652,24 @@ out:
     return rc;
 }
 
+int lcs_resource_config_import(const lcs_config_t *base, uint64_t current_revision,
+                                 uint64_t expected_revision, const char *document, size_t length,
+                                 lcs_config_t *candidate, char *err, size_t err_len)
+{
+    if (current_revision != expected_revision)
+        return fail(err, err_len, "configuration revision conflict; refresh and retry");
+    if (base->resource_schema_version != LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)
+        return fail(err, err_len, "import requires activated dynamic definitions");
+    lcs_config_t *proposed = malloc(sizeof(*proposed));
+    if (!proposed) return fail(err, err_len, "cannot allocate imported definitions");
+    uint64_t source_revision;
+    int result = lcs_resource_config_decode(document, length, base, proposed, &source_revision, err, err_len);
+    /* Imported revision/identity metadata describes the source only. Even an
+     * exported old or future snapshot must get identities from this predecessor. */
+    if (!result) result = lcs_resource_config_assign_identities(base, current_revision, proposed, candidate, err, err_len);
+    free(proposed); return result;
+}
+
 /* Compare full definition intent using the same canonical encoding as agreement,
  * while deliberately excluding the identity metadata being allocated here. */
 static int activation_definitions_equal(const lcs_config_t *base,

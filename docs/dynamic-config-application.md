@@ -1129,3 +1129,24 @@ back the reservation or resets consensus/application. The CLI preserves its ID
 on unknown transport/malformed-response results and has a 35-second socket timeout.
 These results do not imply current backend health or every peer's admission.
 See [syntax and operator recovery](resource-json.md#runtime-definition-commands).
+
+
+## Atomic import submission
+
+Local BEGIN/CHUNK messages 45/46 accumulate a complete, bounded document before
+calling the same mutation admission/transaction/wait path. Per-socket upload state
+has a fixed ten-second deadline and exact contiguous offsets/sequence; no chunk
+refreshes it. Incomplete or malformed uploads are discarded with no reservation,
+worker, proposal or resource action. Thirty-two socket slots bound document buffers
+to at most 16 MiB total, released on completion/close/shutdown. No disk staging is
+performed. The admission wait begins only after all bytes arrive.
+
+Import validates source schema/revision/incarnations and the complete final graph
+in immutable static context, then assigns successor identities from the current
+committed definitions. It never trusts source identity metadata to resurrect an
+old backend incarnation or skip a revision. The original client descriptor hashes
+`["config", "import", SHA256(exact input bytes)]` with the same original expected
+base, ID and membership as ordinary edits. File paths and stdin choice are absent.
+Changed whitespace conflicts under the same ID. Known exact retries inspect their
+own historical result before any new candidate is compiled. Ordinary resource
+mutation frames cannot impersonate this import descriptor namespace.

@@ -92,3 +92,48 @@ int lcs_config_mutation_result_decode(const void *payload, size_t length, lcs_co
     if (fixed(&r, next.reason, sizeof(next.reason)) || !result_valid(&next)) return -1;
     *result = next; return 0;
 }
+
+static bool import_request(const lcs_config_mutation_t *request)
+{
+    return request->argc == 3 && request->argv[0] && request->argv[1] && request->argv[2] &&
+        !strcmp(request->argv[0], "config") && !strcmp(request->argv[1], "import") && !strcmp(request->argv[2], "json");
+}
+int lcs_config_import_begin_encode(const lcs_config_mutation_t *request, uint32_t total,
+                                     void *payload, size_t cap, size_t *length)
+{
+    if (!request || !import_request(request) || !total || total > LCS_RESOURCE_DOCUMENT_MAX) return -1;
+    lcs_buf_writer_t w; lcs_buf_writer_init(&w, payload, cap < LCS_CONFIG_IMPORT_BEGIN_MAX ? cap : LCS_CONFIG_IMPORT_BEGIN_MAX);
+    size_t n;
+    if (lcs_buf_put_u16(&w, LCS_CONFIG_IMPORT_FORMAT) || lcs_buf_put_u32(&w, total) ||
+        lcs_config_mutation_encode(request, w.data + w.len, w.cap - w.len, &n)) return -1;
+    *length = w.len + n; return 0;
+}
+int lcs_config_import_begin_decode(const void *payload, size_t length,
+                                     lcs_config_mutation_t *request, uint32_t *total)
+{
+    if (length > LCS_CONFIG_IMPORT_BEGIN_MAX) return -1;
+    lcs_buf_reader_t r; lcs_buf_reader_init(&r, payload, length); uint16_t format; uint32_t count;
+    if (lcs_buf_get_u16(&r, &format) || format != LCS_CONFIG_IMPORT_FORMAT || lcs_buf_get_u32(&r, &count) ||
+        !count || count > LCS_RESOURCE_DOCUMENT_MAX || lcs_config_mutation_decode(r.data + r.off, r.len - r.off, request) ||
+        !import_request(request)) return -1;
+    *total = count; return 0;
+}
+int lcs_config_import_chunk_encode(uint32_t offset, const void *data, size_t size,
+                                     void *payload, size_t cap, size_t *length)
+{
+    if (!data || !size || size > LCS_MAX_FRAME - LCS_CONFIG_IMPORT_CHUNK_HEADER ||
+        offset >= LCS_RESOURCE_DOCUMENT_MAX || size > LCS_RESOURCE_DOCUMENT_MAX - offset ||
+        cap < LCS_CONFIG_IMPORT_CHUNK_HEADER || size > cap - LCS_CONFIG_IMPORT_CHUNK_HEADER) return -1;
+    lcs_buf_writer_t w; lcs_buf_writer_init(&w, payload, cap);
+    if (lcs_buf_put_u16(&w, LCS_CONFIG_IMPORT_FORMAT) || lcs_buf_put_u32(&w, offset)) return -1;
+    memcpy(w.data + w.len, data, size); *length = w.len + size; return 0;
+}
+int lcs_config_import_chunk_decode(const void *payload, size_t length,
+                                     uint32_t *offset, const void **data, size_t *size)
+{
+    if (length <= LCS_CONFIG_IMPORT_CHUNK_HEADER || length > LCS_MAX_FRAME) return -1;
+    lcs_buf_reader_t r; lcs_buf_reader_init(&r, payload, length); uint16_t format; uint32_t start;
+    if (lcs_buf_get_u16(&r, &format) || format != LCS_CONFIG_IMPORT_FORMAT || lcs_buf_get_u32(&r, &start) ||
+        start >= LCS_RESOURCE_DOCUMENT_MAX || length - r.off > LCS_RESOURCE_DOCUMENT_MAX - start) return -1;
+    *offset = start; *data = r.data + r.off; *size = length - r.off; return 0;
+}

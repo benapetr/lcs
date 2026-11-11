@@ -586,6 +586,15 @@ static void client_descriptors(void)
     assert(lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 1, large, again, error, sizeof(error)) < 0);
     assert(lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 1, invalid, again, error, sizeof(error)) < 0);
     assert(lcs_config_requests_client_digest(&base, "client-edit", 0, parent, 129, args, again, error, sizeof(error)) < 0);
+    const char input[] = "{}", whitespace[] = "{}\n";
+    char import_a[65], import_b[65];
+    assert(!lcs_config_requests_import_client_digest(&base, "import-id", 0, parent, input, sizeof(input) - 1, import_a, error, sizeof(error)));
+    assert(!lcs_config_requests_import_client_digest(&base, "import-id", 0, parent, input, sizeof(input) - 1, import_b, error, sizeof(error)));
+    assert(!strcmp(import_a, import_b));
+    assert(!lcs_config_requests_import_client_digest(&base, "import-id", 0, parent, whitespace, sizeof(whitespace) - 1, import_b, error, sizeof(error)));
+    assert(strcmp(import_a, import_b));
+    assert(lcs_config_requests_import_client_digest(&base, "import-id", 0, parent, input, 0, import_b, error, sizeof(error)) < 0);
+    assert(lcs_config_requests_import_client_digest(&base, "import-id", 0, parent, input, LCS_RESOURCE_DOCUMENT_MAX + 1u, import_b, error, sizeof(error)) < 0);
     lcs_config_value_t value = proposal("client-edit");
     assert(!lcs_config_requests_reserve_client(&history, &agreement, 0, parent, &value, first, error, sizeof(error)));
     reopen(); assert(!strcmp(history.records[0].client_digest, first));

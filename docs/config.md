@@ -26,6 +26,11 @@ client success. An `applied` fact additionally records completed local admission
 not current resource health or acknowledgements from every peer. The query does
 not initialize files or retry requests. See
 [request facts](resource-json.md#inspecting-a-requests-local-facts).
+`lcs config import FILE|-` submits one complete resource/group replacement through
+the same guarded transaction path; it cannot import static daemon/node settings.
+Source revision/identity metadata is validated but reallocated against the current
+committed predecessor. See [atomic bulk import](resource-json.md#atomic-bulk-import)
+for expected-base checks, deletion semantics, input limits and exact-byte retries.
 `lcs config export [committed|applied]` writes the corresponding resource/group
 JSON document from running memory. With INI authority both views describe effective
 INI definitions at revision zero. See [export details](resource-json.md#exporting-definitions).
