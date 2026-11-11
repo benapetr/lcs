@@ -14,9 +14,11 @@ JSON authority through fenced recovery. See
 [resource JSON and storage](resource-json.md) for paths, permissions, recovery
 behavior, and the schema. `lcs config status` (also with `--json`) reports
 prepared snapshots and matching members; these observations do not activate
-dynamic management, which is not enabled yet. For activated catalogs, it also
+dynamic management. For activated catalogs, it also
 reports local committed/applied/pending revisions and digests, recovery/admission
-state and cleanup errors. These read-only observations do not authorize edits.
+state and cleanup errors. These read-only observations do not authorize edits. Admitted JSON full members
+with healthy request history support [runtime definition commands](resource-json.md#runtime-definition-commands)
+through the local Unix socket; automatic upgrade activation remains unfinished.
 `lcs config request-status ID` (also with `--json`) reads published local request
 facts during normal operation or recovery. Missing/poisoned history and unrecorded
 outcomes remain unknown; a committed fact does not establish application or final

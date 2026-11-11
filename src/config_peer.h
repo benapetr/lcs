@@ -20,6 +20,7 @@ int config_peer_readiness_start(void);
  * wire-6 instances. Requires durable readiness and serialized INI reload.
  * Completion is available from config_transactions; it does not apply resources. */
 int config_peer_propose(uint64_t id, const lcs_config_value_t *requested);
+int config_peer_propose_client(uint64_t id, const lcs_config_value_t *requested, const char *client_digest);
 /* Shutdown never frees/reopens storage while a cancelled writer is alive.
  * Call stop once, poll shutdown_process, then check stopped before closing the
  * runtime/storage. A false result at process exit means retain those handles. */

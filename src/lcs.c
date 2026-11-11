@@ -6,6 +6,7 @@
 #include "config_status_protocol.h"
 #include "config_export_protocol.h"
 #include "config_request_status_protocol.h"
+#include "config_mutation_protocol.h"
 #include "util.h"
 
 #include <errno.h>
@@ -15,6 +16,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 static bool colors_enabled;
@@ -60,6 +62,9 @@ static void usage(FILE *out)
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource start RESOURCE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource stop RESOURCE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource clear-conflict RESOURCE\n");
+    fprintf(out, "       lcs [--json] [--request-id ID] [--expected-revision N] [--expected-digest SHA256] resource create NAME vip|service key=value...\n");
+    fprintf(out, "       lcs [OPTIONS] resource update NAME key=value... | resource delete NAME\n");
+    fprintf(out, "       lcs [OPTIONS] resource group create|update|add|remove|delete GROUP [options|resources]\n");
     fprintf(out, "\nColors are enabled on terminals. Use --no-colors to disable them.\n");
 }
 
@@ -865,8 +870,8 @@ static int cmd_config_status(const char *socket_path, bool json_output)
     const lcs_config_status_t *local = &view.nodes[view.self].status;
     if (json_output)
     {
-        printf("{\"authority\":\"%s\",\"dynamic_commands\":false,\"activation_ready\":false,\"prepared\":%s,",
-               view.authority == LCS_CONFIG_AUTHORITY_JSON ? "json" : "ini", local->prepared ? "true" : "false");
+        printf("{\"authority\":\"%s\",\"dynamic_commands\":%s,\"activation_ready\":false,\"prepared\":%s,",
+               view.authority == LCS_CONFIG_AUTHORITY_JSON ? "json" : "ini", view.dynamic_commands ? "true" : "false", local->prepared ? "true" : "false");
         if (view.authority == LCS_CONFIG_AUTHORITY_JSON)
         {
             printf("\"application_state\":"); json_string(stdout, lcs_config_status_phase_name(view.phase));
@@ -917,6 +922,7 @@ static int cmd_config_status(const char *socket_path, bool json_output)
             else printf("Pending: none\n");
             if (*view.error) printf("Recovery error: %s\n", view.error);
         }
+        printf("Dynamic definition commands: %s\n", view.dynamic_commands ? "enabled" : "unavailable");
         printf("Prepared snapshots: %u/%u; matching local snapshot: %u/%u\n", prepared, view.count, matching, view.count);
         printf("Dynamic commands: unavailable\n");
         for (size_t i = 0; i < view.count; i++)
@@ -1098,6 +1104,75 @@ static int cmd_move(const char *socket_path, const char *vip, const char *node, 
     return 0;
 }
 
+static int print_mutation_result(const lcs_config_mutation_result_t *response, bool json_output)
+{
+    static const char *names[] = {"applied", "rejected", "pending", "unknown"};
+    const lcs_config_request_view_t *view = &response->request;
+    if (json_output)
+    {
+        printf("{\"scope\":\"local\",\"request_id\":"); json_string(stdout, view->id);
+        printf(",\"result\":\"%s\",\"committed_revision\":", names[response->result]);
+        if (view->state >= LCS_CONFIG_REQUEST_COMMITTED)
+        { printf("%llu,\"committed_digest\":", (unsigned long long)(view->base_revision + 1)); json_string(stdout, view->value_digest); }
+        else printf("null,\"committed_digest\":null");
+        printf(",\"applied_revision\":");
+        if (view->state == LCS_CONFIG_REQUEST_APPLIED) printf("%llu", (unsigned long long)(view->base_revision + 1)); else printf("null");
+        printf(",\"reason\":"); json_string(stdout, response->reason); puts("}");
+    }
+    else
+    {
+        printf("request: %s\nresult: %s\n%s\n", view->id, names[response->result], response->reason);
+        if (view->state >= LCS_CONFIG_REQUEST_COMMITTED)
+            printf("committed value: %llu %s\n", (unsigned long long)(view->base_revision + 1), view->value_digest);
+    }
+    return response->result;
+}
+static int cmd_definition_mutation(const char *socket_path, int argc, char **argv, const char *id,
+                                     bool revision_set, uint64_t revision, const char *digest, bool json_output)
+{
+    lcs_config_mutation_t *request = calloc(1, sizeof(*request));
+    if (!request) { fprintf(stderr, "lcs: cannot allocate request\n"); return 1; }
+    if (id && (strlen(id) > LCS_CONFIG_REQUEST_MAX || !lcs_valid_name(id)))
+    { free(request); fprintf(stderr, "lcs: invalid request ID\n"); return 2; }
+    if (id) strcpy(request->id, id);
+    else snprintf(request->id, sizeof(request->id), "cli-%016llx-%016llx", (unsigned long long)lcs_random_u64(), (unsigned long long)lcs_random_u64());
+    request->revision_set = revision_set; request->revision = revision;
+    if (digest)
+    {
+        if (strlen(digest) != 64) { free(request); fprintf(stderr, "lcs: expected digest must be lowercase SHA-256\n"); return 2; }
+        request->digest_set = true; strcpy(request->digest, digest);
+    }
+    request->argc = argc;
+    if (argc > LCS_CONFIG_MUTATION_ARG_MAX) { free(request); fprintf(stderr, "lcs: too many definition arguments\n"); return 2; }
+    for (int i = 0; i < argc; i++) request->argv[i] = argv[i];
+    unsigned char payload[LCS_MAX_FRAME]; size_t length;
+    if (lcs_config_mutation_encode(request, payload, sizeof(payload), &length))
+    { free(request); fprintf(stderr, "lcs: invalid or oversized definition request/base\n"); return 2; }
+    lcs_config_mutation_result_t response = {.result = LCS_CONFIG_MUTATION_UNKNOWN};
+    strcpy(response.request.id, request->id); free(request);
+    fprintf(stderr, "lcs: request_id=%s\n", response.request.id);
+    snprintf(response.reason, sizeof(response.reason), "transport outcome unknown; query or retry this request ID on the original node");
+    int fd = connect_socket(socket_path);
+    if (fd < 0) return print_mutation_result(&response, json_output);
+    struct timeval timeout = {.tv_sec = 35};
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)))
+    { close(fd); return print_mutation_result(&response, json_output); }
+    uint32_t seq = lcs_next_seq(); lcs_frame_header_t header;
+    int failed = lcs_write_frame(fd, LCS_MSG_CONFIG_MUTATION_REQ, seq, payload, (uint32_t)length) ||
+        lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0;
+    close(fd);
+    if (failed) return print_mutation_result(&response, json_output);
+    lcs_config_mutation_result_t decoded;
+    if (header.seq != seq || header.type != LCS_MSG_CONFIG_MUTATION_RESP ||
+        lcs_config_mutation_result_decode(payload, header.length, &decoded) || strcmp(decoded.request.id, response.request.id))
+    {
+        snprintf(response.reason, sizeof(response.reason), "unsupported or invalid mutation response; outcome unknown, query this ID on the original node");
+        return print_mutation_result(&response, json_output);
+    }
+    return print_mutation_result(&decoded, json_output);
+}
+
 static int cmd_resource(const char *socket_path, int argc, char **argv, int optind, bool json_output)
 {
     if (optind >= argc)
@@ -1165,6 +1240,8 @@ int main(int argc, char **argv)
 {
     const char *socket_path = LCS_DEFAULT_SOCKET_PATH;
     const char *config_path = NULL;
+    const char *request_id = NULL, *expected_digest = NULL;
+    bool expected_revision_set = false; uint64_t expected_revision = 0;
     bool socket_selected = false;
     bool json_output = false;
     bool show_version = false;
@@ -1175,6 +1252,9 @@ int main(int argc, char **argv)
         { "config", required_argument, NULL, 'c' },
         { "json", no_argument, NULL, 'j' },
         { "no-colors", no_argument, NULL, 1000 },
+        { "request-id", required_argument, NULL, 1001 },
+        { "expected-revision", required_argument, NULL, 1002 },
+        { "expected-digest", required_argument, NULL, 1003 },
         { "version", no_argument, NULL, 'V' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
@@ -1196,6 +1276,21 @@ int main(int argc, char **argv)
             case 1000:
                 no_colors = true;
                 break;
+            case 1001:
+                if (request_id) { fprintf(stderr, "lcs: repeated --request-id\n"); return 2; }
+                request_id = optarg; break;
+            case 1002:
+                if (expected_revision_set || !*optarg) return 2;
+                for (const unsigned char *p = (const unsigned char *)optarg; *p; p++)
+                {
+                    if (*p < '0' || *p > '9' || expected_revision > ((uint64_t)INT64_MAX - 1 - (*p - '0')) / 10)
+                    { fprintf(stderr, "lcs: invalid expected revision\n"); return 2; }
+                    expected_revision = expected_revision * 10 + (*p - '0');
+                }
+                expected_revision_set = true; break;
+            case 1003:
+                if (expected_digest) return 2;
+                expected_digest = optarg; break;
             case 'V':
                 show_version = true;
                 break;
@@ -1230,6 +1325,17 @@ int main(int argc, char **argv)
         return 2;
     }
     const char *cmd = argv[optind++];
+    bool definition_mutation = !strcmp(cmd, "resource") && optind < argc &&
+        (!strcmp(argv[optind], "create") || !strcmp(argv[optind], "update") || !strcmp(argv[optind], "delete") ||
+         !strcmp(argv[optind], "remove") || !strcmp(argv[optind], "group"));
+    if (definition_mutation)
+    {
+        if (config_path) { fprintf(stderr, "lcs: --config is only supported for config validate\n"); return 2; }
+        return cmd_definition_mutation(socket_path, argc - optind + 1, argv + optind - 1, request_id,
+            expected_revision_set, expected_revision, expected_digest, json_output);
+    }
+    if (request_id || expected_revision_set || expected_digest)
+    { fprintf(stderr, "lcs: request/base options require a resource definition command\n"); return 2; }
     bool validation_command = !strcmp(cmd, "config") && optind < argc && !strcmp(argv[optind], "validate");
     if (config_path && !validation_command)
     { fprintf(stderr, "lcs: --config is only supported for config validate\n"); return 2; }

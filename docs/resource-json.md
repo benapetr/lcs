@@ -2,14 +2,15 @@
 
 This is the first implementation stage of
 [dynamic distributed configuration](dynamic-config-plan.md). Resource JSON is
-normally a prepared local snapshot. **Normal upgrades retain INI authority and
-runtime resource definition commands are not enabled yet.** Already-activated
+normally a prepared local snapshot. **Normal upgrades retain INI authority.**
+Definition commands are available on admitted full members of already-activated
+JSON clusters with healthy request history. Already-activated
 durable catalogs can resume through startup recovery, described below. Peering supports wire 5–6;
 wire 6 adds diagnostic bootstrap metadata and explicit readiness queries, without
 establishing dynamic authority.
 The agreement and checkpoint synchronization paths are implemented internally;
-automatic activation and the public mutation-command path must be completed before
-ordinary upgrades can switch authority or runtime definition commands can be enabled.
+automatic activation must still be completed before ordinary upgrades can switch
+authority. Do not manufacture activation records to enable commands.
 
 ## Storage and upgrades
 
@@ -81,8 +82,7 @@ resources, change authority or enable dynamic commands. An internal network
 proposer can explicitly submit a whole snapshot and recover previously accepted
 values through correlated promises. Nodes with a valid durable readiness barrier
 can pull latest committed checkpoints across multiple revisions while retaining
-old applied/pending cleanup snapshots. Automatic activation and live resource
-application remain unfinished. See
+old applied/pending cleanup snapshots. Automatic activation remains unfinished; activated catalogs support live application. See
 [network agreement handling](dynamic-config-agreement.md#network-acceptor-and-majority-decision-handling).
 
 The internal reconciliation sequencer persists pending cleanup before invoking
@@ -109,7 +109,7 @@ now bind explicit full-member stop receipts to exact transitions and daemon
 instances. The [explicit network adapter](dynamic-config-application.md#explicit-owner-network-adapter)
 connects transport and local drain. Exact all-full-member application confirmation
 now retires stop receipts while retaining completion evidence for slow peers;
-missing-history/catch-up recovery and automatic application remain unfinished.
+missing-history recovery and automatic activation remain unfinished.
 The [explicit startup cleanup runner](dynamic-config-application.md#explicit-startup-backend-cleanup)
 uses the applied and two preceding complete snapshots with old hooks. After
 verified cleanup it can restore exact completed/pending scopes under a new daemon
@@ -136,7 +136,7 @@ cannot be resubmitted with a new transport ID. ACCEPT also requires healthy
 history and persists/checks its selected identity before acceptance and ACK. Older catalogs without history
 still support recovery/application but cannot submit new definitions. Its
 reservation/commit facts are not final client outcomes; final client outcome
-tracking and definition mutation commands remain unfinished.
+tracking remains incomplete; definition commands use the guarded transaction path below.
 
 Startup now resumes existing schema-2 applied catalogs with valid durable
 all-member readiness. Full members also require retained predecessor history;
@@ -182,7 +182,8 @@ held. Failed backend cleanup never becomes success on a timer: repair the backen
 and restart for verified startup cleanup. Uncertain catalog writes or lost
 coordinator authority stop the daemon with fences held for restart recovery.
 Read-only config status reports live progress using the existing application-state
-fields. Public resource definition commands and automatic activation remain disabled.
+fields. Public definition commands use this path on admitted JSON full members;
+automatic activation remains unfinished.
 
 ## Inspecting preparation across members
 
@@ -196,13 +197,14 @@ are JSON `null`. `admitted` means recovery released its fences for normal placem
 it is not a claim that quorum is currently available or that a resource is owned.
 Use ordinary `lcs status` for current quorum/ownership. These diagnostics are
 in-memory observations of validated durable state, without reading or changing
-files. Durable client request outcomes remain a separate unfinished interface.
+files. Definition submissions separately report their local client outcome.
 
-`dynamic_commands` remains false and `activation_ready` remains false: the latter
-does not expose activation authorization, and prepared-peer counts never prove it.
+`dynamic_commands` reports local full-member admission/history capability.
+`activation_ready` remains false: it does not expose activation authorization,
+and prepared-peer counts never prove it.
 Peer entries still describe advisory bootstrap metadata, not remote applied
-revisions. A new format-2 local response encodes JSON authority explicitly; old
-clients reject it. Legacy INI responses and peer metadata retain format 1.
+revisions. Format-2 local responses encode JSON authority explicitly; format 3
+adds enabled command capability. Older clients reject unsupported formats. Legacy INI responses and peer metadata retain format 1.
 
 Run `lcs config status` or `lcs --json config status` to inspect INI authority,
 local preparation, the canonical membership and bootstrap-value digests, and the
@@ -223,8 +225,8 @@ the local snapshot is reported as unprepared.
 
 These are advisory observations, not votes or durable readiness acknowledgements.
 Even `matching_members == configured_members` does not activate dynamic authority:
-`dynamic_commands` and `activation_ready` remain false at this implementation
-stage. The future activation barrier must confirm readiness explicitly and
+`dynamic_commands` stays false for INI authority and `activation_ready` remains
+false. Automatic activation must confirm durable readiness explicitly and
 serialize it with reload and storage workers. This command makes no configuration
 changes. Old daemons return an unsupported-command error.
 
@@ -261,8 +263,8 @@ and later configuration changes without being interpreted as current health.
 
 Exit status 0 means the local query succeeded, including an unknown result;
 1 means a connection, daemon or protocol error; 2 means invalid arguments.
-Older daemons reject the new local query as unsupported. Definition mutations
-and automatic first initialization remain disabled.
+Older daemons reject the new local query as unsupported. Automatic first
+initialization/activation remains disabled. Definition commands are described below.
 
 ## Exporting definitions
 
@@ -319,7 +321,7 @@ syntax errors. Plain failures are written to stderr; JSON results go to stdout.
 Validation establishes document validity in that static context. It does not
 check a live expected revision, historical incarnation lineage, agreement/quorum,
 backend permissions, hook availability or whether a future import can commit.
-Public definition mutations and bulk import remain unfinished.
+Bulk import remains unfinished. Public definition edits use the transaction path below.
 
 ## Schema version 2: backend incarnations
 
@@ -414,13 +416,16 @@ snapshot preserves resource interfaces and hook paths even though the legacy
 peering fingerprint intentionally omits those node-local fields; future
 activation must explicitly resolve any such differences between nodes.
 
-## Candidate editing layer
+## Runtime definition commands
 
-The internal candidate builder now accepts the following argument forms. These
-are tested editing operations, **not yet commands exposed by the live `lcs` CLI**.
-They construct a replacement candidate, validate it as a whole, and leave their
-inputs and output unchanged on failure. Applying a candidate still requires the
-future distributed agreement and resource-transition implementation.
+On an already-activated JSON cluster, admitted full members with healthy request
+history accept these commands through the local Unix socket. Prefix each form
+with `lcs` and optional `--socket PATH`, `--json`, `--request-id ID`,
+`--expected-revision N` and `--expected-digest SHA256`. All edits construct and
+validate one complete replacement snapshot, then use durable majority agreement
+and the existing resource transition/admission barriers. Quorum-only members
+retain definitions and vote, but cannot initiate edits. Normal INI clusters and
+mixed-version pre-activation upgrades reject definition submissions.
 
 ```text
 resource create NAME vip address=CIDR interface=INTERFACE [key=value ...]
@@ -452,3 +457,60 @@ explicit group definitions and policies, including `anti-affinity` and `strict`.
 LCS group placement does not imply Pacemaker's ordered-group semantics or
 arbitrary Pacemaker constraints/resource agents. Group placement priority remains
 the resource's `priority` field; it is not inferred from CLI argument order.
+
+
+For example:
+
+```sh
+lcs --json --request-id add-public --expected-revision 7 resource create public vip address=192.0.2.10/32 interface=eth0
+lcs --request-id group-public resource group add frontends public
+lcs --request-id policy-public resource group update frontends type=anti-affinity mode=best-effort
+lcs --request-id clear-home resource update public home_node=
+lcs --request-id remove-public resource delete public
+```
+
+These forms were compared against the upstream pcs resource create/update/delete
+and group add/remove/delete help. LCS `vip` and `service` are native types; no OCF
+agent name, clones, bundles, arbitrary constraints, ordered-group scheduling,
+`--before`/`--after`, force or `--no-stop` compatibility is implied. Unlike pcs
+resource deletion, LCS resource delete accepts one resource and never cascades
+through a group. Moving members with group add leaves an emptied source group
+explicitly defined. Empty optional fields remove/reset their override; removing
+required fields, changing type/name/incarnation, or leaving dangling dependencies
+is rejected. Resource options are `address`, `interface`, `systemd_unit`, `group`,
+`home_node`, `priority`, `depends_on`, `pre_start`, `post_start`, `pre_stop`,
+`post_stop`. Group options are `type` and `mode`; see the schema for allowed values.
+
+Omitted base options resolve atomically to the current committed revision/digest
+for a new ID. For a known ID they resolve to its original expected base. Repeating
+an ID requires the exact original ordered arguments, including `delete` versus
+`remove`; changed arguments/base conflict without altering the original request.
+Origin descriptor evidence is local: another node may know commitment/admission
+but cannot verify the original command. Retry there returns unknown and directs
+you to the original coordinator. Missing/corrupt history never authorizes reuse,
+a new proposal, or automatic journal initialization. A full journal rejects new
+IDs without evicting old outcomes.
+
+The CLI generates an ID if omitted and prints it to stderr before sending. Supply
+your own ID when interruption recovery matters. It waits up to 30 seconds on the
+server (35-second socket timeout) for the durable local admission receipt. Exact
+known retries return recorded facts immediately without another proposal:
+
+| Result | Exit | Meaning |
+| --- | --- | --- |
+| `applied` | 0 | Exact decision and completed local configuration admission recorded. |
+| `rejected` | 1 | This submission was not admitted; inspect the reason. An ID conflict does not abort the original. |
+| `pending` | 2 | Exact commitment known; local admission incomplete. |
+| `unknown` | 3 | Outcome/descriptor unproven, or timeout/disconnect/invalid response; never an abort. |
+
+Usage errors retain exit 2. JSON responses include `scope: local`, `request_id`,
+`result`, `committed_revision`, `committed_digest`, `applied_revision` and `reason`;
+unproven values are null. Admission is historical and local, not current backend
+health or all-member acknowledgement. A disconnected waiter never cancels storage,
+consensus, cleanup or application. Query `lcs config request-status ID` and retry
+the same ID/arguments on the origin, rather than issuing another edit blindly.
+Malformed, unsupported and uncorrelated replies produce an unknown result with
+the original ID. Read-only request-status keeps its separate exit-0 query semantics.
+`config status` reports `dynamic_commands` only for locally admitted full members
+with healthy history; quorum, idle writer and peer capability checks still apply
+at submission. Automatic activation and bulk import remain unfinished.

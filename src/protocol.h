@@ -65,6 +65,8 @@ typedef enum
     LCS_MSG_CONFIG_EXPORT_CHUNK = 40,
     LCS_MSG_CONFIG_REQUEST_STATUS_REQ = 41, /* Local Unix socket only. */
     LCS_MSG_CONFIG_REQUEST_STATUS_RESP = 42,
+    LCS_MSG_CONFIG_MUTATION_REQ = 43, /* Local Unix socket only. */
+    LCS_MSG_CONFIG_MUTATION_RESP = 44,
 } lcs_msg_type_t;
 
 typedef struct

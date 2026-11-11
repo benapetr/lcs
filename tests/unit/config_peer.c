@@ -262,6 +262,13 @@ static void test_dynamic_status_codec(void)
     assert(!lcs_config_status_view_decode(payload, length, &decoded));
     assert(decoded.admitted && !decoded.pending_revision && !*decoded.error);
     assert(!strcmp(lcs_config_status_phase_name(decoded.phase), "active"));
+    view.dynamic_commands = 1;
+    assert(!lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) && payload[1] == 3);
+    assert(!lcs_config_status_view_decode(payload, length, &decoded) && decoded.dynamic_commands);
+    payload[length - 1] = 0;
+    assert(lcs_config_status_view_decode(payload, length, &decoded) < 0);
+    view.admitted = 0; view.phase = LCS_CONFIG_DIAG_BLOCKED;
+    assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
 }
 
 static lcs_config_store_t readiness_store;

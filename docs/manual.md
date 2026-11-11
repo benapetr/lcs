@@ -9,13 +9,17 @@ configuration authority. See [resource JSON and storage](resource-json.md) for
 the current implementation stage, build dependencies, state paths, and recovery
 behavior. Use `lcs config status` or `lcs --json config status` to inspect
 prepared definitions across members. Matching snapshots do not enable dynamic
-authority; runtime resource definition commands are not enabled yet. Already
+authority. Already
 activated durable catalogs can resume through fenced startup recovery, as
 described in [activated startup recovery](resource-json.md#activated-startup-recovery).
 For those catalogs, `lcs config status` also shows local durable committed,
 applied and pending revisions/digests, recovery state, admission and cleanup
 errors. Peer entries remain advisory preparation metadata. Dynamic definition
-commands remain unavailable.
+commands are available on admitted JSON full members with healthy request history;
+see [runtime definition commands](resource-json.md#runtime-definition-commands).
+Use `resource create/update/delete`, `resource group add/remove/delete` and group
+policy updates with `--request-id` and optional expected-base checks. Mutation
+results use exits 0 applied, 1 rejected, 2 pending and 3 unknown.
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means
 its consensus decision was recorded, not resource application or final client

@@ -409,26 +409,27 @@ durable distributed configuration protocol.
 
 ## 5. Add runtime management commands
 
-Command names below are proposals to finalize before implementation. Existing
+Definition commands below are available for already-activated JSON clusters.
+Automatic activation and bulk import remain separate unfinished phases. Existing
 `resource start/stop/move` remain runtime controls with their current semantics.
 
-- [ ] Model new resource/group definition commands on `pcs` syntax and conventions
+- [x] Model new resource/group definition commands on `pcs` syntax and conventions
   wherever practical, so administrators familiar with `pcs` can use familiar
   command structure, resource identifiers, option names, and `key=value`
   arguments for creation, modification, and deletion.
-- [ ] Before finalizing the CLI, compare the proposed commands with supported
+- [x] Before finalizing the CLI, compare the proposed commands with supported
   `pcs` commands and document equivalent LCS examples. Prefer familiar forms such
   as `lcs resource create`, `lcs resource update`, and `lcs resource delete` where
   their semantics match; preserve existing LCS commands and safety requirements.
-- [ ] Document unavoidable syntax or behavior differences explicitly, including
+- [x] Document unavoidable syntax or behavior differences explicitly, including
   LCS resource types, supported options, group semantics, and deletion rules.
   Do not imply support for Pacemaker resource agents or unsupported `pcs` features.
-- [ ] Add resource `create`, `update`, and `delete`, plus corresponding group
+- [x] Add resource `create`, `update`, and `delete`, plus corresponding group
   operations, routed through one whole-snapshot transaction path.
 - [x] Implement and unit-test the internal candidate editor for pcs-style resource
   create/update/delete/remove, group membership changes, and group policy updates.
-  Keep it disconnected from live CLI mutation endpoints until agreement is ready.
-- [ ] Define field replacement, explicit field removal, immutable fields, and
+  Route the public commands through the guarded agreement/application path below.
+- [x] Define field replacement, explicit field removal, immutable fields, and
   rejection of invalid group/dependency deletions; avoid implicit cascading deletes.
 - [x] Add offline `lcs config validate FILE|-` with selected INI static context,
   the shared strict JSON/candidate parser, bounded input, schema/incarnation and
@@ -436,11 +437,18 @@ Command names below are proposals to finalize before implementation. Existing
   no daemon connection and perform no writes, activation or resource operations.
 - [ ] Add atomic bulk import through the distributed transaction path. Read-only
   committed/applied export and offline document validation are implemented above.
-- [ ] Support expected-revision checks and idempotent request IDs; expose a
+- [x] Support expected-revision checks and idempotent request IDs; expose a
   transaction status command so interrupted clients can determine the outcome.
+  Exact retries require local origin descriptor evidence; other nodes retain an
+  unknown descriptor result and never resubmit. Automatic activation is separate.
 - [ ] Return actionable errors for no quorum, unsupported members, revision
   conflicts, invalid definitions, persistence failures, and failed resource stops.
-- [ ] Provide structured `--json` results and consistent CLI exit codes.
+- [x] Provide structured `--json` results and consistent CLI exit codes.
+  Exercise public VIP/group/policy/dependency edits through real daemon processes,
+  old-base retries, descriptor conflicts, origin restart, quorum-only refusal,
+  no-quorum rejection, blocked-admission pending and detached waiters. Reject INI
+  submissions without initialization. Validate malformed/uncorrelated CLI replies
+  as unknown, with the original request ID retained.
 
 ## 6. Support automatic upgrade and migration from existing releases
 

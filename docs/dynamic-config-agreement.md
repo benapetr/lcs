@@ -571,11 +571,14 @@ further configuration work and requires recovery; the durable agreement remains
 the source of the learned decision. Conflicting identities or insufficient space
 for a previously unseen learned request also fence progress without rolling the
 decision back. An exact duplicate LEARN can finish missing observation after a
-healthy disk recovery. Existing history is not proof of full lifecycle readiness,
-and public mutation commands remain disabled.
+healthy disk recovery. Existing history alone is not proof of lifecycle readiness;
+public definition commands additionally require activated JSON authority and local
+admission, as described in [runtime commands](resource-json.md#runtime-definition-commands).
 
 Automatic first-initialization authorization, lost-history/checkpoint recovery,
-full client lifecycle handling, retention and admission acknowledgements remain unfinished.
+distributed client outcome recovery, retention and all-member admission
+acknowledgements remain unfinished. Origin submission/wait handling uses durable
+local admission receipts and conservatively retains unknown results elsewhere.
 Callers must keep both handles unchanged until completion, use the same worker
 for every store writer, and explicitly authorize first initialization. An inherited
 directory-lock descriptor alone cannot serialize multiple writer children.

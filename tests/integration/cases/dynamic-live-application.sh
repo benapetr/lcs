@@ -20,10 +20,10 @@ admitted_revision() {
     "$LCS" -s "$(node_socket "$1")" --json config status 2>/dev/null | python3 -c '
 import json, sys
 s = json.load(sys.stdin)
-assert s["authority"] == "json" and s["admitted"] and s["dynamic_commands"] is False
+assert s["authority"] == "json" and s["admitted"] and s["dynamic_commands"] is (sys.argv[2] == "node1")
 assert s["committed_revision"] == s["applied_revision"] == int(sys.argv[1])
 assert s["pending_revision"] is None
-' "$2" 2>/dev/null
+' "$2" "$1" 2>/dev/null
 }
 for node in node1 node2 node3; do wait_until 40 "$node startup admission" admitted_revision "$node" 3; done
 wait_until 15 'initial latest VIP placement' node_status_has node1 'vip1 127.0.0.202/32 dev=lo state=active owner='

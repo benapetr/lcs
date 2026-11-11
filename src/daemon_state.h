@@ -287,6 +287,9 @@ typedef struct
     size_t out_off;
     size_t out_len;
     bool close_after_flush;
+    bool mutation_waiting;
+    char mutation_id[LCS_CONFIG_REQUEST_MAX + 1];
+    uint32_t mutation_seq;
     char *export_document;
     size_t export_length, export_offset;
     uint64_t export_revision;

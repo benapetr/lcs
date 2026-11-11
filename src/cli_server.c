@@ -9,6 +9,7 @@
 #include "config_manager.h"
 #include "config_export_protocol.h"
 #include "config_request_status_protocol.h"
+#include "config_mutation_protocol.h"
 #include "log.h"
 #include "move.h"
 #include "peer.h"
@@ -25,6 +26,8 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+static bool cli_server_definitions_enabled(void);
 
 static uint32_t cli_server_epoll_id(int slot_idx)
 {
@@ -46,7 +49,7 @@ static int cli_server_update_epoll(int epoll_fd, int slot_idx, const cli_server_
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.events = EPOLLRDHUP | EPOLLERR | EPOLLHUP;
-    if (!client->close_after_flush) ev.events |= EPOLLIN;
+    if (!client->close_after_flush && !client->mutation_waiting) ev.events |= EPOLLIN;
     if (client->out_len > client->out_off)
         ev.events |= EPOLLOUT;
     ev.data.u32 = cli_server_epoll_id(slot_idx);
@@ -373,6 +376,7 @@ static void cli_server_queue_config_status(int epoll_fd, int slot_idx, uint32_t 
         return;
     }
     config_manager_diagnostics(&view);
+    view.dynamic_commands = view.admitted && cli_server_definitions_enabled();
     if (lcs_config_status_view_encode(&view, payload, sizeof(payload), &encoded))
     {
         cli_server_queue_error(epoll_fd, slot_idx, seq, "cannot prepare configuration status");
@@ -393,9 +397,130 @@ static void cli_server_queue_request_status(int epoll_fd, int slot_idx, const lc
     cli_server_queue_frame(epoll_fd, slot_idx, LCS_MSG_CONFIG_REQUEST_STATUS_RESP, hdr->seq, response, (uint32_t)length);
 }
 
+/* Definition admission is separate from current quorum and transient writer
+ * availability. Known descriptor retries remain readable while edits are fenced. */
+static bool cli_server_definitions_enabled(void)
+{
+    return config_manager_enabled() && !config_manager_recovering() && !config_manager_failed() &&
+        !g_state.config_runtime.requires_recovery && g_state.resource_generation_enabled &&
+        g_state.self_index >= 0 && g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL &&
+        g_state.config_runtime.requests.store && !g_state.config_runtime.requests.poisoned;
+}
+static int cli_server_mutation_result(int epoll_fd, int slot_idx, uint32_t seq, const char *id,
+                                        uint8_t result, const char *reason)
+{
+    lcs_config_mutation_result_t response = {.result = result}; size_t length;
+    if (lcs_config_requests_query(&g_state.config_runtime.requests, id, &response.request)) return -1;
+    /* A rejected submission says nothing about an earlier request with this ID. */
+    if (result == LCS_CONFIG_MUTATION_REJECTED)
+    { memset(&response.request, 0, sizeof(response.request)); strcpy(response.request.id, id); }
+    snprintf(response.reason, sizeof(response.reason), "%s", reason);
+    unsigned char payload[LCS_CONFIG_MUTATION_RESPONSE_SIZE];
+    cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
+    client->mutation_waiting = false; client->close_after_flush = true;
+    client->deadline_ms = lcs_now_ms() + 5000;
+    if (lcs_config_mutation_result_encode(&response, payload, sizeof(payload), &length)) return -1;
+    return cli_server_queue_frame(epoll_fd, slot_idx, LCS_MSG_CONFIG_MUTATION_RESP, seq, payload, (uint32_t)length);
+}
+static int cli_server_mutation(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
+{
+    lcs_config_mutation_t *request = malloc(sizeof(*request));
+    if (!request) return -1;
+    if (lcs_config_mutation_decode(payload, hdr->length, request))
+    { free(request); cli_server_queue_error(epoll_fd, slot_idx, hdr->seq, "invalid bounded definition mutation");
+      g_state.cli_servers[slot_idx].close_after_flush = true; return 0; }
+    lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    const lcs_config_request_record_t *known = lcs_config_requests_find(&runtime->requests, request->id);
+    uint8_t result = LCS_CONFIG_MUTATION_REJECTED; char error[256] = "definition mutation is unavailable";
+    if (!config_manager_enabled() || !runtime->base)
+        snprintf(error, sizeof(error), "dynamic definitions require an activated JSON cluster; automatic upgrade activation is not available yet");
+    else if (!runtime->requests.store || runtime->requests.poisoned)
+    { result = LCS_CONFIG_MUTATION_UNKNOWN; snprintf(error, sizeof(error), "request history unavailable; recover it before submitting or retrying definitions"); }
+    else
+    {
+        uint64_t revision = known ? known->base_revision : runtime->agreement.committed.revision;
+        const char *parent = known ? known->base_digest : runtime->agreement.committed.digest;
+        char descriptor[LCS_CONFIG_DIGEST_SIZE];
+        if ((request->revision_set && request->revision != revision) ||
+            (request->digest_set && strcmp(request->digest, parent)))
+            snprintf(error, sizeof(error), "expected configuration base conflicts; refresh configuration status (known IDs retain their original base)");
+        else if (lcs_config_requests_client_digest(runtime->base, request->id, revision, parent,
+            request->argc, request->argv, descriptor, error, sizeof(error))) { /* Invalid descriptor. */ }
+        else if (known)
+        {
+            if (!known->client_digest[0])
+            { result = LCS_CONFIG_MUTATION_UNKNOWN; snprintf(error, sizeof(error), "client descriptor unknown on this node; query request-status or retry on the original coordinator"); }
+            else if (strcmp(known->client_digest, descriptor))
+                snprintf(error, sizeof(error), "request ID conflicts with different arguments; query the original request separately");
+            else
+            {
+                result = known->applied ? LCS_CONFIG_MUTATION_APPLIED : known->committed ? LCS_CONFIG_MUTATION_PENDING : LCS_CONFIG_MUTATION_UNKNOWN;
+                snprintf(error, sizeof(error), "%s", known->applied ? "exact retry: local configuration admission completed" :
+                    known->committed ? "exact retry: decision committed; local admission incomplete" : "exact retry: original reservation retained; outcome unknown, no second proposal submitted");
+            }
+        }
+        else if (g_state.config_transactions.proposer.proposal.requested.document &&
+            !strcmp(g_state.config_transactions.proposer.proposal.requested.request_id, request->id))
+        { result = LCS_CONFIG_MUTATION_UNKNOWN; snprintf(error, sizeof(error), "original reservation is in progress; query this request ID without resubmitting"); }
+        else if (runtime->requests.count == LCS_CONFIG_REQUEST_HISTORY_MAX)
+            snprintf(error, sizeof(error), "request history is full; retain it and recover/expand retention before submitting new definitions");
+        else if (g_state.self_index < 0 || g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL)
+            snprintf(error, sizeof(error), "quorum-only nodes cannot coordinate definition edits; submit on a full member");
+        else if (!cli_server_definitions_enabled() || config_manager_applying() ||
+            g_state.config_application_remapping || config_reload_in_progress())
+            snprintf(error, sizeof(error), "definition edits are fenced during recovery, application or reload; refresh status and retry");
+        else if (!cluster_has_quorum()) snprintf(error, sizeof(error), "no quorum; restore peer connectivity before submitting definitions");
+        else if (!config_peer_configuration_vote_ready())
+            snprintf(error, sizeof(error), "configuration coordinator is busy or not admitted; refresh status and retry");
+        else
+        {
+            lcs_config_t *configs = calloc(2, sizeof(*configs)); char *document = NULL; size_t length = 0;
+            lcs_config_value_t value = {0}; uint64_t decoded;
+            if (!configs) snprintf(error, sizeof(error), "cannot allocate definition candidate");
+            else if (lcs_resource_config_decode(runtime->agreement.committed.document, runtime->agreement.committed.length,
+                runtime->base, &configs[0], &decoded, error, sizeof(error)) || decoded != revision ||
+                lcs_resource_config_edit(&configs[0], revision, revision, request->argc, request->argv, &configs[1], error, sizeof(error)) ||
+                lcs_resource_config_encode(&configs[1], revision + 1, &document, &length, error, sizeof(error)) ||
+                lcs_config_value_init(&value, runtime->base, request->id, document, length, error, sizeof(error))) { /* No submission. */ }
+            else if (g_state.config_transactions.proposer.id == UINT64_MAX ||
+                config_peer_propose_client(g_state.config_transactions.proposer.id + 1, &value, descriptor))
+                snprintf(error, sizeof(error), "proposal not admitted: coordinator busy, history full or wire-6 quorum unavailable; refresh status and retry");
+            else
+            {
+                cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
+                client->mutation_waiting = true; strcpy(client->mutation_id, request->id); client->mutation_seq = hdr->seq;
+                client->deadline_ms = lcs_now_ms() + 30000;
+                lcs_config_value_clear(&value); free(document); free(configs); free(request);
+                return cli_server_update_epoll(epoll_fd, slot_idx, client);
+            }
+            lcs_config_value_clear(&value); free(document); free(configs);
+        }
+    }
+    int status = cli_server_mutation_result(epoll_fd, slot_idx, hdr->seq, request->id, result, error);
+    free(request); return status;
+}
+static int cli_server_mutation_poll(int epoll_fd, int slot_idx, uint64_t now)
+{
+    cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
+    lcs_config_request_view_t view;
+    if (lcs_config_requests_query(&g_state.config_runtime.requests, client->mutation_id, &view)) return -1;
+    if (view.state == LCS_CONFIG_REQUEST_APPLIED)
+        return cli_server_mutation_result(epoll_fd, slot_idx, client->mutation_seq, client->mutation_id,
+            LCS_CONFIG_MUTATION_APPLIED, "decision durable and local configuration admission completed");
+    /* Transport completion can precede request observation/admission, and a
+     * timed-out transport can leave a durable worker still running. Neither
+     * closes this client's bounded application wait. */
+    if (now < client->deadline_ms && !config_manager_failed() && !g_state.config_coordinator.failed) return 0;
+    return cli_server_mutation_result(epoll_fd, slot_idx, client->mutation_seq, client->mutation_id,
+        view.state == LCS_CONFIG_REQUEST_COMMITTED ? LCS_CONFIG_MUTATION_PENDING : LCS_CONFIG_MUTATION_UNKNOWN,
+        view.state == LCS_CONFIG_REQUEST_COMMITTED ? "decision committed; local admission incomplete, query request-status" :
+        "outcome unknown; reservation/storage may still complete, query or retry this same request ID on this node");
+}
+
 static int cli_server_process_frame(int epoll_fd, int slot_idx, const lcs_frame_header_t *hdr, const unsigned char *payload)
 {
     cli_server_runtime_t *client = &g_state.cli_servers[slot_idx];
+    if (hdr->type == LCS_MSG_CONFIG_MUTATION_REQ) return cli_server_mutation(epoll_fd, slot_idx, hdr, payload);
     if ((g_state.config_runtime.requires_recovery || config_manager_applying() ||
          (g_state.resource_generation_enabled && g_state.config_application_remapping)) &&
         hdr->type != LCS_MSG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_STATUS_REQ && hdr->type != LCS_MSG_CONFIG_EXPORT_REQ &&
@@ -467,7 +592,7 @@ static int cli_server_parse_frames(int epoll_fd, int slot_idx)
         if (cli_server_process_frame(epoll_fd, slot_idx, &hdr, client->inbuf + off + LCS_FRAME_HEADER_SIZE) != 0)
             return -1;
         off += frame_len;
-        if (client->close_after_flush)
+        if (client->close_after_flush || client->mutation_waiting)
             break;
     }
     if (off)
@@ -621,7 +746,9 @@ void cli_server_expire(int epoll_fd)
     for (size_t i = 0; i < LCS_CLI_SERVER_MAX; i++)
     {
         cli_server_runtime_t *client = &g_state.cli_servers[i];
-        if (client->active && client->deadline_ms && now >= client->deadline_ms)
+        if (client->active && client->mutation_waiting)
+        { if (cli_server_mutation_poll(epoll_fd, (int)i, now)) cli_server_close_slot(epoll_fd, (int)i, "mutation response failed"); }
+        else if (client->active && client->deadline_ms && now >= client->deadline_ms)
             cli_server_close_slot(epoll_fd, (int)i, "CLI connection timeout");
     }
 }

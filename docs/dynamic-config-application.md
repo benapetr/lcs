@@ -384,7 +384,7 @@ generations do not release activity. A cancellation re-fences traffic/voting and
 invalidates synchronization; a retry must synchronize again. Only the sequencer's
 completion callback releases resource fences after transferring its hold.
 The activated daemon manager now drives these adapters for learned-definition
-updates after startup admission. Public definition commands remain disabled.
+updates after startup admission. Public definition commands use the guarded submission path described below.
 
 ## Durable projection publisher
 
@@ -1023,7 +1023,7 @@ then rejoins over normal wire-6 catch-up. Both full-member processes remain runn
 through replacement, creation, priority modification and deletion down to an empty
 catalog. A symlinked projection blocks before old-owner completion; after repair,
 application retries and admits the exact revision. The fixture is not an admin
-mutation or activation interface. Public definition commands remain disabled.
+mutation or activation interface. Public definition commands use the guarded submission path described below.
 The same case with `LCS_IT_RESTART_DURING_APPLICATION=1` stops a full member while
 its projection is blocked, then verifies pending-catalog restart recovery against
 the other full member's retained live owner receipt.
@@ -1047,8 +1047,8 @@ admission lies ahead of, or conflicts with, its applied catalog fails recovery.
 `lcs config request-status ID` can report `applied` for this local receipt. It does
 not claim current resource availability or that every peer acknowledged final
 admission. On quorum-only members it proves metadata admission, not backend work.
-The complete client response/wait lifecycle and definition mutation commands still
-need integration; ordinary unknown/reserved facts remain conservative.
+Public definition commands now wait for this receipt with a fixed deadline;
+ordinary unknown/reserved facts remain conservative.
 
 ## Originating client descriptors
 
@@ -1074,7 +1074,8 @@ an unknown result and direct the client to status/origin lookup; it cannot assum
 that the arguments match or resubmit them. Learning/admission updates preserve an
 origin descriptor, and worker imports cannot change, erase or attach one to an
 existing identity. Record format 3 adds this evidence without changing peer wire
-versions. Public mutation commands and their wait/result handling remain pending.
+versions. Public mutation commands use this origin descriptor and never automatically
+resubmit an existing ID.
 
 ## Client outcomes
 
@@ -1084,8 +1085,8 @@ acknowledging it. Retrying the same ID with different content is a conflict.
 Recovering someone else's previously accepted value does not commit the waiting
 client's edit; report that edit's own status or predecessor conflict.
 
-New mutation/status endpoints use these results (existing runtime commands keep
-their current exit codes):
+Definition mutation submissions use these results (existing runtime commands and
+read-only request-status queries keep their current exit codes):
 
 | Result | Meaning | Exit status |
 | --- | --- | --- |
@@ -1101,3 +1102,30 @@ decision observation is `unknown`; query/retry the same request ID rather than
 blindly submitting a second edit. Status retention/compaction must make expired
 request IDs explicitly unknown, never falsely rejected or reusable within a
 retained history.
+
+
+## Public local definition submission
+
+Local message types 43/44 compile resource/group edits into one successor using
+the existing strict editor and immutable static context. Before submission the
+daemon requires activated JSON authority, an admitted full member, healthy
+existing request history, an exact current expected base, no recovery/application/
+reload fence, quorum and an eligible serialized configuration coordinator.
+Wire-6 instances must form the transaction quorum. No request initializes missing
+history or activation metadata. Candidate errors and admission failures do not
+write a reservation. A full journal rejects new IDs without evicting history.
+
+A known ID is resolved before new-submission gates. Only an exact origin command
+fingerprint can return its historical applied result or committed/pending fact.
+A missing fingerprint stays unknown; changed arguments/base reject this submission
+without claiming the original was aborted. No retry starts another proposal.
+
+Each submitted client waits independently for its own local admitted receipt,
+for at most 30 seconds. A transport COMPLETE or UNKNOWN phase does not end the
+application wait: the decision writer/observer may still be finishing. A committed
+receipt without admission is pending; absent proven commitment is unknown. Socket
+closure discards only the waiter. It never cancels the serialized worker, rolls
+back the reservation or resets consensus/application. The CLI preserves its ID
+on unknown transport/malformed-response results and has a 35-second socket timeout.
+These results do not imply current backend health or every peer's admission.
+See [syntax and operator recovery](resource-json.md#runtime-definition-commands).

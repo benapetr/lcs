@@ -7,6 +7,7 @@
 #define LCS_CONFIG_STATUS_DIGEST_SIZE 65
 #define LCS_CONFIG_STATUS_FORMAT 1
 #define LCS_CONFIG_STATUS_VIEW_FORMAT 2
+#define LCS_CONFIG_STATUS_COMMANDS_FORMAT 3
 
 enum { LCS_CONFIG_AUTHORITY_INI = 0, LCS_CONFIG_AUTHORITY_JSON = 1 };
 enum
@@ -47,7 +48,7 @@ typedef struct
     lcs_config_status_node_t nodes[LCS_MAX_NODES];
     /* Local diagnostics only, never peer readiness/agreement evidence. INI
      * uses unchanged format 1; JSON uses format 2, rejected by old clients. */
-    uint8_t authority, admitted;
+    uint8_t authority, admitted, dynamic_commands;
     uint16_t phase;
     uint64_t committed_revision, applied_revision, pending_revision;
     char committed_digest[LCS_CONFIG_STATUS_DIGEST_SIZE];

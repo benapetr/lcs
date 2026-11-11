@@ -158,7 +158,12 @@ zero-padded error string. Pending revision zero requires an empty pending digest
 Phases 1–6 are recovering, blocked, admitting, active, failed and stopping;
 admitted is true only for active. Active/admitting require caught-up applied state
 and no pending work. Old clients reject format 2 instead of reporting INI authority;
-new clients decode both. These are local diagnostics, not peer readiness or
+new clients decode both. Format 3 extends format 2 by one required u8
+`dynamic_commands` equal to 1. It is emitted only for admitted full members with
+activated JSON authority and healthy request history. Other views retain formats
+1/2. Readers reject format 3 with a zero/invalid flag or an inactive view; older
+clients reject it instead of reporting a false capability. The flag is local
+admission capability, not current quorum or an idle-writer guarantee. These are local diagnostics, not peer readiness or
 agreement evidence. The independent response format changes; peer wire version,
 ordinary local status protocol version and release version remain unchanged.
 
@@ -224,7 +229,7 @@ observation of the exact current decision when history exists, using a private
 coordinator phase. Consensus completion remains known across observation failure;
 configuration progress is fenced for recovery. Missing history and skipped
 checkpoint outcomes remain unknown. This adds no wire fields or disk-format
-changes; final client outcomes and public mutation commands remain unfinished.
+changes. Public mutation payloads and their origin client outcomes are described below.
 
 ## Local request-fact query
 
@@ -247,7 +252,7 @@ JSON uses null revision/digest fields for unknown records and always marks the
 scope local. Exit 0 means a valid query response, including unknown; it does not
 mean a client mutation succeeded. Older daemons report unsupported requests.
 Ordinary local status protocol 1004, peer wire versions, resource JSON schema
-and release version are unchanged. Request record format 2 is described above. There is no peer request-status endpoint.
+and release version are unchanged. Request record formats 1/2/3 are described above. There is no peer request-status endpoint.
 
 ## Offline document validation
 
@@ -267,3 +272,28 @@ FINISH establishes a predecessor and writes format 2. No synthetic history is
 created. Old binaries that cannot read format 2 must not replace it with legacy
 INI state. This is a private disk/worker-handoff format; resource JSON schema,
 peer wire versions, released HELLO and local CLI protocol do not change.
+
+
+## Local definition mutation payloads
+
+Unix-socket-only types 43/44 are configuration mutation request/response. Payload
+format 1 is independent of peer wire 5/6 and ordinary status protocol 1004.
+A request contains u16 format, zero-padded request ID (64 bytes), u8 optional-base
+flags (bit 0 revision, bit 1 digest), u64 expected revision, zero-padded expected
+digest (65 bytes), u16 argc, then argc arguments, each u16 byte length followed by
+exact non-NUL bytes. Missing revision/digest fields must be all zero. Explicit
+revision must be below INT64_MAX; explicit digest is lowercase SHA-256. Requests
+are bounded to one 64-KiB frame, 3–64 arguments and `LCS_PATH_MAX + 32` bytes per
+argument. Unknown flags/formats, truncation, noncanonical padding, embedded NUL
+and trailing bytes fail. Argument strings are bounded before candidate validation.
+
+A response is exactly 465 bytes: u16 format, u8 outcome (0 applied/1 rejected/
+2 pending/3 unknown), a 206-byte versioned local request-fact view, and a required
+nonempty zero-padded 256-byte reason. Applied requires an applied fact; pending
+requires committed; rejected has no known fact (it does not report the fate of a
+conflicting older request). The CLI validates sequence, response type, format,
+canonical facts and exact ID before producing a result. Invalid/unsupported or
+uncorrelated responses retain the original ID with unknown outcome/exit 3.
+There is no peer mutation endpoint or protocol-version bump. CLI flags, message
+types and local config-status format 3 are additive unreleased features; release
+version and resource JSON schema are unchanged.

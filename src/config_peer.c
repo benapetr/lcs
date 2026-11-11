@@ -35,7 +35,7 @@ int config_peer_receive_transaction(int epoll_fd, int node, uint16_t type, const
     return result;
 }
 
-int config_peer_propose(uint64_t id, const lcs_config_value_t *requested)
+int config_peer_propose_client(uint64_t id, const lcs_config_value_t *requested, const char *client_digest)
 {
     if (config_reload_in_progress() || !config_peer_configuration_vote_ready())
         return -1;
@@ -50,7 +50,12 @@ int config_peer_propose(uint64_t id, const lcs_config_value_t *requested)
             peer->protocol_version >= LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS)
             instances[i] = peer->instance_id;
     }
-    return lcs_config_transactions_propose(&g_state.config_transactions, instances, id, requested, lcs_now_ms());
+    return lcs_config_transactions_propose_client(&g_state.config_transactions, instances, id, requested, client_digest, lcs_now_ms());
+}
+
+int config_peer_propose(uint64_t id, const lcs_config_value_t *requested)
+{
+    return config_peer_propose_client(id, requested, "");
 }
 
 static int send_owner(void *context, size_t node, const void *payload, size_t length)

@@ -104,7 +104,7 @@ for node in node1 node2 node3; do
     python3 - "$TEST_TMP/$node-status.json" <<'PY'
 import json, sys
 status = json.load(open(sys.argv[1]))
-assert status['authority'] == 'json' and status['dynamic_commands'] is False
+assert status['authority'] == 'json' and status['dynamic_commands'] is ('node1-status' in sys.argv[1])
 assert status['admitted'] is True and status['application_state'] == 'active'
 assert status['committed_revision'] == status['applied_revision'] == 3
 assert status['committed_digest'] == status['applied_digest']

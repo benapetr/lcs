@@ -135,11 +135,34 @@ CRITICAL, and 3 for UNKNOWN.
 Report resource authority, local prepared-snapshot status, canonical digests,
 and prepared/matching member counts, including quorum-only members. Wire-5 and
 offline peers have unknown metadata. These observations are diagnostic only;
-dynamic mutation commands remain unavailable. For already-activated JSON catalogs,
+automatic activation remains unfinished. For already-activated JSON catalogs,
 also report local committed/applied/pending revisions and digests, recovery state,
 admission and blocked errors. Absent pending work and errors are JSON null.
 Admission does not imply current quorum or resource ownership. Supports
 .BR \-\-json .
+.TP
+.B resource create NAME vip|service key=value...
+Create one definition through majority agreement and local configuration admission.
+Requires an admitted full member of an activated JSON cluster with healthy history.
+.B resource update NAME key=value...
+replaces fields; empty values remove optional overrides.
+.B resource delete NAME
+(or remove) deletes one resource without cascading through dependencies.
+.TP
+.B resource group create|update|add|remove|delete GROUP [options|resources]
+Manage groups, memberships and type/mode policies. Group removal without resources
+ungroups members and removes the definition without deleting resources.
+These commands accept
+.BR --request-id " ID, " --expected-revision " N and " --expected-digest " SHA256."
+Omitted bases use the current committed value for new IDs and original base for
+known IDs. Exact ordered argument retries return existing facts, never a second
+proposal. Use the original coordinator; peer records lack client descriptors.
+The CLI prints generated IDs before sending and waits up to 30 seconds for local
+admission. Exit codes: 0 applied, 1 rejected, 2 committed but pending admission,
+3 unknown. Usage errors retain exit 2. Supports
+.BR --json .
+Timeout/disconnect never cancels storage or proves abort. Query request-status
+with the same ID. Automatic activation and bulk import remain unavailable.
 .TP
 .B config request-status ID
 Read published local request facts from daemon memory, also available with
