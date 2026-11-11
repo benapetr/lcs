@@ -24,6 +24,14 @@ Coordinated initialization now seals required request history before preparation
 A format-2 prepared intent with missing/corrupt history fails before listeners;
 retain/recover its state. This is a prerequisite for automatic upgrade activation,
 which is still unfinished. See [initialization history](resource-json.md#required-request-history-during-initialization).
+
+A node restarting from a durable resource freeze can rejoin wire-6 coordination
+with voting, resource placement and mutations fenced. It restores the retained
+baseline before startup cleanup, reports `application_state: frozen` in
+`lcs --json config status`, and exports that baseline through `lcs config export`.
+Later valid INI resource edits do not replace it. Automatic progression to
+initialization and activation remains unfinished.
+
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means
 its consensus decision was recorded, not resource application or final client

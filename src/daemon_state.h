@@ -480,6 +480,7 @@ typedef struct
     lcs_config_status_t config_status;
     uint64_t config_status_generation;
     uint64_t config_status_retry_ms;
+    uint64_t config_status_keepalive_ms;
     lcs_config_readiness_t config_readiness;
     lcs_config_initialization_round_t config_initialization;
     uint64_t config_initialization_attempt, config_initialization_next_send_ms;

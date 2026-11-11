@@ -148,12 +148,28 @@ with running(config3, 3):
         for sock in sockets: sock.close()
 
 for config, contents in ((config1, contents1), (config3, contents3)):
-    result = subprocess.run([daemon, '-c', config, '--no-syslog', '--no-timestamp'],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=8,
-        env={**os.environ, 'LCS_VIP_DRY_RUN':'1', 'LCS_SYSTEMD_DRY_RUN':'1'})
-    assert result.returncode != 0 and b'requires activation-aware recovery' in result.stdout
-    assert Path(config+'.state', 'activation.json').read_bytes() == contents
-    assert_no_history(config)
+    node = 1 if config == config1 else 3
+    with running(config, node):
+        until = time.monotonic()+8
+        cli_socket = str(Path(config).with_suffix('.sock'))
+        while True:
+            result = subprocess.run([cli, '-s', cli_socket, '--json', 'config', 'status'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if result.returncode == 0: break
+            assert time.monotonic() < until
+            time.sleep(.05)
+        status = json.loads(result.stdout)
+        assert status['application_state'] == 'frozen' and not status['admitted'] and not status['dynamic_commands']
+        if node == 3:
+            # Recovered freezes admit coordination only over wire 6; a fresh
+            # correlated query can read the retained fact without another write.
+            with socket.create_connection(('127.0.0.1', int(port3)), timeout=5) as sock:
+                sock.settimeout(5); send(sock, 16, identity(template, 0, 5, 100)); closed(sock)
+            with socket.create_connection(('127.0.0.1', int(port3)), timeout=5) as sock:
+                sock.settimeout(5); send(sock, 16, identity(template, 0, 6, 100))
+                ack = receive(sock, 17); resumed_instance = struct.unpack_from('!Q', ack, 16)[0]
+                assert frozen(sock, config, 100, resumed_instance, 2, digests) == contents
+        assert Path(config+'.state', 'activation.json').read_bytes() == contents
+        assert_no_history(config)
 PY
 assert_no_vip_ops_in_log node3
 log 'wire-6 explicit freeze exchange, instance/version admission, full/quorum-only durable responses and restart retention passed'

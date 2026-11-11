@@ -20,6 +20,11 @@ int config_peer_readiness_start(void);
  * every current member (including quorum-only) to negotiate freeze support.
  * Completion never automatically initializes journals or changes authority. */
 int config_peer_freeze_start(void);
+/* Before listeners/workers only: restore a recovered format-3 baseline and its
+ * coordinator, retaining reload and resource voting/placement fences. Old
+ * resources may undergo startup cleanup. No automatic collection/initialization
+ * or JSON authority is enabled. */
+int config_peer_resume_frozen(char *err, size_t err_len);
 int config_peer_receive_freeze(int epoll_fd, int node, uint16_t type,
     const void *payload, size_t length);
 /* Internal entry point for one whole-snapshot proposal using currently admitted

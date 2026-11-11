@@ -874,6 +874,12 @@ static int cmd_config_status(const char *socket_path, bool json_output)
     {
         printf("{\"authority\":\"%s\",\"dynamic_commands\":%s,\"activation_ready\":false,\"prepared\":%s,",
                view.authority == LCS_CONFIG_AUTHORITY_JSON ? "json" : "ini", view.dynamic_commands ? "true" : "false", local->prepared ? "true" : "false");
+        if (view.phase == LCS_CONFIG_DIAG_FROZEN)
+        {
+            printf("\"application_state\":\"frozen\",\"admitted\":false,\"error\":");
+            if (*view.error) json_string(stdout, view.error); else printf("null");
+            putchar(',');
+        }
         if (view.authority == LCS_CONFIG_AUTHORITY_JSON)
         {
             printf("\"application_state\":"); json_string(stdout, lcs_config_status_phase_name(view.phase));
@@ -914,6 +920,8 @@ static int cmd_config_status(const char *socket_path, bool json_output)
     else
     {
         printf("Resource configuration: %s\n", view.authority == LCS_CONFIG_AUTHORITY_JSON ? "JSON" : "INI");
+        if (view.phase == LCS_CONFIG_DIAG_FROZEN)
+            printf("Definition state: frozen; awaiting coordinated initialization\n");
         if (view.authority == LCS_CONFIG_AUTHORITY_JSON)
         {
             printf("Application: %s; admitted: %s\nCommitted: %llu %s\nApplied: %llu %s\n",

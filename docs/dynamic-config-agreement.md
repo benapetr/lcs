@@ -160,9 +160,10 @@ regenerated, even at
 revision zero with no promise. A reservation may already exist before PREPARE.
 Any uncertain write requires reopening disk state before proceeding.
 
-Startup resumes an existing initialization before opening listeners, but still
-refuses to run distributed state until the remaining activation-aware peering and
-application integration exists. INI snapshot refresh refuses any existing intent.
+Startup resumes an existing initialization before opening listeners. Healthy
+format-3 FROZEN state can resume its coordination channel with resource voting
+and placement fenced. Other unactivated initialization states still require
+the remaining activation-aware peering/application integration. INI snapshot refresh refuses any existing intent.
 The synchronous primitive runs only during startup or in the serialized storage
 worker; it must not be called directly from the live event loop.
 
@@ -231,8 +232,8 @@ low-level explicitly authorized storage primitive; automatic upgrade must use
 the guarded round entry point instead.
 
 These are same-process collection objects, not serialized proofs. The explicit
-peer freeze exchange is implemented below; automatic coordination and the live
-startup lifecycle remain unfinished. The local durable responder preserves reload exclusion across
+peer freeze exchange and fenced startup resumption are implemented below;
+automatic initialization/activation coordination remains unfinished. The local durable responder preserves reload exclusion across
 restart. Collector expiry alone must never authorize a responder to thaw.
 A completed collection authorizes
 only local storage preparation; it is neither the durable readiness barrier nor
@@ -259,9 +260,9 @@ created by this operation.
 
 Runtime recovery reads a FROZEN intent without writes and restores its stored
 baseline despite later INI edits. It neither calls initialization resume nor
-creates missing history. Contradictory history is rejected. The current daemon
-still refuses this pre-activation runtime before listeners because live upgrade
-peering/resumption is unfinished; it never falls back to INI import/reload.
+creates missing history. Contradictory history is rejected before listeners.
+The daemon restores a healthy freeze for coordination as described below; it
+never falls back to importing later INI resource definitions or enabling reload.
 
 After a complete current all-member authorization round, the guarded initializer
 may replace that exact frozen runtime. The child first syncs a format-2
@@ -308,8 +309,39 @@ freeze is durable and all configured sessions support it. The scheduler sends
 queries and passes correlated replies to the all-member collector, invalidating
 it on session/generation changes or deadline expiry. Completion does not start
 initialization or change resource authority. Ordinary startup does not invoke
-this entry point; live frozen-startup recovery and automatic upgrade activation
-remain required before enabling that behavior.
+this entry point; automatic initialization and upgrade activation remain unfinished.
+
+### Fenced restart resumption
+
+Before listeners or backend workers, `config_peer_resume_frozen()` accepts only a
+healthy recovered format-3 runtime bound to the locked bootstrap store. It checks
+pristine daemon tables, no pending reload/refresh, no open peer/client sessions,
+and the exact canonical frozen baseline. Existing leases, epochs, workers or
+journal handles are rejected instead of being reset through this startup entry.
+
+The daemon then installs those frozen definitions and empty runtime indices under
+resource voting/placement fences, locks bootstrap refresh, and restores the
+shared coordinator in IDLE. Full members perform ordinary startup cleanup using
+the frozen baseline; later valid INI backend/resource edits never select cleanup
+targets. Quorum-only nodes perform no backend operations. The INI file still
+passes normal parsing/static validation before recovery, so invalid syntax is
+not ignored by this stage.
+
+The restored node opens its coordination and read-only CLI channels, responds
+to correlated freeze queries from its durable record, and can participate in an
+explicit new freeze round. It neither grants resource leases nor hosts resources,
+admits configuration votes, initializes journals or switches to JSON authority.
+Existing resource-frame fences remain intact. Periodic unchanged advisory
+metadata maintains the separate wire-6 coordination channel without resource
+heartbeats or voting readiness; cold frozen nodes reject wire-5 HELLO admission.
+Automatic progression from freeze to initialization/activation remains unfinished.
+
+`config status` uses local diagnostic format 4 for phase `frozen`, with INI
+authority, no admission, no revisions and no dynamic command capability. Read-only
+export returns the retained baseline. Mutation/reload commands and SIGHUP cannot
+thaw it. Repeated restart does not rewrite its record or create history. Existing
+INITIALIZING/PREPARED runtimes without an activated application still fail closed
+until their separate live resumption path is implemented.
 
 After preparation, nonzero committed/accepted values must use the dynamic schema;
 revision one must preserve the frozen definitions when assigning incarnations.

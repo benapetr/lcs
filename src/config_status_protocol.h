@@ -8,6 +8,7 @@
 #define LCS_CONFIG_STATUS_FORMAT 1
 #define LCS_CONFIG_STATUS_VIEW_FORMAT 2
 #define LCS_CONFIG_STATUS_COMMANDS_FORMAT 3
+#define LCS_CONFIG_STATUS_FROZEN_FORMAT 4
 
 enum { LCS_CONFIG_AUTHORITY_INI = 0, LCS_CONFIG_AUTHORITY_JSON = 1 };
 enum
@@ -19,6 +20,7 @@ enum
     LCS_CONFIG_DIAG_ACTIVE,
     LCS_CONFIG_DIAG_FAILED,
     LCS_CONFIG_DIAG_STOPPING,
+    LCS_CONFIG_DIAG_FROZEN,
 };
 
 /* Advisory bootstrap status, bound to the established peer session. It is not
@@ -46,8 +48,9 @@ typedef struct
     uint16_t count;
     uint16_t self;
     lcs_config_status_node_t nodes[LCS_MAX_NODES];
-    /* Local diagnostics only, never peer readiness/agreement evidence. INI
-     * uses unchanged format 1; JSON uses format 2, rejected by old clients. */
+    /* Local diagnostics only, never peer readiness/agreement evidence. Legacy
+     * INI uses format 1; JSON uses 2/3; frozen INI uses 4 with no admission,
+     * revisions or mutation capability. Older clients reject new formats. */
     uint8_t authority, admitted, dynamic_commands;
     uint16_t phase;
     uint64_t committed_revision, applied_revision, pending_revision;

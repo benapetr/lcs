@@ -671,11 +671,16 @@ int main(int argc, char **argv)
     }
     if (g_state.config_runtime.requires_recovery)
     {
-        if (config_manager_prepare(bootstrap_error, sizeof(bootstrap_error)))
+        bool frozen = g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN;
+        int result = frozen ? config_peer_resume_frozen(bootstrap_error, sizeof(bootstrap_error)) :
+            config_manager_prepare(bootstrap_error, sizeof(bootstrap_error));
+        if (result)
         {
             lcs_log_error("persisted distributed resource configuration requires activation-aware recovery: %s", bootstrap_error);
             close_startup_storage(); lcs_log_close(); return 1;
         }
+        if (frozen)
+            lcs_log_info("durable resource freeze resumed; coordination available, resource voting and placement remain fenced");
     }
     else
     {

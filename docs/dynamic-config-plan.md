@@ -417,10 +417,9 @@ durable distributed configuration protocol.
   reload exclusion through uncertain writes and require exact all-member
   authorization to promote the retained runtime to format-2 initialization.
   Verify both freeze sync boundaries and all ten promotion sync boundaries with
-  failures/crashes, immutable baselines, empty-history exclusion, and daemon
-  refusal before listeners when live frozen-startup recovery is unavailable.
-  Explicit peer exchange is implemented below; automatic live restart resumption
-  remains open.
+  failures/crashes, immutable baselines, empty-history exclusion, and recovery
+  before listeners. Explicit peer exchange and fenced restart resumption are
+  implemented below; automatic initialization/activation remains open.
 - [x] Add explicit wire-6 freeze query/reply framing and admitted peer dispatch,
   with destination/source instances, monotonic attempt correlation, strict codecs
   and complete baseline/membership binding. Route responder persistence through
@@ -432,6 +431,16 @@ durable distributed configuration protocol.
   automatically initialize or switch authority when collection completes.
   Exercise real full/quorum-only daemons, wire-5 refusal, retries, mismatches,
   replaced instances, worker failure/shutdown and retained startup fences.
+- [x] Restore healthy format-3 freezes before listeners for coordination-only
+  startup, using their exact frozen definitions despite later valid INI resource
+  edits. Retain resource voting/placement, reload and mutation fences; perform
+  full-member startup cleanup only against the frozen baseline and no backend
+  work on quorum-only nodes. Keep wire-6 coordination alive with advisory metadata
+  while resource frames remain fenced. Report local phase frozen via diagnostic
+  format 4 and export the retained baseline. Test stable all-member connections,
+  repeated/quorum-only restart, INI edits/SIGHUP, absent history, unchanged durable
+  intent and pre-listener rejection of contradictory records. This does not
+  automatically collect freezes, initialize history or activate JSON authority.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

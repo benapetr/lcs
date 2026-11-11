@@ -564,6 +564,13 @@ static int peer_decode_hello(const void *payload, size_t len, const struct socka
         snprintf(error, error_len, "dynamic resource authority requires wire 6 resource-generation binding");
         return -1;
     }
+    if (!g_state.resource_generation_enabled && g_state.config_application_remapping &&
+        g_state.config_runtime.activation.store && g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN &&
+        *protocol_version < LCS_PROTO_FEATURE_CONFIG_FREEZE)
+    {
+        snprintf(error, error_len, "frozen configuration coordination requires wire 6");
+        return -1;
+    }
     const lcs_config_t *hello_config = g_state.resource_generation_enabled && g_state.config_runtime.base ?
         g_state.config_runtime.base : &g_state.cfg;
     uint64_t local_voting = lcs_config_voting_fingerprint(hello_config);

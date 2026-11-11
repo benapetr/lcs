@@ -140,6 +140,10 @@ also report local committed/applied/pending revisions and digests, recovery stat
 admission and blocked errors. Absent pending work and errors are JSON null.
 Admission does not imply current quorum or resource ownership. Supports
 .BR \-\-json .
+A durable pre-initialization freeze reports application_state frozen, INI
+authority, no admission and no dynamic command capability. On restart it restores
+the retained baseline for coordination, with resource voting, placement and
+mutations fenced; later valid INI resource edits do not replace that baseline.
 .TP
 .B resource create NAME vip|service key=value...
 Create one definition through majority agreement and local configuration admission.

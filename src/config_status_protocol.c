@@ -81,6 +81,7 @@ int lcs_config_status_decode(const void *payload, size_t length, lcs_config_stat
 
 static bool view_valid(const lcs_config_status_view_t *view)
 {
+    if (!view->count || view->count > LCS_MAX_NODES || view->self >= view->count) return false;
     if (view->authority == LCS_CONFIG_AUTHORITY_JSON)
     {
         if (view->phase < LCS_CONFIG_DIAG_RECOVERING || view->phase > LCS_CONFIG_DIAG_STOPPING ||
@@ -99,11 +100,12 @@ static bool view_valid(const lcs_config_status_view_t *view)
                 (view->pending_revision || view->applied_revision != view->committed_revision)) ||
             !memchr(view->error, 0, sizeof(view->error))) return false;
     }
-    else if (view->authority != LCS_CONFIG_AUTHORITY_INI || view->phase || view->admitted || view->dynamic_commands ||
+    else if (view->authority != LCS_CONFIG_AUTHORITY_INI ||
+        (view->phase != LCS_CONFIG_DIAG_LEGACY && view->phase != LCS_CONFIG_DIAG_FROZEN) || view->admitted || view->dynamic_commands ||
         view->committed_revision || view->applied_revision || view->pending_revision ||
-        *view->committed_digest || *view->applied_digest || *view->pending_digest || *view->error) return false;
-    if (!view->count || view->count > LCS_MAX_NODES || view->self >= view->count)
-        return false;
+        *view->committed_digest || *view->applied_digest || *view->pending_digest ||
+        (view->phase == LCS_CONFIG_DIAG_LEGACY ? *view->error != 0 :
+         (!memchr(view->error, 0, sizeof(view->error)) || view->nodes[view->self].status.prepared))) return false;
     for (size_t i = 0; i < view->count; i++)
     {
         const lcs_config_status_node_t *node = &view->nodes[i];
@@ -127,7 +129,8 @@ int lcs_config_status_view_encode(const lcs_config_status_view_t *view, void *pa
         return -1;
     lcs_buf_writer_t w;
     lcs_buf_writer_init(&w, payload, cap);
-    uint16_t format = view->dynamic_commands ? LCS_CONFIG_STATUS_COMMANDS_FORMAT :
+    uint16_t format = view->phase == LCS_CONFIG_DIAG_FROZEN ? LCS_CONFIG_STATUS_FROZEN_FORMAT :
+        view->dynamic_commands ? LCS_CONFIG_STATUS_COMMANDS_FORMAT :
         view->authority == LCS_CONFIG_AUTHORITY_JSON ? LCS_CONFIG_STATUS_VIEW_FORMAT : LCS_CONFIG_STATUS_FORMAT;
     if (lcs_buf_put_u16(&w, format) || lcs_buf_put_u16(&w, view->count) || lcs_buf_put_u16(&w, view->self))
         return -1;
@@ -159,7 +162,8 @@ int lcs_config_status_view_decode(const void *payload, size_t length, lcs_config
     lcs_buf_reader_init(&r, payload, length);
     lcs_config_status_view_t next = {0};
     uint16_t format;
-    if (lcs_buf_get_u16(&r, &format) || (format != LCS_CONFIG_STATUS_FORMAT && format != LCS_CONFIG_STATUS_VIEW_FORMAT && format != LCS_CONFIG_STATUS_COMMANDS_FORMAT) ||
+    if (lcs_buf_get_u16(&r, &format) || (format != LCS_CONFIG_STATUS_FORMAT && format != LCS_CONFIG_STATUS_VIEW_FORMAT &&
+        format != LCS_CONFIG_STATUS_COMMANDS_FORMAT && format != LCS_CONFIG_STATUS_FROZEN_FORMAT) ||
         lcs_buf_get_u16(&r, &next.count) || lcs_buf_get_u16(&r, &next.self) ||
         !next.count || next.count > LCS_MAX_NODES || next.self >= next.count)
         return -1;
@@ -173,7 +177,8 @@ int lcs_config_status_view_decode(const void *payload, size_t length, lcs_config
             return -1;
     }
     if (format >= LCS_CONFIG_STATUS_VIEW_FORMAT &&
-        (lcs_buf_get_u8(&r, &next.authority) || next.authority != LCS_CONFIG_AUTHORITY_JSON ||
+        (lcs_buf_get_u8(&r, &next.authority) ||
+         next.authority != (format == LCS_CONFIG_STATUS_FROZEN_FORMAT ? LCS_CONFIG_AUTHORITY_INI : LCS_CONFIG_AUTHORITY_JSON) ||
          lcs_buf_get_u8(&r, &next.admitted) || lcs_buf_get_u16(&r, &next.phase) ||
          lcs_buf_get_u64(&r, &next.committed_revision) || lcs_buf_get_u64(&r, &next.applied_revision) ||
          lcs_buf_get_u64(&r, &next.pending_revision) ||
@@ -182,6 +187,7 @@ int lcs_config_status_view_decode(const void *payload, size_t length, lcs_config
          get_string(&r, next.pending_digest, sizeof(next.pending_digest)) ||
          get_string(&r, next.error, sizeof(next.error)))) return -1;
     if (format == LCS_CONFIG_STATUS_COMMANDS_FORMAT && (lcs_buf_get_u8(&r, &next.dynamic_commands) || next.dynamic_commands != 1)) return -1;
+    if (format == LCS_CONFIG_STATUS_FROZEN_FORMAT && next.phase != LCS_CONFIG_DIAG_FROZEN) return -1;
     if (r.off != r.len || !view_valid(&next))
         return -1;
     *view = next;
@@ -190,7 +196,7 @@ int lcs_config_status_view_decode(const void *payload, size_t length, lcs_config
 
 const char *lcs_config_status_phase_name(uint16_t phase)
 {
-    static const char *names[] = {"legacy", "recovering", "blocked", "admitting", "active", "failed", "stopping"};
+    static const char *names[] = {"legacy", "recovering", "blocked", "admitting", "active", "failed", "stopping", "frozen"};
     return phase < sizeof(names) / sizeof(*names) ? names[phase] : "unknown";
 }
 

@@ -89,8 +89,9 @@ instances, do not extend deadlines on exact retries, and drop obsolete replies.
 Writer work survives requester loss; deadline/cancellation never thaws storage.
 The explicit collector requires its own durable local freeze and never promotes
 initialization or switches authority by itself. Ordinary startup does not start
-freeze collection; automatic activation/live frozen-startup recovery are still
-unfinished. HELLO, released wire-5 messages, local protocol and release version
+freeze collection; automatic initialization/activation is still unfinished.
+Fenced frozen-startup resumption uses only wire-6 coordination. HELLO layouts,
+released wire-5 messages, local protocol and release version
 are unchanged; these types belong to unreleased wire 6.
 
 Wire 6 also reserves `CONFIG_TX_CONTROL` (33), `CONFIG_TX_BEGIN` (34),
@@ -387,6 +388,24 @@ and acknowledgement (two sync boundaries). After explicit coordinated
 authorization, promotion syncs a format-2 INITIALIZING intent and follows the
 existing initialization order (ten further boundaries). A FROZEN restart never
 promotes itself. Older readers reject format 3 instead of silently importing INI.
-The current daemon refuses frozen startup before listeners until live upgrade
-peering/resumption is implemented. No peer/CLI wire, resource-schema or release
-version changes accompany this private storage-format addition.
+Healthy frozen startup can resume coordination with resource voting/placement
+fenced, without rewriting the record or creating journals; contradictory history
+still fails before listeners. This private storage format does not change the
+resource schema or release version. Automatic activation remains unfinished.
+
+## Frozen configuration diagnostic format 4
+
+Local `config status` types 14/15 add diagnostic format 4 for a durable FROZEN
+runtime. It retains the member-view prefix and format-2 extension layout, but
+requires INI authority, phase `frozen` (7), admitted zero, zero revisions and empty
+committed/applied/pending digests. Dynamic command capability is absent/false;
+the local shadow-prepared flag must be false. Error text explains the pending
+coordination. It is not an activation or lease-voting proof.
+
+Legacy INI remains format 1 and activated JSON remains format 2/3. Older clients
+reject format 4 rather than reporting a frozen node as ordinary active INI.
+The CLI renders `application_state: frozen` and `admitted: false`; read-only
+export remains schema-1/revision-zero baseline data. No peer message layout or
+ordinary local protocol number changes. Cold frozen startup permits only wire-6
+HELLO admission and repeats unchanged advisory status for liveness while resource
+frames remain fenced.

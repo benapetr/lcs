@@ -720,6 +720,63 @@ static void test_freeze_failure_and_shutdown(void)
     }
 }
 
+static void test_frozen_startup_and_status(void)
+{
+    initialize(); g_state.self_index = 0; g_state.instance_id = 100;
+    strcpy(readiness_directory, "/tmp/lcs-frozen-startup.XXXXXX"); assert(mkdtemp(readiness_directory));
+    char error[256]; assert(!lcs_config_store_open(&readiness_store, readiness_directory, error, sizeof(error)));
+    g_state.config_bootstrap.state = readiness_store;
+    lcs_config_activation_t activation = {0}; lcs_config_t *base = malloc(sizeof(*base)); assert(base);
+    assert(!lcs_config_activation_freeze(&activation, &readiness_store, &g_state.cfg, base, error, sizeof(error)));
+    lcs_config_activation_close(&activation); free(base);
+    /* Later valid INI edits include an added resource and a changed backend. */
+    g_state.cfg.resources[1] = g_state.cfg.resources[0]; strcpy(g_state.cfg.resources[1].name, "extra");
+    strcpy(g_state.cfg.resources[1].address, "192.0.2.30/32");
+    strcpy(g_state.cfg.resources[0].address, "192.0.2.20/32"); g_state.cfg.resource_count = 2;
+    assert(!lcs_config_finalize(&g_state.cfg, error, sizeof(error)));
+    assert(!lcs_config_runtime_open(&g_state.config_runtime, &g_state.config_bootstrap.state, &g_state.cfg, error, sizeof(error)));
+    g_state.config_status.serial = 0; g_state.config_status_generation = 0;
+    assert(config_peer_resume_frozen(error, sizeof(error)) < 0); /* Existing epochs/grants may never be reset. */
+    assert(g_state.resources[0].epoch == 123 && g_state.cfg.resource_count == 2);
+    memset(g_state.resources, 0, sizeof(g_state.resources)); memset(g_state.lease_grants, 0, sizeof(g_state.lease_grants));
+    establish(1, 6); assert(config_peer_resume_frozen(error, sizeof(error)) < 0); g_state.peers[1].fd = -1;
+    assert(!config_peer_resume_frozen(error, sizeof(error)));
+    assert(g_state.cfg.resource_count == 1 && !strcmp(g_state.cfg.resources[0].name, "vip"));
+    assert(!strcmp(g_state.cfg.resources[0].address, "192.0.2.10/32"));
+    assert(g_state.config_application_fenced && g_state.config_application_remapping && resource_config_is_fenced(0));
+    assert(!g_state.voting_ready && !g_state.resource_generation_enabled && !g_state.resource_generation_admitted);
+    assert(g_state.config_bootstrap.initialization_locked && !g_state.config_bootstrap.prepared);
+    assert(g_state.config_coordinator.initialized && g_state.config_coordinator.phase == LCS_CONFIG_COORD_IDLE);
+    assert(!g_state.config_runtime.agreement.store && !g_state.config_runtime.requests.store && !config_peer_configuration_vote_ready());
+    establish(1, 6); establish(2, 6); g_state.peers[1].instance_id = 200; g_state.peers[2].instance_id = 300;
+    queued = 0; config_peer_process(-1); assert(queued == 2);
+    uint64_t serial = g_state.config_status.serial;
+    config_peer_process(-1); assert(queued == 2);
+    g_state.config_status_keepalive_ms = 0; config_peer_process(-1);
+    assert(queued == 4 && g_state.config_status.serial == serial && !g_state.config_status.prepared);
+    assert(!g_state.config_initialization.active && !g_state.config_coordinator.storage.pid);
+    lcs_config_status_view_t view, decoded;
+    assert(!config_peer_view(&view) && view.phase == LCS_CONFIG_DIAG_FROZEN && !view.admitted);
+    unsigned char payload[4096], saved[4096]; size_t length;
+    assert(!lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) && payload[1] == 4);
+    memcpy(saved, payload, length);
+    assert(!lcs_config_status_view_decode(payload, length, &decoded));
+    assert(decoded.authority == LCS_CONFIG_AUTHORITY_INI && decoded.phase == LCS_CONFIG_DIAG_FROZEN);
+    assert(!decoded.dynamic_commands && !decoded.committed_revision && !strcmp(lcs_config_status_phase_name(decoded.phase), "frozen"));
+    for (size_t i = 0; i < length; i++) assert(lcs_config_status_view_decode(payload, i, &decoded) < 0);
+    for (unsigned format = 1; format <= 3; format++)
+    { memcpy(payload, saved, length); payload[1] = format; assert(lcs_config_status_view_decode(payload, length, &decoded) < 0); }
+    view.admitted = 1; assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0); view.admitted = 0;
+    view.dynamic_commands = 1; assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0); view.dynamic_commands = 0;
+    view.nodes[view.self].status.prepared = 1; assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
+    view.nodes[view.self].status.prepared = 0; view.committed_revision = 1;
+    assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
+    assert(config_peer_resume_frozen(error, sizeof(error)) < 0); /* Not a live reconfiguration entry point. */
+    config_peer_stop(); assert(config_peer_stopped()); lcs_config_runtime_close(&g_state.config_runtime);
+    assert(!unlinkat(readiness_store.directory_fd, "activation.json", 0)); assert(!unlinkat(readiness_store.directory_fd, "lock", 0));
+    lcs_config_store_close(&readiness_store); assert(!rmdir(readiness_directory));
+}
+
 int main(void)
 {
     test_metadata_and_reload();
@@ -733,6 +790,7 @@ int main(void)
     test_freeze_peer_admission();
     test_durable_freeze_exchange();
     test_freeze_failure_and_shutdown();
+    test_frozen_startup_and_status();
     puts("configuration peer metadata and explicit readiness unit tests passed");
     return 0;
 }
