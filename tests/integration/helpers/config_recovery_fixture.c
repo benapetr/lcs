@@ -11,10 +11,12 @@ static char error[256];
 
 int main(int argc, char **argv)
 {
+    bool activation_chosen = argc == 3 && !strcmp(argv[2], "activation-chosen");
+    bool activation_applying = argc == 3 && !strcmp(argv[2], "activation-applying");
     bool activation_reserved = argc == 3 && !strcmp(argv[2], "activation-reserved");
     bool activation_promised = argc == 3 && !strcmp(argv[2], "activation-promised");
     bool activation_accepted = argc == 3 && !strcmp(argv[2], "activation-accepted");
-    bool activation_pending = activation_reserved || activation_promised || activation_accepted;
+    bool activation_pending = activation_reserved || activation_promised || activation_accepted || activation_chosen || activation_applying;
     bool required_history = argc == 3 && !strcmp(argv[2], "required-history");
     bool freeze = argc == 3 && !strcmp(argv[2], "freeze");
     bool prepared = argc == 3 && !strcmp(argv[2], "prepared");
@@ -95,6 +97,10 @@ int main(int argc, char **argv)
             CHECK(lcs_config_agreement_prepare(&agreement, 1, agreement.committed.digest, 64, error, sizeof(error)));
         if (activation_accepted)
             CHECK(lcs_config_agreement_accept(&agreement, agreement.committed.digest, 64, &value, error, sizeof(error)));
+        if (activation_chosen || activation_applying)
+            CHECK(lcs_config_agreement_learn(&agreement, agreement.committed.digest, 64, 5, &value, error, sizeof(error)));
+        if (activation_applying)
+            CHECK(lcs_config_application_begin(&application, &agreement, error, sizeof(error)));
         lcs_config_value_clear(&value); free(document); lcs_config_requests_close(&requests);
         goto done;
     }

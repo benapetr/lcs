@@ -90,8 +90,9 @@ int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
                                        char *err, size_t err_len)
 {
     const lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    bool activation = lcs_config_runtime_activation_chosen(runtime);
     if (!live || live->prepared || !recovery || recovery->coordinator || recovery->phase != LCS_CONFIG_RECOVERY_IDLE ||
-        !runtime->requires_recovery || !runtime->base || !projection_storage_ready(runtime) || !runtime->application.applied.revision || !g_state.instance_id ||
+        !runtime->requires_recovery || !runtime->base || !projection_storage_ready(runtime) || (!runtime->application.applied.revision && !activation) || !g_state.instance_id ||
         g_state.self_index != lcs_config_self_index(runtime->base) || config_reload_in_progress() ||
         g_state.resource_generation_enabled || g_state.voting_ready || g_state.config_reload.active_generation == UINT64_MAX ||
         !lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) || !pristine())
@@ -100,13 +101,14 @@ int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
     if (!applied) return reject(err, err_len, "cannot allocate authoritative recovery definitions");
     int result = lcs_resource_config_decode(runtime->application.applied.document, runtime->application.applied.length,
         runtime->base, applied, &revision, err, err_len);
-    if (!result && (revision != runtime->application.applied.revision || applied->resource_schema_version != LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION ||
+    if (!result && (revision != runtime->application.applied.revision || applied->resource_schema_version != (activation ? LCS_RESOURCE_SCHEMA_VERSION : LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION) ||
         !matches(applied, &runtime->application.applied) || lcs_config_candidate_validate(&g_state.cfg, applied, err, err_len))) result = -1;
     if (result) { free(applied); return -1; }
     /* Fence before any cancellation callback can inspect resource state. */
     g_state.config_application_fenced = g_state.config_application_remapping = true;
     g_state.config_application_drain_mask = UINT32_MAX;
-    result = peer_install_resource_generation(epoll_fd, &runtime->application.applied);
+    /* Revision-zero INI is cleanup authority, never a dynamic generation. */
+    result = activation ? 0 : peer_install_resource_generation(epoll_fd, &runtime->application.applied);
     if (result) { free(applied); return reject(err, err_len, "cannot establish fenced recovery generation"); }
     empty_tables(); g_state.cfg = *applied; free(applied);
     g_state.config_reload.active_generation++;
@@ -129,7 +131,8 @@ int lcs_config_recovery_live_install(void *context, const lcs_config_reconcile_v
         recovery->install != lcs_config_recovery_live_install || recovery->context != live ||
         !view || !view->value || !view->target || !view->old_config || !view->plan || view->attempt != recovery->attempt ||
         !view->attempt || !lcs_config_value_equal(view->value, &recovery->target) || !runtime->requires_recovery ||
-        !g_state.config_application_fenced || !g_state.config_application_remapping || !g_state.resource_generation_enabled ||
+        !g_state.config_application_fenced || !g_state.config_application_remapping ||
+        (!g_state.resource_generation_enabled && !lcs_config_runtime_activation_chosen(runtime)) ||
         g_state.resource_generation_admitted ||
         g_state.voting_ready || !lcs_config_startup_verified(recovery->cleanup, runtime, g_state.instance_id) ||
         !matches(view->target, view->value) || view->target->resource_schema_version != LCS_RESOURCE_DYNAMIC_SCHEMA_VERSION)

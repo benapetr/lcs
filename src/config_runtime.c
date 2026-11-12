@@ -62,6 +62,24 @@ bool lcs_config_runtime_activation_pending(const lcs_config_runtime_t *runtime)
     return true;
 }
 
+bool lcs_config_runtime_activation_chosen(const lcs_config_runtime_t *runtime)
+{
+    return runtime && runtime->requires_recovery && runtime->base &&
+        runtime->activation.base == runtime->base && runtime->activation.requests_required &&
+        lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) &&
+        runtime->agreement.committed.revision == 1 && runtime->agreement.committed_ballot &&
+        runtime->agreement.committed_voters &&
+        !strcmp(runtime->agreement.parent_digest, runtime->activation.baseline.digest) &&
+        lcs_config_value_equal(&runtime->application.applied, &runtime->activation.baseline) &&
+        (!runtime->application.pending.document ||
+         lcs_config_value_equal(&runtime->application.pending, &runtime->agreement.committed)) &&
+        !runtime->application.history[0].document && !runtime->application.history[1].document &&
+        runtime->requests.store == runtime->activation.store && runtime->requests.base == runtime->base &&
+        !runtime->requests.poisoned &&
+        !strcmp(runtime->requests.member, runtime->activation.member) &&
+        !strcmp(runtime->requests.membership, runtime->activation.membership);
+}
+
 void lcs_config_runtime_close(lcs_config_runtime_t *runtime)
 {
     lcs_config_requests_close(&runtime->requests);

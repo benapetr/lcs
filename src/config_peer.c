@@ -654,7 +654,8 @@ void config_peer_process(int epoll_fd)
         g_state.config_runtime.activation.store && !g_state.config_runtime.activation.poisoned &&
         (g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
          lcs_config_runtime_initialization_prepared(&g_state.config_runtime) ||
-         lcs_config_runtime_activation_pending(&g_state.config_runtime)) && now >= g_state.config_status_keepalive_ms;
+         lcs_config_runtime_activation_pending(&g_state.config_runtime) ||
+         lcs_config_runtime_activation_chosen(&g_state.config_runtime)) && now >= g_state.config_status_keepalive_ms;
     if (keepalive)
     {
         uint64_t interval = g_state.cfg.peer_timeout_ms / 3u;

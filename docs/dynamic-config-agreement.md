@@ -501,8 +501,21 @@ rewrite any of these records, submit a new request, infer commitment or clear a
 promise. Lower ballots remain rejected after restart. Metadata keeps wire-6
 coordination alive while resource votes/placement, reload, JSON authority and
 mutation admission remain fenced; quorum-only nodes perform no backend work.
-Learned activation and initial application still require separate integration.
-This does not enable automatic migration or resource admission.
+A recovered learned schema-2 revision-one activation may now start initial
+application before listeners when the exact baseline remains applied. Pending
+work must be absent or match that chosen value; missing mandatory history or
+barrier still fails closed. The daemon installs baseline definitions under global
+fences without inventing a dynamic revision-zero generation. It persists BEGIN,
+cleans the retained baseline and obtains old-owner proof before installing the
+chosen generation and recording FINISH. Baseline predecessor history supports
+subsequent completed-scope recovery. Only fresh generation synchronization,
+restart waiting and quorum permit final admission and its durable request receipt.
+Quorum-only nodes follow catalog/application admission without backend operations.
+Failed cleanup retains baseline/pending evidence and resource fences; crash/restart
+retries from those durable records. This path neither changes the learned decision
+nor submits another activation proposal. Live transition from a running frozen
+coordinator into this recovery controller remains unfinished.
+This does not initiate automatic migration from ordinary INI startup.
 
 Shutdown stops collection and cancels any configuration writer while continuing
 to poll child completion alongside resource shutdown. Runtime/store handles are

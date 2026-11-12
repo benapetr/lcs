@@ -15,12 +15,15 @@ typedef struct
 } lcs_config_recovery_live_t;
 
 /* Zero-initialize the adapter and an unstarted controller.
- * Explicit pre-listener bootstrap for an already activated schema-2 catalog.
+ * Explicit pre-listener bootstrap for an activated schema-2 catalog or a
+ * validated learned revision-one activation with revision zero still applied.
  * Requires pristine daemon resource/grant tables, no sessions/ordinary workers,
  * valid recovered authority, frozen bootstrap storage and a new adapter. Install
- * exact last-applied definitions (never INI/pending), fence every resource and publish an unadmitted
- * wire-6 generation. Does not initialize a coordinator, clean a backend, or
- * authorize leases/votes. Revision-zero activation remains a separate path. */
+ * exact last-applied definitions (never current INI/pending), fence every resource
+ * and publish an unadmitted wire-6 generation for nonzero applied revisions.
+ * A chosen activation retains its baseline without inventing a revision-zero
+ * generation; installation requires cleanup and old-owner proof first. Does not
+ * initialize a coordinator, clean a backend or authorize leases/votes. */
 int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
                                        lcs_config_recovery_t *recovery, int epoll_fd,
                                        char *err, size_t err_len);

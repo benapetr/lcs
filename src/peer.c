@@ -567,7 +567,8 @@ static int peer_decode_hello(const void *payload, size_t len, const struct socka
     if (!g_state.resource_generation_enabled && g_state.config_application_remapping &&
         g_state.config_runtime.activation.store && (g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
         lcs_config_runtime_initialization_prepared(&g_state.config_runtime) ||
-        lcs_config_runtime_activation_pending(&g_state.config_runtime)) &&
+        lcs_config_runtime_activation_pending(&g_state.config_runtime) ||
+         lcs_config_runtime_activation_chosen(&g_state.config_runtime)) &&
         *protocol_version < LCS_PROTO_FEATURE_CONFIG_FREEZE)
     {
         snprintf(error, error_len, "frozen configuration coordination requires wire 6");

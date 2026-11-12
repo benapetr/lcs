@@ -444,3 +444,23 @@ promises, inferring a decision or admitting resources. Diagnostic format 4 and
 wire-6-only frozen peering remain unchanged. Missing barrier/history fails closed;
 learned activation and initial application remain unfinished. No protocol,
 storage-format or release-version change is required.
+
+## Initial activation diagnostic format 5
+
+Local config-status types 14/15 add format 5 with the existing format-2 extension
+layout for a learned revision-one activation while revision zero remains applied.
+It requires JSON authority, committed revision 1, applied revision 0, valid learned
+and baseline digests, no admission or dynamic command capability, and recovering,
+blocked, failed or stopping phase. Pending revision is absent or exactly 1 with
+the committed digest. Active/admitting baseline state is invalid. Formats 2/3
+continue requiring nonzero applied revisions; older clients reject format 5.
+After FINISH, ordinary format 2/3 diagnostics resume. Frozen undecided state stays
+format 4. Peer wire 6, peer message layouts, disk formats, the ordinary local
+protocol number and release version remain unchanged.
+
+Chosen activation recovery uses the existing serialized application, cleanup,
+old-owner, projection and admission sequence. It preserves the majority decision,
+records baseline predecessor history at FINISH, and does not fabricate a dynamic
+revision-zero generation. Crash/restart after BEGIN or failed cleanup retains
+all fences until safe application and fresh sync/quorum admission. Automatic
+first-freeze/proposal creation and live activation handoff remain unfinished.

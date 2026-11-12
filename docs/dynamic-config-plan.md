@@ -468,6 +468,15 @@ durable distributed configuration protocol.
   retain resource, reload and mutation fences and frozen baseline cleanup. Cover
   lower-ballot rejection, missing proof/history, full/quorum-only restart and
   byte-identical evidence. Learned activation and initial application remain open.
+- [x] Recover a learned schema-2 revision-one activation before listeners when
+  its baseline remains applied, with either no pending application or that exact
+  pending value. Keep mandatory history/barrier checks, clean retained baseline
+  backends, obtain old-owner proof, publish/install the dynamic generation, FINISH
+  with baseline predecessor history, then require fresh sync/quorum admission.
+  Quorum-only members perform no backend work. Report baseline-applied recovery
+  and cleanup failures using local diagnostic format 5. Test cleanup failure and
+  crash/restart after BEGIN, absent history, baseline preservation, initial
+  admission and retained learned decisions. Live activation handoff remains open.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

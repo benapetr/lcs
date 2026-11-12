@@ -52,4 +52,9 @@ bool lcs_config_runtime_readiness_prepared(const lcs_config_runtime_t *runtime);
  * startup gate after runtime_open; never clears history or admits resources. */
 bool lcs_config_runtime_activation_pending(const lcs_config_runtime_t *runtime);
 
+/* After runtime_open validation: a learned schema-2 revision-one activation with
+ * its exact baseline still applied and no unrelated pending application/history.
+ * Allows fenced initial application, never generation or resource admission. */
+bool lcs_config_runtime_activation_chosen(const lcs_config_runtime_t *runtime);
+
 #endif

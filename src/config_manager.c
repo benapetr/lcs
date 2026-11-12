@@ -41,11 +41,12 @@ static void fail(const char *message)
 int config_manager_prepare(char *err, size_t err_len)
 {
     lcs_config_runtime_t *runtime = &g_state.config_runtime;
-    if (manager.enabled || !runtime->requires_recovery || !runtime->application.applied.revision ||
+    bool activation = lcs_config_runtime_activation_chosen(runtime);
+    if (manager.enabled || !runtime->requires_recovery || (!runtime->application.applied.revision && !activation) ||
         !runtime->base || !lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) ||
-        (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL && !runtime->application.history[0].document))
+        (g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_FULL && !activation && !runtime->application.history[0].document))
     {
-        snprintf(err, err_len, "activated durable readiness and known application history are required; revision-zero activation and missing-history recovery remain unavailable");
+        snprintf(err, err_len, "chosen dynamic authority, durable readiness and known application history are required");
         return -1;
     }
     manager.enabled = true;

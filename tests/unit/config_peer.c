@@ -911,6 +911,35 @@ static void test_initialization_interruption(void)
     }
 }
 
+static void test_activating_status_codec(void)
+{
+    initialize(); lcs_config_status_view_t view, decoded;
+    assert(!config_peer_view(&view)); view.authority = LCS_CONFIG_AUTHORITY_JSON;
+    view.committed_revision = 1; memset(view.committed_digest, 'a', 64); view.committed_digest[64] = 0;
+    memset(view.applied_digest, 'b', 64); view.applied_digest[64] = 0;
+    strcpy(view.error, "baseline cleanup requires repair");
+    const uint16_t phases[] = {LCS_CONFIG_DIAG_RECOVERING, LCS_CONFIG_DIAG_BLOCKED, LCS_CONFIG_DIAG_FAILED, LCS_CONFIG_DIAG_STOPPING};
+    unsigned char payload[8192]; size_t length;
+    for (size_t i = 0; i < sizeof(phases) / sizeof(phases[0]); i++) for (unsigned pending = 0; pending < 2; pending++)
+    {
+        view.phase = phases[i]; view.pending_revision = pending;
+        strcpy(view.pending_digest, pending ? view.committed_digest : "");
+        assert(!lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) && payload[1] == 5);
+        assert(!lcs_config_status_view_decode(payload, length, &decoded) && !decoded.applied_revision &&
+            decoded.committed_revision == 1 && !decoded.admitted && !decoded.dynamic_commands);
+        for (size_t n = 0; n < length; n++) assert(lcs_config_status_view_decode(payload, n, &decoded) < 0);
+        payload[1] = 2; assert(lcs_config_status_view_decode(payload, length, &decoded) < 0);
+        payload[1] = 4; assert(lcs_config_status_view_decode(payload, length, &decoded) < 0);
+    }
+    view.committed_revision = 2; assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
+    view.committed_revision = 1; view.phase = LCS_CONFIG_DIAG_ACTIVE; view.admitted = 1;
+    assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
+    view.phase = LCS_CONFIG_DIAG_ADMITTING; view.admitted = 0;
+    assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
+    view.phase = LCS_CONFIG_DIAG_BLOCKED; view.dynamic_commands = 1;
+    assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
+}
+
 static void test_automatic_readiness_and_restart(void)
 {
     initialize(); g_state.self_index = 0; g_state.instance_id = 100;
@@ -1040,6 +1069,7 @@ int main(void)
     test_metadata_and_reload();
     test_strict_codecs();
     test_dynamic_status_codec();
+    test_activating_status_codec();
     test_readiness_codecs();
     test_readiness_round();
     test_explicit_peer_readiness();

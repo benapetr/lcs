@@ -151,6 +151,11 @@ revision-zero preparation survive restart without rewrites, retaining promises,
 reservations and an accepted activation with its exact request identity. Missing
 proof/history fails closed. Resource voting/placement
 remain fenced; this does not enable JSON authority or definition commands.
+A learned revision-one activation may resume initial application after restart.
+Local diagnostic format 5 reports committed revision 1 and applied revision 0
+with admission disabled during baseline cleanup. Cleanup and old-owner proof
+precede generation installation; fresh synchronization and quorum precede
+admission. Older clients reject this new diagnostic format.
 .TP
 .B resource create NAME vip|service key=value...
 Create one definition through majority agreement and local configuration admission.

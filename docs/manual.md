@@ -43,6 +43,12 @@ over revision-zero history also permits recovery of retained promises, request
 reservations and an accepted activation value with its exact request identity,
 without rewriting records or inferring commitment. In-memory
 collection timeouts can retry; uncertain persistence requires disk recovery.
+A learned revision-one activation can resume initial application after restart,
+using retained baseline cleanup, old-owner proof and fresh sync/quorum before
+admission. During baseline cleanup, local diagnostic format 5 reports JSON
+authority with committed revision 1, applied revision 0 and admission disabled;
+cleanup failures remain visible as blocked. Ordinary INI startup still does not
+initiate activation.
 
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means

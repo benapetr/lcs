@@ -92,6 +92,7 @@ static lcs_config_value_t successor(unsigned action)
     return value;
 }
 
+static bool setup_activation;
 static void setup(bool pending, bool quorum_only)
 {
     forbid_io = false;
@@ -126,7 +127,10 @@ static void setup(bool pending, bool quorum_only)
     { strcpy(cfg->resources[i].pre_stop, hook); strcpy(cfg->resources[i].post_stop, hook); }
     assert(!lcs_config_finalize(cfg, error, sizeof(error)));
     assert(!lcs_config_store_open(&store, directory, error, sizeof(error)));
-    assert(!lcs_config_activation_open(&runtime.activation, &store, cfg, frozen, true, error, sizeof(error)));
+    if (setup_activation)
+        assert(!lcs_config_activation_open_requests(&runtime.activation, &store, cfg, frozen, true, error, sizeof(error)));
+    else
+        assert(!lcs_config_activation_open(&runtime.activation, &store, cfg, frozen, true, error, sizeof(error)));
     runtime.base = frozen;
     assert(!lcs_config_activation_resume(&runtime.activation, &runtime.agreement, &runtime.application, error, sizeof(error)));
     lcs_config_barrier_round_t round;
@@ -134,6 +138,13 @@ static void setup(bool pending, bool quorum_only)
     for (size_t i = 0; i < 3; i++) assert(!lcs_config_barrier_ready(&round, i, round.membership, round.baseline, error, sizeof(error)));
     assert(!lcs_config_barrier_seal(&round, error, sizeof(error)));
     assert(!lcs_config_barrier_open(&runtime.barrier, &runtime.activation, &runtime.agreement, &runtime.application, &round, error, sizeof(error)));
+    if (setup_activation)
+    {
+        lcs_config_value_t value = successor(0);
+        if (pending) assert(!lcs_config_application_begin(&runtime.application, &runtime.agreement, error, sizeof(error)));
+        lcs_config_value_clear(&value);
+        goto restart;
+    }
     for (unsigned action = 0; action < 2; action++)
     {
         lcs_config_value_t value = successor(action);
@@ -149,12 +160,13 @@ static void setup(bool pending, bool quorum_only)
     }
     /* Ordinary restart with conflicting INI resources must keep the frozen
      * journal/catalog; neither INI nor the newer pending definition is cleanup. */
+restart:
     cfg->resource_count = 1; strcpy(cfg->resources[0].systemd_unit, "wrong-ini.service");
     strcpy(cfg->resources[0].pre_stop, "/must-not-run"); strcpy(cfg->resources[0].post_stop, "/must-not-run");
     assert(!lcs_config_finalize(cfg, error, sizeof(error)));
     lcs_config_runtime_close(&runtime);
     assert(!lcs_config_runtime_open(&runtime, &store, cfg, error, sizeof(error)));
-    assert(runtime.requires_recovery && runtime.application.applied.revision == 2);
+    assert(runtime.requires_recovery && runtime.application.applied.revision == (setup_activation ? 0 : 2));
     assert(!strcmp(runtime.base->resources[0].systemd_unit, "baseline.service"));
     free(cfg); forbid_io = true;
 }
@@ -191,7 +203,7 @@ static void cleanup(lcs_config_startup_t *startup)
     assert(!lcs_config_startup_close(startup));
     forbid_io = false;
     lcs_config_runtime_close(&runtime);
-    const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json", "lock", "hook.sh", "trace", "hook-pid"};
+    const char *names[] = {"activation.json", "agreement.json", "application.json", "barrier.json", "requests.json", "lock", "hook.sh", "trace", "hook-pid"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) assert(!unlinkat(store.directory_fd, names[i], 0) || errno == ENOENT);
     lcs_config_store_close(&store); assert(!rmdir(directory));
     const char *env[] = {"LCS_STARTUP_FAIL_EVENT", "LCS_STARTUP_SLEEP_EVENT", "LCS_VIP_FAIL_DEL", "LCS_SYSTEMD_FAIL_STOP", "LCS_VIP_OP_DELAY_MS"};
@@ -1498,6 +1510,69 @@ static void test_recovery_admission_interruption(void)
     }
 }
 
+static void test_chosen_activation_recovery(void)
+{
+    for (unsigned q = 0; q < 2; q++) for (unsigned pending = 0; pending < 2; pending++)
+    {
+        setup_activation = true; setup(pending != 0, q != 0); setup_activation = false;
+        assert(lcs_config_runtime_activation_chosen(&runtime));
+        memset(&g_state, 0, sizeof(g_state)); g_state.cfg = *runtime.base;
+        g_state.config_runtime = runtime; memset(&runtime, 0, sizeof(runtime));
+        recovery_projection_open(); g_state.self_index = q ? 2 : 0; g_state.instance_id = q ? 902 : 900;
+        for (size_t i = 0; i < g_state.cfg.node_count; i++) g_state.peers[i].fd = -1;
+        lcs_config_recovery_t manager = {0}; lcs_config_recovery_live_t live = {0};
+        live_cancellations = 0; live_reload = live_cancel_bump = false;
+        assert(!lcs_config_recovery_live_prepare(&live, &manager, -1, error, sizeof(error)));
+        assert(!g_state.resource_generation_enabled && !g_state.resource_generation_admitted &&
+            g_state.config_application_fenced && g_state.config_application_remapping && !g_state.voting_ready);
+        assert(!strcmp(g_state.cfg.resources[0].systemd_unit, "baseline.service"));
+        lcs_config_coordinator_init(&g_state.config_coordinator, &g_state.config_runtime, &g_state.config_readiness);
+        assert(!lcs_config_coordinator_recover(&g_state.config_coordinator));
+        assert(!lcs_config_owner_network_init(&g_state.config_owners, g_state.config_runtime.base,
+            &g_state.config_runtime.application, (size_t)g_state.self_index, g_state.instance_id));
+        assert(!lcs_config_recovery_start(&manager, &g_state.config_coordinator, &g_state.config_owners,
+            lcs_config_recovery_live_install, &live));
+        uint64_t instances[LCS_MAX_NODES] = {0}; instances[g_state.self_index] = g_state.instance_id;
+        if (!q) setenv("LCS_VIP_FAIL_DEL", "1", 1);
+        for (unsigned i = 0; i < 5000; i++)
+        {
+            int result = lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL);
+            if (!q && manager.phase == LCS_CONFIG_RECOVERY_BLOCKED) { assert(result < 0); break; }
+            assert(result >= 0);
+            if (q && manager.phase == LCS_CONFIG_RECOVERY_READY) break;
+            assert(i < 4999); usleep(1000);
+        }
+        assert(g_state.config_application_remapping && g_state.config_application_fenced &&
+            !g_state.voting_ready && !g_state.resource_generation_admitted && g_state.config_runtime.requires_recovery);
+        if (!q)
+        {
+            assert(!g_state.config_runtime.application.applied.revision && g_state.config_runtime.application.pending.revision == 1);
+            assert(!g_state.resource_generation_enabled && !live.attempt);
+            unsetenv("LCS_VIP_FAIL_DEL"); assert(!lcs_config_recovery_retry(&manager, lcs_now_ms()));
+            /* Cleanup can retry; absent old-owner proof cannot install or FINISH. */
+            for (unsigned i = 0; i < 5000 && manager.phase != LCS_CONFIG_RECOVERY_OWNERS; i++)
+            { assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) >= 0); usleep(1000); assert(i < 4999); }
+            assert(!g_state.config_runtime.application.applied.revision && !g_state.resource_generation_enabled);
+            stop_manager(&manager);
+        }
+        else
+        {
+            assert(g_state.config_runtime.application.applied.revision == 1 && g_state.resource_generation_enabled);
+            assert(g_state.config_runtime.application.history[0].document && !g_state.config_runtime.application.history[0].revision);
+            assert(access(trace, F_OK) < 0 && errno == ENOENT);
+            recovery_projection_matches(&g_state.config_runtime.agreement.committed);
+            assert(!lcs_config_recovery_live_begin_admission(&live, error, sizeof(error)));
+            assert(!lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL));
+            g_state.voting_not_before_ms = 0; instances[0] = 900; sync_peer(0, 900);
+            assert(lcs_config_recovery_process(&manager, instances, lcs_now_ms(), no_owner_send, NULL) == 1);
+            assert(live.admitted && !g_state.config_runtime.requires_recovery && !g_state.config_application_remapping);
+            close_admitted_manager(&manager);
+        }
+        recovery_projection_close(); runtime = g_state.config_runtime; memset(&g_state, 0, sizeof(g_state));
+        lcs_config_startup_t empty = {0}; cleanup(&empty);
+    }
+}
+
 int main(void)
 {
     parent = getpid();
@@ -1509,6 +1584,7 @@ int main(void)
     test_recovery_manager_storage_failure_and_worker_stop(); test_recovery_manager_missing_evidence();
     test_concrete_recovery_tables(); test_concrete_quorum_recovery_tables();
     test_recovery_projection_cancellation(); test_recovery_admission_interruption();
+    test_chosen_activation_recovery();
     puts("authoritative startup cleanup, pending receipt recovery and worker lifetime unit tests passed");
     return 0;
 }
