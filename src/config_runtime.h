@@ -46,4 +46,10 @@ bool lcs_config_runtime_initialization_prepared(const lcs_config_runtime_t *runt
  * Permits fenced coordination recovery, not resource/JSON admission. */
 bool lcs_config_runtime_readiness_prepared(const lcs_config_runtime_t *runtime);
 
+/* Recovered mandatory-history revision-zero baseline plus a valid barrier.
+ * Retains promises/reservations and a validated accepted activation value with
+ * its exact request identity. No learned successor or application work. Read-only
+ * startup gate after runtime_open; never clears history or admits resources. */
+bool lcs_config_runtime_activation_pending(const lcs_config_runtime_t *runtime);
+
 #endif

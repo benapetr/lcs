@@ -11,10 +11,9 @@ int config_peer_refresh(void);
 void config_peer_process(int epoll_fd);
 int config_peer_receive(int node, const void *payload, size_t length);
 int config_peer_view(lcs_config_status_view_t *view);
-/* Explicit exchange only: automatic initialization/authority switching is not
- * enabled. The future activation coordinator calls start only after durable
- * local initialization and serializing INI reload. A completed in-memory round
- * still requires the shared barrier storage worker before configuration votes. */
+/* Readiness exchange after durable local initialization and serialized INI
+ * reload. The scheduler resumes this automatically after an existing freeze.
+ * A completed in-memory round still requires the shared barrier storage worker before configuration votes. */
 int config_peer_readiness_start(void);
 /* Explicit freeze collection only, after the local freeze is durable. Requires
  * every current member (including quorum-only) to negotiate freeze support.
@@ -22,11 +21,13 @@ int config_peer_readiness_start(void);
 int config_peer_freeze_start(void);
 /* Explicit per-member initialization workflow: collect all current durable
  * freezes (including quorum-only) then promote through the shared writer.
- * An existing collection may be used. No startup auto-trigger or activation. */
+ * An existing collection may be used. The scheduler resumes existing freezes;
+ * this does not create the first freeze or activate JSON. */
 int config_peer_initialization_start(void);
-/* Before listeners/workers only: restore a recovered FROZEN or pristine
+/* Before listeners/workers only: restore a recovered FROZEN or validated
  * mandatory-history revision-zero PREPARED baseline and its coordinator,
- * retaining resource/reload fences. Cleanup uses the retained baseline. This
+ * including promises/reservations/accepted activation with a valid barrier,
+ * while retaining resource/reload fences. Cleanup uses the retained baseline. This
  * restore itself does no initialization or authority switching. */
 int config_peer_resume_frozen(char *err, size_t err_len);
 int config_peer_receive_freeze(int epoll_fd, int node, uint16_t type,

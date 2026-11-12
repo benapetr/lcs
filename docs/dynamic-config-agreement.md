@@ -321,19 +321,21 @@ only after a durable freeze exists; automatic first-freeze/activation is unfinis
 ### Fenced restart resumption
 
 Before listeners or backend workers, `config_peer_resume_frozen()` accepts only a
-healthy recovered format-3 runtime or pristine mandatory-history format-2
-revision-zero preparation bound to the locked bootstrap store. It checks
+healthy recovered format-3 runtime or validated mandatory-history format-2
+revision-zero preparation bound to the locked bootstrap store. Without a barrier,
+that preparation must remain pristine. It checks
 pristine daemon tables, no pending reload/refresh, no open peer/client sessions,
 and the exact canonical frozen baseline. Existing resource leases, epochs and
 workers are rejected instead of being reset. Prepared journals are retained;
-promises, reservations and advanced application state are not treated
-as pristine preparation. A valid all-member barrier may accompany otherwise
-pristine preparation; recovery adopts it without rewriting history.
+promises and reservations are not treated as pristine preparation. With a valid
+all-member barrier, the separate undecided-activation recovery gate retains those
+records and an accepted activation value. Learned or advanced application state
+requires its separate recovery path.
 
 The daemon then installs those frozen definitions and empty runtime indices under
 resource voting/placement fences, locks bootstrap refresh, and restores the
-shared coordinator in IDLE, or READY when a valid barrier already exists. Full members perform ordinary startup cleanup using
-the frozen baseline; later valid INI backend/resource edits never select cleanup
+shared coordinator in IDLE, or READY when a valid barrier already exists. Full
+members perform ordinary startup cleanup using the frozen baseline; later valid INI backend/resource edits never select cleanup
 targets. Quorum-only nodes perform no backend operations. The INI file still
 passes normal parsing/static validation before recovery, so invalid syntax is
 not ignored by this stage.
@@ -355,9 +357,9 @@ authority, no admission, no revisions and no dynamic command capability. Read-on
 export returns the retained baseline. Mutation/reload commands and SIGHUP cannot
 thaw it. Prepared restarts do not rewrite history. An authorized INITIALIZING
 intent may finish its existing preparation during recovery; PREPARED requires
-existing healthy empty history. Promised/reserved or advanced unactivated state still fails closed pending
-separate recovery integration. A valid barrier over pristine revision-zero state
-resumes coordination with resource fences intact.
+existing healthy history. Without a valid barrier, promised/reserved unactivated
+state still fails closed. With that barrier, an undecided activation slot resumes
+coordination with resource fences intact, as described below.
 
 ### Coordinated local preparation after a durable freeze
 
@@ -490,10 +492,17 @@ these gates; live CLI mutation commands are not enabled.
 After `runtime_open`, the coordinator can adopt an existing valid barrier entirely
 in memory, including when application is behind so checkpoint recovery can run. It does not need new peer observations
 or rewrite proof. A pending application or poisoned handle still prevents voting.
-The daemon adopts a valid barrier over pristine mandatory-history revision-zero
-preparation during fenced startup. Promises, reservations or advanced unactivated
-state still require separate recovery integration. This does not enable automatic
-migration or resource admission.
+The daemon adopts a valid barrier over mandatory-history revision-zero
+preparation during fenced startup. It retains promises and request reservations
+for the undecided activation slot, and any validated accepted schema-2 revision-one
+value. That value must have its exact retained reservation; missing identity,
+proof or history never authorizes empty-journal reconstruction. Startup does not
+rewrite any of these records, submit a new request, infer commitment or clear a
+promise. Lower ballots remain rejected after restart. Metadata keeps wire-6
+coordination alive while resource votes/placement, reload, JSON authority and
+mutation admission remain fenced; quorum-only nodes perform no backend work.
+Learned activation and initial application still require separate integration.
+This does not enable automatic migration or resource admission.
 
 Shutdown stops collection and cancels any configuration writer while continuing
 to poll child completion alongside resource shutdown. Runtime/store handles are
@@ -516,8 +525,8 @@ require all members to remain online for subsequent majority-based edits.
 
 Startup checks for orphan, premature, malformed, foreign and incomplete barrier
 records before INI refresh or listeners. An existing valid barrier is retained
-alongside recovered agreement/application state. Pristine barrier-bearing
-preparation resumes fenced coordination; supported activated catalogs use their
+alongside recovered agreement/application state. Barrier-bearing
+undecided activation resumes fenced coordination; supported activated catalogs use their
 separate application/recovery workflow.
 A missing barrier leaves the configuration-vote predicate false. Existing
 initialization or readiness markers also prevent direct/background INI refresh.

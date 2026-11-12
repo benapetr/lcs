@@ -434,3 +434,13 @@ in READY without disk rewrites, under unchanged resource voting/placement fences
 Diagnostic format 4 still reports frozen INI authority, no admission/revisions or
 dynamic commands, with readiness-persisted text while awaiting activation.
 These workflow changes require no wire/storage format or release-version bump.
+
+Undecided activation recovery also retains revision-one promises, request
+reservations and a validated accepted schema-2 activation value over the frozen
+revision-zero baseline. Mandatory healthy history and the existing all-member
+barrier are required; an accepted value must have its exact request reservation.
+Startup restores configuration coordination without rewriting records, clearing
+promises, inferring a decision or admitting resources. Diagnostic format 4 and
+wire-6-only frozen peering remain unchanged. Missing barrier/history fails closed;
+learned activation and initial application remain unfinished. No protocol,
+storage-format or release-version change is required.

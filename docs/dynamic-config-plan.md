@@ -461,6 +461,13 @@ durable distributed configuration protocol.
   reload, JSON authority and mutation admission fenced. Verify stale replies,
   timeout retry, writer exclusion, full/quorum-only restart, unchanged proof and
   missing/corrupt history. First-freeze creation and JSON activation remain open.
+- [x] Resume the undecided revision-one activation slot after restart when a
+  valid all-member barrier and mandatory request history exist. Preserve promises,
+  reservations and accepted schema-2 activation values without rewriting records
+  or resubmitting request IDs. Require the accepted value's exact reservation;
+  retain resource, reload and mutation fences and frozen baseline cleanup. Cover
+  lower-ballot rejection, missing proof/history, full/quorum-only restart and
+  byte-identical evidence. Learned activation and initial application remain open.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

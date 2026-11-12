@@ -980,6 +980,55 @@ static void test_automatic_readiness_and_restart(void)
     char *again = NULL; size_t again_bytes;
     assert(!lcs_config_store_read(&readiness_store, "barrier.json", &again, &again_bytes, LCS_CONFIG_BARRIER_MAX, error, sizeof(error)));
     assert(bytes == again_bytes && !memcmp(record, again, bytes)); free(record); free(again);
+    /* A crash after reservation, PREPARE or ACCEPT must retain that exact
+     * undecided activation evidence, never reset it to pristine readiness. */
+    lcs_config_t *candidate = malloc(sizeof(*candidate)); assert(candidate);
+    assert(!lcs_resource_config_assign_identities(runtime->base, 0, runtime->base, candidate, error, sizeof(error)));
+    char *document = NULL; size_t document_length;
+    assert(!lcs_resource_config_encode(candidate, 1, &document, &document_length, error, sizeof(error))); free(candidate);
+    lcs_config_value_t accepted = {0};
+    assert(!lcs_config_value_init(&accepted, runtime->base, "restart-activation", document, document_length, error, sizeof(error))); free(document);
+    const char *records[] = {"activation.json", "agreement.json", "application.json", "requests.json", "barrier.json"};
+    for (unsigned stage = 0; stage < 3; stage++)
+    {
+        if (!stage) assert(!lcs_config_requests_reserve(&runtime->requests, &runtime->agreement, 0,
+            runtime->agreement.committed.digest, &accepted, error, sizeof(error)));
+        if (stage == 1) assert(!lcs_config_agreement_prepare(&runtime->agreement, 1,
+            runtime->agreement.committed.digest, 64, error, sizeof(error)));
+        if (stage == 2) assert(!lcs_config_agreement_accept(&runtime->agreement,
+            runtime->agreement.committed.digest, 64, &accepted, error, sizeof(error)));
+        assert(!lcs_config_runtime_readiness_prepared(runtime) && lcs_config_runtime_activation_pending(runtime));
+        runtime->requests.poisoned = true; assert(!lcs_config_runtime_activation_pending(runtime)); runtime->requests.poisoned = false;
+        runtime->requests.records[0].applied = true; assert(!lcs_config_runtime_activation_pending(runtime)); runtime->requests.records[0].applied = false;
+        runtime->barrier.ready = 1; assert(!lcs_config_runtime_activation_pending(runtime)); runtime->barrier.ready = 7;
+        if (stage == 2)
+        { runtime->requests.count = 0; assert(!lcs_config_runtime_activation_pending(runtime)); runtime->requests.count = 1; }
+        char *before[5]; size_t sizes[5];
+        for (size_t i = 0; i < 5; i++)
+            assert(!lcs_config_store_read(&readiness_store, records[i], &before[i], &sizes[i], LCS_CONFIG_ACTIVATION_MAX, error, sizeof(error)));
+        config_peer_stop(); assert(config_peer_stopped()); lcs_config_runtime_close(runtime);
+        memset(&g_state.config_coordinator, 0, sizeof(g_state.config_coordinator));
+        memset(&g_state.config_readiness, 0, sizeof(g_state.config_readiness));
+        g_state.config_status.serial = 0; g_state.config_status_generation = 0; g_state.instance_id++;
+        for (size_t i = 0; i < 3; i++) g_state.peers[i].fd = -1;
+        assert(!lcs_config_runtime_open(runtime, &g_state.config_bootstrap.state, &g_state.cfg, error, sizeof(error)));
+        assert(lcs_config_runtime_activation_pending(runtime) && !lcs_config_runtime_readiness_prepared(runtime));
+        assert(!config_peer_resume_frozen(error, sizeof(error))); config_peer_process(-1);
+        assert(config_peer_configuration_vote_ready() && !g_state.config_readiness.active && !g_state.config_coordinator.storage.pid);
+        assert(runtime->requests.count == 1 && runtime->agreement.promised == (stage ? 64 : 0));
+        if (stage == 2) assert(lcs_config_value_equal(&runtime->agreement.accepted, &accepted));
+        assert(resource_config_is_fenced(0) && !g_state.voting_ready && !g_state.resource_generation_admitted);
+        assert(!config_peer_view(&view) && view.phase == LCS_CONFIG_DIAG_FROZEN && !view.admitted);
+        for (size_t i = 0; i < 5; i++)
+        {
+            char *after; size_t size;
+            assert(!lcs_config_store_read(&readiness_store, records[i], &after, &size, LCS_CONFIG_ACTIVATION_MAX, error, sizeof(error)));
+            assert(size == sizes[i] && !memcmp(after, before[i], size)); free(after); free(before[i]);
+        }
+        if (stage) assert(lcs_config_agreement_prepare(&runtime->agreement, 1,
+            runtime->agreement.committed.digest, 32, error, sizeof(error)) != 0);
+    }
+    lcs_config_value_clear(&accepted);
     config_peer_stop(); lcs_config_runtime_close(runtime);
     const char *names[] = {"activation.json", "agreement.json", "application.json", "requests.json", "barrier.json", "lock"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) assert(!unlinkat(readiness_store.directory_fd, names[i], 0));

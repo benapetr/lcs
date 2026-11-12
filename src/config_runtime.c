@@ -30,6 +30,38 @@ bool lcs_config_runtime_readiness_prepared(const lcs_config_runtime_t *runtime)
         lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application);
 }
 
+/* runtime_open has already validated the journals and dynamic accepted value.
+ * This narrower startup gate admits only the undecided activation slot. */
+bool lcs_config_runtime_activation_pending(const lcs_config_runtime_t *runtime)
+{
+    if (!runtime || !runtime->requires_recovery || !runtime->base ||
+        runtime->activation.base != runtime->base || !runtime->activation.requests_required ||
+        !lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) ||
+        runtime->agreement.committed.revision || runtime->agreement.committed_ballot ||
+        runtime->agreement.committed_voters || *runtime->agreement.parent_digest ||
+        runtime->application.pending.document ||
+        !lcs_config_value_equal(&runtime->activation.baseline, &runtime->agreement.committed) ||
+        !lcs_config_value_equal(&runtime->activation.baseline, &runtime->application.applied) ||
+        runtime->requests.store != runtime->activation.store || runtime->requests.base != runtime->base ||
+        runtime->requests.poisoned || runtime->requests.count > LCS_CONFIG_REQUEST_HISTORY_MAX ||
+        strcmp(runtime->requests.member, runtime->activation.member) ||
+        strcmp(runtime->requests.membership, runtime->activation.membership)) return false;
+    for (size_t i = 0; i < runtime->requests.count; i++)
+    {
+        const lcs_config_request_record_t *record = &runtime->requests.records[i];
+        if (record->base_revision || record->committed || record->applied ||
+            strcmp(record->base_digest, runtime->activation.baseline.digest)) return false;
+    }
+    if (runtime->agreement.accepted.document)
+    {
+        const lcs_config_request_record_t *record = lcs_config_requests_find(&runtime->requests,
+            runtime->agreement.accepted.request_id);
+        if (!record || runtime->agreement.accepted.revision != 1 ||
+            strcmp(record->value_digest, runtime->agreement.accepted.digest)) return false;
+    }
+    return true;
+}
+
 void lcs_config_runtime_close(lcs_config_runtime_t *runtime)
 {
     lcs_config_requests_close(&runtime->requests);
