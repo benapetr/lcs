@@ -108,6 +108,12 @@ int lease_grant_local_acquire(int resource_idx, int owner_idx, uint64_t epoch, u
 {
     if (resource_idx < 0 || (size_t)resource_idx >= g_state.cfg.resource_count || owner_idx != g_state.self_index || !cluster_local_voting_ready())
         return -1;
+    /* Moves also call this helper directly. A durable lock must not permit
+     * them to create a new grant outside the ordinary acquisition path. */
+    const lease_grant_t *grant = &g_state.lease_grants[resource_idx];
+    if (g_state.config_runtime.activation.store && !g_state.resource_generation_enabled &&
+        (!lease_identity_matches(grant, owner_idx, g_state.instance_id, epoch, lease_id) ||
+         grant->deadline_ms <= lcs_now_ms())) return -1;
     return lease_grant_acquire(resource_idx, owner_idx, g_state.instance_id, epoch, lease_id, deadline_ms);
 }
 
@@ -147,6 +153,9 @@ int lease_accept_message(uint16_t type, const void *payload, size_t len, int sou
 
     if (res->state == LCS_RES_CONFLICT || res->state == LCS_RES_STOP_FAILED)
         return -1;
+    if (g_state.config_runtime.activation.store && !g_state.resource_generation_enabled &&
+        (type == LCS_MSG_LEASE_REQ || (type == LCS_MSG_LEASE_RENEW &&
+         !lease_identity_matches(grant, owner_node, sender_instance_id, epoch, lease_id)))) return -1;
 
     if (type == LCS_MSG_LEASE_RELEASE)
     {
@@ -416,6 +425,10 @@ static void lease_op_send_release_to_acked(int epoll_fd, lease_runtime_t *op)
 
 static int lease_start_operation(int epoll_fd, lease_op_type_t type, int resource_idx, int owner_idx, uint64_t epoch, uint64_t lease_id)
 {
+    if (g_state.config_runtime.activation.store && !g_state.resource_generation_enabled &&
+        (type == LCS_LEASE_OP_ACQUIRE || (type == LCS_LEASE_OP_RENEW &&
+         (!lease_identity_matches(&g_state.lease_grants[resource_idx], (uint16_t)owner_idx, g_state.instance_id, epoch, lease_id) ||
+          g_state.lease_grants[resource_idx].deadline_ms <= lcs_now_ms())))) return -1;
     if (type != LCS_LEASE_OP_RELEASE &&
         (!cluster_local_voting_ready() || resource_config_is_fenced(resource_idx)))
         return -1;

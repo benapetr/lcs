@@ -17,7 +17,7 @@ static bool valid(const lcs_config_freeze_message_t *message)
         digest_valid(r->membership) && digest_valid(r->baseline) &&
         ((message->kind == LCS_FREEZE_QUERY && !r->status) ||
          (message->kind == LCS_FREEZE_REPLY && r->status >= LCS_INITIALIZATION_FROZEN &&
-          r->status <= LCS_INITIALIZATION_MISMATCH));
+          r->status <= LCS_INITIALIZATION_LOCKED));
 }
 
 int lcs_config_freeze_encode(const lcs_config_freeze_message_t *message,

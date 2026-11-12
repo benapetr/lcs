@@ -292,8 +292,38 @@ static void test_definition_fence_rejects_votes_without_epoch_changes(void)
     assert(lease_accept_message(LCS_MSG_LEASE_REQ, payload, length, 1) < 0);
 }
 
+static void test_frozen_lock_allows_only_existing_renewals(void)
+{
+    initialize_state();
+    unsigned char payload[LCS_MAX_FRAME];
+    size_t length = encode(payload, 1, 3, 33, 101);
+    assert(!lease_accept_message(LCS_MSG_LEASE_REQ, payload, length, 1));
+    lcs_config_store_t store = {0}; g_state.config_runtime.activation.store = &store;
+    lease_grant_t before = g_state.lease_grants[0];
+    assert(lease_accept_message(LCS_MSG_LEASE_REQ, payload, length, 1) < 0);
+    assert(!memcmp(&before, &g_state.lease_grants[0], sizeof(before)));
+    fake_now_ms += 100;
+    assert(!lease_accept_message(LCS_MSG_LEASE_RENEW, payload, length, 1));
+    assert(g_state.lease_grants[0].deadline_ms > before.deadline_ms);
+    length = encode(payload, 1, 4, 34, 101);
+    before = g_state.lease_grants[0];
+    assert(lease_accept_message(LCS_MSG_LEASE_RENEW, payload, length, 1) < 0);
+    assert(!memcmp(&before, &g_state.lease_grants[0], sizeof(before)));
+    length = encode(payload, 1, 3, 33, 101);
+    assert(!lease_accept_message(LCS_MSG_LEASE_RELEASE, payload, length, 1));
+    assert(lease_accept_message(LCS_MSG_LEASE_RENEW, payload, length, 1) < 0);
+    g_state.config_runtime.activation.store = NULL;
+    length = encode(payload, 1, 4, 34, 101);
+    assert(!lease_accept_message(LCS_MSG_LEASE_REQ, payload, length, 1));
+    g_state.config_runtime.activation.store = &store;
+    fake_now_ms = g_state.lease_grants[0].deadline_ms;
+    assert(lease_accept_message(LCS_MSG_LEASE_RENEW, payload, length, 1) < 0);
+    assert(g_state.lease_grants[0].promised_epoch == 4);
+}
+
 int main(void)
 {
+    test_frozen_lock_allows_only_existing_renewals();
     test_grant_conflict_and_release();
     test_tentative_grant_expires_without_commit();
     test_commit_without_vote_is_observation_only();

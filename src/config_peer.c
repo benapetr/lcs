@@ -430,7 +430,7 @@ static uint8_t freeze_status(const lcs_config_freeze_message_t *query)
         lcs_config_runtime_initialization_prepared(runtime)) &&
         !runtime->activation.poisoned && g_state.config_bootstrap.initialization_locked && !coordinator->storage.pid)
         return !g_state.config_freeze_drained &&
-            runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ? LCS_INITIALIZATION_BUSY : LCS_INITIALIZATION_FROZEN;
+            runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ? LCS_INITIALIZATION_LOCKED : LCS_INITIALIZATION_FROZEN;
     uint64_t instances[LCS_MAX_NODES];
     if (!freeze_instances(instances) || g_state.resource_generation_enabled || runtime->requires_recovery ||
         runtime->base || !g_state.config_bootstrap_initialized || !g_state.config_bootstrap.prepared ||
@@ -451,6 +451,39 @@ static int send_freeze(int epoll_fd, size_t node, const lcs_config_freeze_messag
     return peer_queue_config_freeze(epoll_fd, (int)node,
         message->kind == LCS_FREEZE_QUERY ? LCS_MSG_CONFIG_FREEZE_QUERY : LCS_MSG_CONFIG_FREEZE_REPLY,
         payload, (uint32_t)length);
+}
+
+static void process_freeze_locks(int epoll_fd)
+{
+    if (!g_state.config_initialization_auto_resume || g_state.config_freeze_locks_confirmed ||
+        g_state.config_runtime.activation.phase != LCS_CONFIG_ACTIVATION_FROZEN ||
+        !g_state.config_runtime.activation.store || g_state.config_runtime.activation.poisoned ||
+        g_state.config_coordinator.closing || g_state.config_coordinator.failed || config_reload_in_progress()) return;
+    uint64_t now = lcs_now_ms(), instances[LCS_MAX_NODES];
+    bool all = freeze_instances(instances);
+    lcs_config_initialization_round_t *round = &g_state.config_freeze_locks;
+    if (round->active && !round->failed)
+    {
+        int result = lcs_config_initialization_poll(round, instances, g_state.config_reload.active_generation, now, NULL, 0);
+        if (result < 0) { g_state.config_freeze_locks_retry_ms = now + 1000u; return; }
+        if (result > 0)
+        { g_state.config_freeze_locks_confirmed = true; round->consumed = true; return; }
+    }
+    else
+    {
+        if (!all || now < g_state.config_freeze_locks_retry_ms || g_state.config_initialization_attempt == UINT64_MAX) return;
+        if (lcs_config_initialization_begin(round, g_state.config_runtime.base, instances,
+            g_state.config_reload.active_generation, ++g_state.config_initialization_attempt, now, NULL, 0)) return;
+        g_state.config_freeze_locks_next_ms = 0;
+    }
+    if (now < g_state.config_freeze_locks_next_ms) return;
+    g_state.config_freeze_locks_next_ms = now + 250u;
+    for (size_t i = 0; i < round->count; i++) if (i != round->self)
+    {
+        lcs_config_freeze_message_t query = {.kind = LCS_FREEZE_QUERY};
+        if (!lcs_config_initialization_query(round, i, instances[i], now, &query.receipt, NULL, 0))
+            (void)send_freeze(epoll_fd, i, &query);
+    }
 }
 
 static void process_freeze(int epoll_fd)
@@ -481,7 +514,8 @@ static void process_freeze(int epoll_fd)
         lcs_config_freeze_message_t reply = g_state.config_freeze_waiters[i].query;
         reply.kind = LCS_FREEZE_REPLY; reply.receipt.status = freeze_status(&reply);
         g_state.config_freeze_waiters[i].next_send_ms = now + 250u;
-        if (!send_freeze(epoll_fd, i, &reply) && reply.receipt.status != LCS_INITIALIZATION_BUSY)
+        if (!send_freeze(epoll_fd, i, &reply) && reply.receipt.status != LCS_INITIALIZATION_BUSY &&
+            reply.receipt.status != LCS_INITIALIZATION_LOCKED)
             g_state.config_freeze_waiters[i].pending = false;
     }
     lcs_config_initialization_round_t *round = &g_state.config_initialization;
@@ -528,6 +562,15 @@ int config_peer_receive_freeze(int epoll_fd, int node, uint16_t type, const void
     {
         if (message.receipt.responder_instance != peer->instance_id) return -1;
         if (message.receipt.requester_instance != g_state.instance_id) return 0;
+        lcs_config_initialization_round_t *locks = &g_state.config_freeze_locks;
+        if (locks->active && message.receipt.attempt == locks->attempt)
+        {
+            if (g_state.config_freeze_locks_confirmed || locks->failed || locks->consumed) return 0;
+            if (message.receipt.status == LCS_INITIALIZATION_LOCKED) message.receipt.status = LCS_INITIALIZATION_FROZEN;
+            int result = lcs_config_initialization_receipt(locks, (size_t)node, peer->instance_id,
+                &message.receipt, lcs_now_ms(), NULL, 0);
+            return result < 0 ? -1 : 0;
+        }
         int result = lcs_config_initialization_receipt(&g_state.config_initialization, (size_t)node,
             peer->instance_id, &message.receipt, lcs_now_ms(), NULL, 0);
         return result < 0 ? -1 : 0;
@@ -680,6 +723,7 @@ static void process_activation(void)
 void config_peer_process(int epoll_fd)
 {
     process_readiness(epoll_fd);
+    process_freeze_locks(epoll_fd);
     if (!g_state.resource_generation_enabled && g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN)
         (void)lcs_config_live_freeze_drain(epoll_fd, g_state.config_freeze_error, sizeof(g_state.config_freeze_error));
     process_freeze(epoll_fd);

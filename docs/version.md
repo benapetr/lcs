@@ -497,3 +497,14 @@ preserves indices, epochs, private promises and administrative state, and does
 not fabricate distributed owner proof or initialize history. Quorum-only nodes
 perform no backend work. This adds no wire/storage format, ordinary local protocol
 or release-version change. Automatic first-freeze initiation remains unfinished.
+
+The unreleased wire-6 freeze reply now adds LOCKED (status 4) to its existing
+format-1, 158-byte body (types 47/48). This is a semantic extension of unreleased
+wire 6, with no new layout, storage record, local protocol or release-version
+change. LOCKED proves only the durable reload/acquisition lock. A separate fresh
+all-member round, including quorum-only members, must confirm every lock before
+local owners drain. Exact unexpired old leases may renew during collection; new
+acquisitions, replacement identities and expired renewals are refused. FROZEN
+still requires drained owners, and only FROZEN can authorize initialization.
+Wire 5 is refused immediately after durable locking, even before backend drain.
+Automatic first-freeze initiation from ordinary INI startup remains unfinished.

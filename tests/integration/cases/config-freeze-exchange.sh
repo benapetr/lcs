@@ -6,12 +6,13 @@ trap cleanup_cluster EXIT
 prepare_cluster
 python3 - "$LCSD" "$LCS" "$(node_config node1)" "$(node_config node3)" \
     "$(node_port node2)" "$(node_port node3)" "$TEST_TMP/logs" <<'PY' || die 'freeze exchange regression failed'
-import contextlib, json, os, re, socket, struct, subprocess, sys, time
+import contextlib, json, os, re, select, socket, struct, subprocess, sys, time
 from pathlib import Path
 
 daemon, cli, config1, config3, port2, port3, logs = sys.argv[1:]
 MAGIC = 0x4c435331
 seq = 60000
+connections = {}
 for config in (config1, config3):
     path = Path(config)
     path.write_text(re.sub(r'(?m)^peer_timeout_ms\s*=\s*\d+\s*$', 'peer_timeout_ms = 10000', path.read_text()))
@@ -30,13 +31,31 @@ def frame(sock):
 
 def send(sock, kind, payload, sequence=None):
     global seq
+    if kind in (16, 17): connections[sock] = []
     seq += 1
     sock.sendall(struct.pack('!IHHII', MAGIC, kind, 0, len(payload), sequence or seq) + payload)
 
 def receive(sock, wanted):
-    for _ in range(128):
-        kind, _, payload = frame(sock)
-        if kind == wanted: return payload
+    until = time.monotonic()+8
+    while time.monotonic() < until:
+        queue = connections.setdefault(sock, [])
+        for index, (kind, payload) in enumerate(queue):
+            if kind == wanted:
+                del queue[index]
+                return payload
+        ready, _, _ = select.select([s for s in connections if s.fileno() >= 0], [], [], .1)
+        for peer in ready:
+            try: kind, _, payload = frame(peer)
+            except (EOFError, ConnectionResetError):
+                del connections[peer]
+                if peer is sock: raise
+                continue
+            if kind == 47:
+                # Prove the peer's durable lock only, never its owner drain.
+                reply = bytearray(payload); reply[2] = 2; reply[27] = 4
+                send(peer, 48, reply)
+            else:
+                connections[peer].append((kind, payload))
     raise AssertionError('expected frame absent')
 
 def identity(template, node, version, instance):
@@ -93,7 +112,7 @@ def frozen(sock, config, requester, responder, attempt, digests):
         reply = reply_for(sock, requester, responder, attempt)
         fields = struct.unpack('!HBQQQB', reply[:28])
         assert fields[:5] == (1, 2, requester, attempt, responder) and reply[28:] == digests
-        assert fields[5] in (1, 2)
+        assert fields[5] in (1, 2, 4)
         if fields[5] == 1: break
     else: raise AssertionError('durable freeze acknowledgement absent')
     record = Path(config+'.state', 'activation.json')
@@ -164,10 +183,14 @@ for config, contents in ((config1, contents1), (config3, contents3)):
             # correlated query can read the retained fact without another write.
             with socket.create_connection(('127.0.0.1', int(port3)), timeout=5) as sock:
                 sock.settimeout(5); send(sock, 16, identity(template, 0, 5, 100)); closed(sock)
-            with socket.create_connection(('127.0.0.1', int(port3)), timeout=5) as sock:
-                sock.settimeout(5); send(sock, 16, identity(template, 0, 6, 100))
-                ack = receive(sock, 17); resumed_instance = struct.unpack_from('!Q', ack, 16)[0]
-                assert frozen(sock, config, 100, resumed_instance, 2, digests) == contents
+            with contextlib.ExitStack() as stack:
+                resumed = []
+                for member, instance in ((0, 100), (1, 200)):
+                    sock = stack.enter_context(socket.create_connection(('127.0.0.1', int(port3)), timeout=5))
+                    sock.settimeout(5); send(sock, 16, identity(template, member, 6, instance))
+                    ack = receive(sock, 17); resumed_instance = struct.unpack_from('!Q', ack, 16)[0]
+                    resumed.append(sock)
+                assert frozen(resumed[0], config, 100, resumed_instance, 2, digests) == contents
         assert Path(config+'.state', 'activation.json').read_bytes() == contents
         assert_no_history(config)
 PY

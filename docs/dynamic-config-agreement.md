@@ -284,7 +284,9 @@ I/O keeps reload excluded and requires recovery instead of thawing/reimporting.
 Wire-6 frame types 47/48 carry a separate strict format-1 freeze query/reply body.
 Queries bind both daemon instances, increasing attempt, membership and complete
 baseline; their destination instance is nonzero and status is zero. Replies echo
-the tuple with FROZEN, BUSY or MISMATCH. The established peer source, frame type,
+the tuple with FROZEN, BUSY, MISMATCH or LOCKED. LOCKED (status 4) confirms
+a durable reload lock, but does not confirm that old resource owners have drained.
+The established peer source, frame type,
 kind, negotiated version, exact length and canonical digests are checked before
 any storage operation. Full and quorum-only members may collect confirmations for
 their own local metadata initialization; both persist and acknowledge freezes.
@@ -321,7 +323,20 @@ only after a durable freeze exists; automatic first-freeze/activation is unfinis
 
 ### Draining a running INI generation after freezing
 
-After successful durable FROZEN publication, ordinary daemons now fence every
+After successful durable FROZEN publication, each daemon first collects a
+correlated durable LOCKED or drained FROZEN receipt from every configured member,
+including quorum-only voters. This separate lock round binds current instances,
+complete baseline, membership and local reload generation, with an increasing
+attempt and fixed ten-second deadline. Session/generation changes and timeout
+invalidate the round; retries use a fresh attempt without thawing the durable lock.
+Late replies from completed lock rounds cannot complete initialization.
+
+While collecting locks, new lease acquisitions and votes are refused locally.
+Exact unexpired existing lease identities can still renew, preserving old owners
+until every member has excluded new acquisitions and INI reloads. Renewals cannot
+recreate expired grants or introduce a different owner, instance, epoch or lease ID.
+Wire-5 peers are refused as soon as the durable lock exists, before local draining.
+Only after all locks are confirmed do ordinary daemons fence every
 resource before cancelling moves and lease operations. Fenced resource RPCs are refused before registration so a
 legacy release cannot tear down the separate configuration connection. Legacy placement, new
 acquisition/renewal, incoming resource frames and INI reload remain excluded.
@@ -330,6 +345,8 @@ locally owned resources with their old hooks and dependency order, and keeps
 ordinary asynchronous backend/hook processing running. It never resets resource
 indices, epochs, private promises, administrative flags or peer sessions.
 
+LOCKED replies never count toward the subsequent all-member initialization round;
+that round uses a fresh attempt and requires drained FROZEN receipts.
 A FROZEN reply is withheld while local cleanup, hook/backend workers, lease/move
 operations, residual grants or remote ownership records remain outstanding.
 Remote records expire through the ordinary lease path; expiry does not replace

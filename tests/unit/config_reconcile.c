@@ -1480,6 +1480,8 @@ static void test_frozen_ini_drain(void)
         strcpy(g_state.cfg.resources[0].address, "192.0.2.99/32");
         assert(lcs_config_live_freeze_drain(-1, error, sizeof(error)) < 0 && !freeze_cancellations && !released_count);
         g_state.cfg = *runtime.base;
+        assert(!lcs_config_live_freeze_drain(-1, error, sizeof(error)) && !freeze_cancellations && !released_count);
+        g_state.config_freeze_locks_confirmed = true;
         int result = lcs_config_live_freeze_drain(-1, error, sizeof(error));
         assert(g_state.config_application_fenced && g_state.config_application_remapping && !g_state.voting_ready && freeze_cancellations == 2);
         if (!q)

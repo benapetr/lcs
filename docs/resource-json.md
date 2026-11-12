@@ -86,8 +86,11 @@ for future coordinated activation, not an operator migration procedure. See [dur
 replacement is not evidence of cluster agreement. Files are synced before
 replacement, followed by a directory sync; a failed sync after replacement is
 reported as an uncertain outcome.
-An explicit durable freeze of a running INI generation now fences new resource
-work and drains owned backends with the retained hooks and dependency order.
+An explicit durable freeze of a running INI generation blocks new acquisitions.
+Every member, including quorum-only voters, must confirm its durable reload lock
+before owners drain. Existing unexpired leases may renew while those confirmations
+are collected. The subsequent drain uses the retained hooks and dependency order;
+a lock confirmation alone cannot authorize initialization.
 FROZEN acknowledgements and local initialization wait for cleanup, workers and
 lease state to drain. Failed cleanup remains frozen and is reported by
 `config status`; repair/restart retains the baseline. Quorum-only nodes execute

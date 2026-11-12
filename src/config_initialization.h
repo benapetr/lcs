@@ -6,7 +6,7 @@
 
 #define LCS_CONFIG_INITIALIZATION_TIMEOUT_MS 10000u
 
-enum { LCS_INITIALIZATION_FROZEN = 1, LCS_INITIALIZATION_BUSY, LCS_INITIALIZATION_MISMATCH };
+enum { LCS_INITIALIZATION_FROZEN = 1, LCS_INITIALIZATION_BUSY, LCS_INITIALIZATION_MISMATCH, LCS_INITIALIZATION_LOCKED };
 
 /* Same-process collection state, never a wire/disk proof. The future upgrade
  * transport must obtain explicit freeze acknowledgements, not translate version

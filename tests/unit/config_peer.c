@@ -41,6 +41,7 @@ bool config_reload_in_progress(void) { return reload_busy; }
 int lcs_config_live_freeze_drain(int epoll_fd, char *err, size_t err_len)
 {
     (void)epoll_fd; (void)err; (void)err_len;
+    if (g_state.config_initialization_auto_resume && !g_state.config_freeze_locks_confirmed) return 0;
     g_state.config_freeze_drained = true; return 1; /* Backend drain is tested in config_reconcile. */
 }
 void lcs_log_debug(const char *fmt, ...) { (void)fmt; }
@@ -609,7 +610,7 @@ static void test_freeze_codec(void)
     message.receipt.responder_instance = 0;
     assert(lcs_config_freeze_encode(&message, bytes, sizeof(bytes), &length) < 0);
     message = freeze_query(1); message.kind = LCS_FREEZE_REPLY;
-    for (unsigned status = 1; status <= 3; status++)
+    for (unsigned status = 1; status <= 4; status++)
     {
         message.receipt.status = status;
         assert(!lcs_config_freeze_encode(&message, bytes, sizeof(bytes), &length));
@@ -786,6 +787,54 @@ static void test_frozen_startup_and_status(void)
     view.nodes[view.self].status.prepared = 0; view.committed_revision = 1;
     assert(lcs_config_status_view_encode(&view, payload, sizeof(payload), &length) < 0);
     assert(config_peer_resume_frozen(error, sizeof(error)) < 0); /* Not a live reconfiguration entry point. */
+    config_peer_stop(); assert(config_peer_stopped()); lcs_config_runtime_close(&g_state.config_runtime);
+    assert(!unlinkat(readiness_store.directory_fd, "activation.json", 0)); assert(!unlinkat(readiness_store.directory_fd, "lock", 0));
+    lcs_config_store_close(&readiness_store); assert(!rmdir(readiness_directory));
+}
+
+static void test_all_member_locks_before_drain(void)
+{
+    initialize(); g_state.self_index = 0; g_state.instance_id = 100;
+    strcpy(readiness_directory, "/tmp/lcs-freeze-locks.XXXXXX"); assert(mkdtemp(readiness_directory));
+    char error[256]; assert(!lcs_config_store_open(&readiness_store, readiness_directory, error, sizeof(error)));
+    g_state.config_bootstrap.state = readiness_store;
+    lcs_config_activation_t activation = {0}; lcs_config_t *base = malloc(sizeof(*base)); assert(base);
+    assert(!lcs_config_activation_freeze(&activation, &readiness_store, &g_state.cfg, base, error, sizeof(error)));
+    lcs_config_activation_close(&activation); free(base);
+    assert(!lcs_config_runtime_open(&g_state.config_runtime, &g_state.config_bootstrap.state, &g_state.cfg, error, sizeof(error)));
+    memset(g_state.resources, 0, sizeof(g_state.resources)); memset(g_state.lease_grants, 0, sizeof(g_state.lease_grants));
+    g_state.config_status.serial = 0; assert(!config_peer_resume_frozen(error, sizeof(error)));
+    establish(1, 6); establish(2, 6); g_state.peers[1].instance_id = 200; g_state.peers[2].instance_id = 300;
+    g_state.config_initialization_auto_resume = true;
+    config_peer_process(-1);
+    assert(g_state.config_freeze_locks.active && !g_state.config_freeze_drained);
+    assert(!g_state.config_initialization_requested && !g_state.config_coordinator.storage.pid);
+    lcs_config_freeze_message_t stale = last_freeze[1]; stale.kind = LCS_FREEZE_REPLY;
+    stale.receipt.status = LCS_INITIALIZATION_LOCKED;
+    g_state.config_freeze_locks.deadline_ms = lcs_now_ms(); config_peer_process(-1);
+    assert(g_state.config_freeze_locks.failed && !g_state.config_freeze_drained);
+    g_state.config_freeze_locks_retry_ms = 0; config_peer_process(-1);
+    assert(g_state.config_freeze_locks.attempt > stale.receipt.attempt);
+    assert(!receive_freeze(&stale, 1) && !g_state.config_freeze_locks.sealed);
+    lcs_config_freeze_message_t replies[3];
+    for (unsigned node = 1; node <= 2; node++)
+    {
+        replies[node] = last_freeze[node]; replies[node].kind = LCS_FREEZE_REPLY;
+        replies[node].receipt.status = LCS_INITIALIZATION_LOCKED;
+        assert(!receive_freeze(&replies[node], (int)node));
+        if (node == 1) { config_peer_process(-1); assert(!g_state.config_freeze_drained); }
+    }
+    config_peer_process(-1);
+    assert(g_state.config_freeze_locks_confirmed && g_state.config_freeze_drained);
+    g_state.config_initialization_retry_ms = 0; config_peer_process(-1);
+    assert(g_state.config_initialization.active && g_state.config_initialization_requested);
+    assert(g_state.config_initialization.attempt > replies[1].receipt.attempt);
+    assert(!receive_freeze(&replies[1], 1)); /* Delayed lock replies cannot withdraw a drained receipt. */
+    lcs_config_freeze_message_t pending = last_freeze[1]; pending.kind = LCS_FREEZE_REPLY;
+    pending.receipt.status = LCS_INITIALIZATION_LOCKED;
+    assert(!receive_freeze(&pending, 1)); config_peer_process(-1);
+    assert(!g_state.config_initialization.sealed && !g_state.config_coordinator.storage.pid);
+    assert(!g_state.config_runtime.agreement.store);
     config_peer_stop(); assert(config_peer_stopped()); lcs_config_runtime_close(&g_state.config_runtime);
     assert(!unlinkat(readiness_store.directory_fd, "activation.json", 0)); assert(!unlinkat(readiness_store.directory_fd, "lock", 0));
     lcs_config_store_close(&readiness_store); assert(!rmdir(readiness_directory));
@@ -1153,6 +1202,7 @@ int main(void)
     test_durable_freeze_exchange();
     test_freeze_failure_and_shutdown();
     test_frozen_startup_and_status();
+    test_all_member_locks_before_drain();
     test_coordinated_local_initialization();
     test_initialization_interruption();
     test_automatic_readiness_and_restart();

@@ -144,8 +144,11 @@ A durable pre-initialization freeze reports application_state frozen, INI
 authority, no admission and no dynamic command capability. On restart it restores
 the retained baseline for coordination, with resource voting, placement and
 mutations fenced; later valid INI resource edits do not replace that baseline.
-An explicit durable freeze also drains a running INI generation with its retained
-hooks and dependency order. Freeze acknowledgements wait for cleanup and lease
+An explicit durable freeze blocks new acquisitions. Every member, including
+quorum-only voters, must confirm its durable reload lock before owners drain.
+Exact unexpired leases can renew during lock collection. Owners then drain with
+the retained hooks and dependency order. Lock receipts cannot authorize
+initialization. Drained freeze acknowledgements wait for cleanup and lease
 state to drain; failed cleanup retains fences and appears in frozen diagnostics.
 Quorum-only members perform no backend work.
 Existing freezes can resume local preparation after fresh confirmation from every

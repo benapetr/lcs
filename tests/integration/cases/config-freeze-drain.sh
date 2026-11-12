@@ -46,7 +46,7 @@ for failed in (False,True):
     text=re.sub(r'(?m)^socket\s*=.*$', 'socket = '+sockpath,text)
     text=re.sub(r'(?m)^peer_timeout_ms\s*=.*$', 'peer_timeout_ms = 2000',text)
     Path(config).write_text(text+f'\npre_stop = {hook}\npost_stop = {hook}\n')
-    listeners=[]; peers={}; replies=[]; digests=None; next_heartbeat=0
+    listeners=[]; peers={}; replies=[]; digests=None; next_heartbeat=0; confirm_locks=False
     log=open(Path(tmp)/('warm-failure.log' if failed else 'warm-success.log'),'w')
     try:
         for port in (port2,port3):
@@ -77,6 +77,8 @@ for failed in (False,True):
                     elif kind in (20,22,23): send(s,21,struct.pack('!I',0)+b'ok'.ljust(128,b'\0'),seq)
                     elif kind==30:
                         digests=body[11:]; send(s,30,body)
+                    elif kind==47 and confirm_locks:
+                        reply=bytearray(body); reply[2]=2; reply[27]=4; send(s,48,reply)
                     elif kind==48: replies.append(body)
         def status():
             r=subprocess.run([cli,'-s',sockpath,'--json','status'],capture_output=True,timeout=3)
@@ -90,10 +92,25 @@ for failed in (False,True):
         if failed: marker.touch()
         source=next(s for s in peers if peers[s]==200)
         send(source,47,struct.pack('!HBQQQB',1,1,200,1,local,0)+digests)
+        # A durable local lock must keep the old owner renewing until every
+        # member confirms its own lock, even across multiple lease periods.
+        lease_ms=int(re.search(r'(?m)^lease_ms\s*=\s*(\d+)',text).group(1))
+        until=time.monotonic()+2*lease_ms/1000+.3
+        while time.monotonic()<until:
+            pump(.1)
+            current=status()
+            assert current and current['resources'][0]['state']=='active'
+            assert current['resources'][0]['epoch']==epoch
+            assert not trace.exists(), 'owner drained before all durable locks'
+        assert Path(config+'.state/activation.json').exists()
+        assert any(r[27]==4 for r in replies), 'durable lock was not acknowledged'
+        confirm_locks=True
+        # The original responder waiter may have expired; use a fresh attempt.
+        send(source,47,struct.pack('!HBQQQB',1,1,200,2,local,0)+digests)
         until=time.monotonic()+8
         while True:
             pump(.1)
-            matching=[r for r in replies if struct.unpack('!HBQQQB',r[:28])[:5]==(1,2,200,1,local)]
+            matching=[r for r in replies if struct.unpack('!HBQQQB',r[:28])[:5]==(1,2,200,2,local)]
             if failed:
                 r=subprocess.run([cli,'-s',sockpath,'--json','config','status'],capture_output=True,timeout=3)
                 if r.returncode==0 and 'cleanup failed' in json.loads(r.stdout)['error']: break
@@ -127,7 +144,7 @@ for failed in (False,True):
                 s,_=listener.accept(); s.settimeout(3); kind,seq,hello=receive(s); assert kind==16
                 local=struct.unpack_from('!Q',hello,16)[0]; send(s,17,identity(hello,node,instance),seq); peers[s]=instance
             source=next(s for s in peers if peers[s]==200)
-            send(source,47,struct.pack('!HBQQQB',1,1,200,2,local,0)+digests)
+            send(source,47,struct.pack('!HBQQQB',1,1,200,3,local,0)+digests)
             until=time.monotonic()+8
             while not any(r[27]==1 for r in replies):
                 pump(.1); assert time.monotonic()<until, 'repaired frozen restart failed to drain'

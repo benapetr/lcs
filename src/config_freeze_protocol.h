@@ -8,7 +8,8 @@
 enum { LCS_FREEZE_QUERY = 1, LCS_FREEZE_REPLY = 2 };
 
 /* Query status is zero; responder_instance explicitly targets the admitted
- * destination process. Replies retain the tuple and use FROZEN/BUSY/MISMATCH.
+ * destination process. Replies retain the tuple and use FROZEN/BUSY/MISMATCH/LOCKED. LOCKED proves the durable reload
+ * lock only; it is not a drained receipt or initialization authorization.
  * This is separate from advisory status and post-initialization readiness. */
 typedef struct
 {

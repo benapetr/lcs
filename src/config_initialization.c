@@ -86,7 +86,7 @@ int lcs_config_initialization_receipt(lcs_config_initialization_round_t *round,
     const lcs_config_initialization_receipt_t *receipt, uint64_t now_ms,
     char *err, size_t err_len)
 {
-    if (!receipt || receipt->status < LCS_INITIALIZATION_FROZEN || receipt->status > LCS_INITIALIZATION_MISMATCH ||
+    if (!receipt || receipt->status < LCS_INITIALIZATION_FROZEN || receipt->status > LCS_INITIALIZATION_LOCKED ||
         !receipt->requester_instance || !receipt->attempt || !receipt->responder_instance)
         return fail(NULL, err, err_len, "invalid freeze receipt");
     if (!round || !round->active || node >= round->count || node == round->self ||
@@ -99,7 +99,7 @@ int lcs_config_initialization_receipt(lcs_config_initialization_round_t *round,
         memcmp(receipt->baseline, round->baseline, sizeof(round->baseline)) || receipt->status == LCS_INITIALIZATION_MISMATCH)
         return fail(round, err, err_len, "conflicting current membership or effective resource definitions");
     uint32_t bit = UINT32_C(1) << node;
-    if (receipt->status == LCS_INITIALIZATION_BUSY)
+    if (receipt->status == LCS_INITIALIZATION_BUSY || receipt->status == LCS_INITIALIZATION_LOCKED)
         return round->frozen & bit ? fail(round, err, err_len, "confirmed member withdrew its freeze") : 0;
     round->frozen |= bit;
     round->sealed = round->frozen == round->required;

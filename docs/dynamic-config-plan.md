@@ -506,6 +506,14 @@ durable distributed configuration protocol.
   cleanup stays frozen, reports its exact error and cannot produce a positive
   freeze receipt. Exercise active VIP removal, failed removal, repaired restart
   with unchanged intent, dependency/hook ordering, conflicts and quorum-only behavior. Automatic first-freeze initiation remains open.
+- [x] Confirm a durable reload/acquisition lock from every configured member before
+  draining any running INI owner. Keep exact unexpired lease renewals during lock
+  collection, reject new/replacement grants, and refuse wire 5 immediately after
+  durable locking. Use separate instance/baseline/generation-bound attempts for
+  LOCKED proof and drained FROZEN receipts; LOCKED never authorizes initialization.
+  Cover timeout/retry, stale replies, owner renewal, failed cleanup and restart.
+  This prerequisite does not initiate the first freeze from ordinary INI startup.
+
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

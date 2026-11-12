@@ -150,6 +150,9 @@ int lcs_config_live_freeze_drain(int epoll_fd, char *err, size_t err_len)
         !definitions_equal(&g_state.cfg, runtime->base, 0) || !value_matches(&g_state.cfg, &runtime->activation.baseline))
     { snprintf(err, err_len, "resource drain requires an exact durable frozen INI baseline"); return -1; }
     if (err && err_len) err[0] = 0;
+    /* Every member must have a durable reload lock before any owner drains.
+     * Until then exact existing leases may renew, but new grants are refused. */
+    if (!g_state.config_freeze_locks_confirmed) return 0;
     /* Exclude placement, acquisition, renewal, handoff and incoming resource
      * traffic before cancelling anything. Ordinary backend callbacks still run. */
     g_state.config_application_fenced = g_state.config_application_remapping = true;

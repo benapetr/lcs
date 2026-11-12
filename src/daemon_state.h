@@ -486,7 +486,9 @@ typedef struct
     uint64_t config_initialization_attempt, config_initialization_next_send_ms;
     bool config_initialization_requested;
     bool config_initialization_auto_resume;
-    bool config_freeze_draining, config_freeze_drained;
+    bool config_freeze_draining, config_freeze_drained, config_freeze_locks_confirmed;
+    lcs_config_initialization_round_t config_freeze_locks;
+    uint64_t config_freeze_locks_next_ms, config_freeze_locks_retry_ms;
     char config_freeze_error[256];
     bool config_activation_auto_resume;
     uint64_t config_activation_attempt, config_activation_retry_ms;
