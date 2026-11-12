@@ -1512,6 +1512,7 @@ static void test_recovery_admission_interruption(void)
 
 static void test_chosen_activation_recovery(void)
 {
+    for (unsigned attach = 0; attach < 2; attach++)
     for (unsigned q = 0; q < 2; q++) for (unsigned pending = 0; pending < 2; pending++)
     {
         setup_activation = true; setup(pending != 0, q != 0); setup_activation = false;
@@ -1522,12 +1523,51 @@ static void test_chosen_activation_recovery(void)
         for (size_t i = 0; i < g_state.cfg.node_count; i++) g_state.peers[i].fd = -1;
         lcs_config_recovery_t manager = {0}; lcs_config_recovery_live_t live = {0};
         live_cancellations = 0; live_reload = live_cancel_bump = false;
-        assert(!lcs_config_recovery_live_prepare(&live, &manager, -1, error, sizeof(error)));
+        if (attach)
+        {
+            lcs_config_coordinator_init(&g_state.config_coordinator, &g_state.config_runtime, &g_state.config_readiness);
+            assert(!lcs_config_coordinator_recover(&g_state.config_coordinator));
+            g_state.config_coordinator.completed_votes = 11;
+            g_state.config_application_fenced = g_state.config_application_remapping = true;
+            g_state.config_application_drain_mask = UINT32_MAX;
+            g_state.config_reload.active_generation = 7;
+            g_state.quorum_needed = lcs_config_quorum(&g_state.cfg);
+            g_state.voting_not_before_ms = lcs_now_ms() + g_state.cfg.lease_ms + g_state.cfg.peer_timeout_ms;
+            g_state.resources[0].epoch = 17; g_state.lease_grants[0].promised_epoch = 19;
+            g_state.resources[0].disabled = true;
+            g_state.peers[1].fd = 44; g_state.peers[1].instance_id = 901;
+            g_state.handshakes[0].active = true; g_state.cli_servers[0].active = true;
+            assert(lcs_config_recovery_live_prepare(&live, &manager, -1, error, sizeof(error)) < 0);
+            g_state.config_coordinator.phase = LCS_CONFIG_COORD_OBSERVING;
+            assert(lcs_config_recovery_live_attach_activation(&live, &manager, -1, error, sizeof(error)) == 1 && !live.prepared);
+            g_state.config_coordinator.phase = LCS_CONFIG_COORD_READY;
+            g_state.resources[0].service.pid = 555;
+            assert(lcs_config_recovery_live_attach_activation(&live, &manager, -1, error, sizeof(error)) == 1 && !live.prepared);
+            g_state.resources[0].service.pid = 0;
+            g_state.lease_grants[0].active = true;
+            assert(lcs_config_recovery_live_attach_activation(&live, &manager, -1, error, sizeof(error)) == 1 && !live.prepared);
+            g_state.lease_grants[0].active = false;
+            g_state.config_application_fenced = false;
+            assert(lcs_config_recovery_live_attach_activation(&live, &manager, -1, error, sizeof(error)) < 0 && !live.prepared);
+            g_state.config_application_fenced = true;
+            strcpy(g_state.cfg.resources[0].systemd_unit, "wrong.service");
+            assert(lcs_config_recovery_live_attach_activation(&live, &manager, -1, error, sizeof(error)) < 0 && !live.prepared);
+            g_state.cfg = *g_state.config_runtime.base;
+            assert(!lcs_config_recovery_live_attach_activation(&live, &manager, -1, error, sizeof(error)));
+            assert(g_state.resources[0].epoch == 17 && g_state.resources[0].disabled && g_state.lease_grants[0].promised_epoch == 19);
+            assert(g_state.config_reload.active_generation == 7 && g_state.config_coordinator.completed_votes == 11 &&
+                !g_state.config_coordinator.application_owner && g_state.peers[1].fd == 44 &&
+                g_state.handshakes[0].active && g_state.cli_servers[0].active);
+        }
+        else assert(!lcs_config_recovery_live_prepare(&live, &manager, -1, error, sizeof(error)));
         assert(!g_state.resource_generation_enabled && !g_state.resource_generation_admitted &&
             g_state.config_application_fenced && g_state.config_application_remapping && !g_state.voting_ready);
         assert(!strcmp(g_state.cfg.resources[0].systemd_unit, "baseline.service"));
-        lcs_config_coordinator_init(&g_state.config_coordinator, &g_state.config_runtime, &g_state.config_readiness);
-        assert(!lcs_config_coordinator_recover(&g_state.config_coordinator));
+        if (!attach)
+        {
+            lcs_config_coordinator_init(&g_state.config_coordinator, &g_state.config_runtime, &g_state.config_readiness);
+            assert(!lcs_config_coordinator_recover(&g_state.config_coordinator));
+        }
         assert(!lcs_config_owner_network_init(&g_state.config_owners, g_state.config_runtime.base,
             &g_state.config_runtime.application, (size_t)g_state.self_index, g_state.instance_id));
         assert(!lcs_config_recovery_start(&manager, &g_state.config_coordinator, &g_state.config_owners,

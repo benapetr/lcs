@@ -477,6 +477,15 @@ durable distributed configuration protocol.
   and cleanup failures using local diagnostic format 5. Test cleanup failure and
   crash/restart after BEGIN, absent history, baseline preservation, initial
   admission and retained learned decisions. Live activation handoff remains open.
+- [x] Hand a learned revision-one activation on a running frozen node to the
+  recovery controller without restarting or resetting its coordinator, sessions,
+  transactions, resource epochs, private promises or table indices. Wait for the
+  shared writer and ordinary backend/lease work to drain; require the exact
+  frozen baseline, resource fences and stopped/unowned tables before acquiring
+  the application hold. Exercise busy writer/workers, missing fences, differing
+  definitions, full/quorum-only paths, live checkpoint learning, unchanged daemon
+  instances, majority edits with the witness offline and witness catch-up. Initial
+  freeze/proposal creation from ordinary INI remains unfinished.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

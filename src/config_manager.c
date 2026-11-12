@@ -211,8 +211,28 @@ static void process_application(uint64_t now)
     }
 }
 
+static void attach_activation(int epoll_fd)
+{
+    if (manager.enabled || !lcs_config_runtime_activation_chosen(&g_state.config_runtime)) return;
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    if (!coordinator->initialized || coordinator->runtime != &g_state.config_runtime ||
+        coordinator->phase != LCS_CONFIG_COORD_READY || coordinator->storage.pid > 0 || coordinator->application_owner) return;
+    char error[256];
+    int result = lcs_config_recovery_live_attach_activation(&manager.live, &manager.recovery, epoll_fd, error, sizeof(error));
+    if (result > 0) return;
+    manager.enabled = true;
+    if (result < 0) { fail(error); return; }
+    if (config_peer_owner_prepare()) { fail("cannot attach activation owner transport"); return; }
+    result = lcs_config_recovery_start(&manager.recovery, coordinator, &g_state.config_owners,
+        lcs_config_recovery_live_install, &manager.live);
+    manager.started = manager.recovery.coordinator != NULL;
+    if (result) { fail("cannot acquire live activation application hold"); return; }
+    lcs_log_info("chosen resource activation handed to recovery without restart; resource fences held");
+}
+
 void config_manager_process(int epoll_fd)
 {
+    attach_activation(epoll_fd);
     if (!manager.enabled || manager.failed || manager.stopping) return;
     lcs_config_runtime_t *runtime = &g_state.config_runtime;
     if (manager.active)

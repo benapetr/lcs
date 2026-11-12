@@ -119,6 +119,39 @@ int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
     return 0;
 }
 
+int lcs_config_recovery_live_attach_activation(lcs_config_recovery_live_t *live,
+                                                lcs_config_recovery_t *recovery, int epoll_fd,
+                                                char *err, size_t err_len)
+{
+    const lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    const lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    if (!live || live->prepared || !recovery || recovery->coordinator || recovery->phase != LCS_CONFIG_RECOVERY_IDLE ||
+        !lcs_config_runtime_activation_chosen(runtime) || !projection_storage_ready(runtime) ||
+        !coordinator->initialized || coordinator->runtime != runtime || coordinator->readiness != &g_state.config_readiness ||
+        coordinator->failed || coordinator->closing || coordinator->application_owner ||
+        !g_state.instance_id || g_state.self_index != lcs_config_self_index(runtime->base) ||
+        !g_state.config_application_fenced || !g_state.config_application_remapping ||
+        g_state.config_application_drain_mask != UINT32_MAX || g_state.resource_generation_enabled ||
+        g_state.resource_generation_admitted || g_state.voting_ready || config_reload_in_progress() ||
+        !matches(&g_state.cfg, &runtime->activation.baseline))
+        return reject(err, err_len, "live activation requires the exact frozen baseline, shared coordinator and resource fences");
+    if (coordinator->phase != LCS_CONFIG_COORD_READY || coordinator->storage.pid > 0 || work_busy()) return 1;
+    for (size_t i = 0; i < LCS_MAX_RESOURCES; i++)
+    {
+        const resource_runtime_t *resource = &g_state.resources[i];
+        const lease_grant_t *grant = &g_state.lease_grants[i];
+        if (resource->state != LCS_RES_STOPPED || resource->startup_cleanup_failed ||
+            resource->owner_instance_id || resource->lease_id || resource->lease_deadline_ms || resource->renew_after_ms ||
+            grant->active || grant->owner_instance_id || grant->lease_id || grant->deadline_ms) return 1;
+    }
+    /* Keep live sessions, transaction replies, epochs, private promises and table
+     * indices. Only the existing recovery controller may acquire the writer hold
+     * and later replace tables after physical cleanup/old-owner proof. */
+    *live = (lcs_config_recovery_live_t){.recovery = recovery, .epoll_fd = epoll_fd, .prepared = true};
+    lcs_config_projection_init(&live->projection, &g_state.config_coordinator, &g_state.config_bootstrap);
+    return 0;
+}
+
 int lcs_config_recovery_live_install(void *context, const lcs_config_reconcile_view_t *view,
                                        char *err, size_t err_len)
 {

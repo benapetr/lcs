@@ -513,8 +513,22 @@ restart waiting and quorum permit final admission and its durable request receip
 Quorum-only nodes follow catalog/application admission without backend operations.
 Failed cleanup retains baseline/pending evidence and resource fences; crash/restart
 retries from those durable records. This path neither changes the learned decision
-nor submits another activation proposal. Live transition from a running frozen
-coordinator into this recovery controller remains unfinished.
+nor submits another activation proposal.
+
+A running frozen node that learns this exact activation through existing wire-6
+agreement/checkpoint exchange now hands off to the same controller automatically.
+The scheduler waits for the shared writer and ordinary backend/lease work to
+finish and for resource tables to be stopped/unowned. The adapter requires the
+exact frozen baseline, locked storage and global resource fences; it does not
+reuse the pre-listener reset. Peer/handshake/client sessions, transaction replies,
+coordinator counters, epochs, private promises and table indices remain intact.
+The recovery controller acquires the application/voting hold before any placement
+can run. Cleanup, old-owner proof, generation installation, FINISH and fresh
+sync/quorum admission then follow the same sequence as restart recovery.
+Invalid authority/fences fail closed; residual workers or ownership defer the
+handoff instead of being erased. After admission, ordinary majority-based edits
+work with the quorum-only member offline; that member can catch up when it rejoins.
+This does not create an activation proposal from version advertisements.
 This does not initiate automatic migration from ordinary INI startup.
 
 Shutdown stops collection and cancels any configuration writer while continuing

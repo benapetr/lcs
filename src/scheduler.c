@@ -104,7 +104,12 @@ void scheduler_exec_subsystems(const scheduler_t *sched)
         else if (result > 0)
             lcs_log_debug("resource JSON bootstrap refreshed after INI reload");
     }
-    if (!config_manager_enabled()) config_peer_process(sched->epoll_fd);
+    if (!config_manager_enabled())
+    {
+        config_peer_process(sched->epoll_fd);
+        config_manager_process(sched->epoll_fd);
+        if (config_manager_recovering() || config_manager_failed()) return;
+    }
     if (run_placement && !config_reload_in_progress() && !config_manager_applying())
     {
         g_state.next_placement_ms = now + LCS_PLACEMENT_INTERVAL_MS;

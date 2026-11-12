@@ -6,9 +6,10 @@
 #include "config_status_protocol.h"
 #include "config_agreement.h"
 
-/* Daemon-owned entry for existing activated catalogs only. Runs before sockets
- * or ordinary workers, freezes legacy bootstrap, and restores durable tables.
- * Does not activate revision-zero/INI configurations or expose definition edits. */
+/* Daemon-owned cold entry for activated catalogs or a learned initial activation.
+ * Runs before sockets or ordinary workers, freezes legacy bootstrap, and
+ * restores durable tables.
+ * Does not initiate an activation proposal or first freeze. */
 int config_manager_prepare(char *err, size_t err_len);
 void config_manager_attach(int epoll_fd);
 bool config_manager_enabled(void);
@@ -23,6 +24,8 @@ void config_manager_diagnostics(lcs_config_status_view_t *view);
 const lcs_config_value_t *config_manager_error_target(void);
 /* Includes retained historical definitions in the pre-listener capability check. */
 int config_manager_has_historical_vips(char *err, size_t err_len);
+/* Also attaches a learned activation on an already frozen running node, retaining
+ * its coordinator, sessions and resource fences until normal recovery admission. */
 void config_manager_process(int epoll_fd);
 void config_manager_stop(void);
 void config_manager_shutdown_process(void);

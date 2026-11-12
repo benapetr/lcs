@@ -27,6 +27,14 @@ typedef struct
 int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
                                        lcs_config_recovery_t *recovery, int epoll_fd,
                                        char *err, size_t err_len);
+/* Attach a fresh controller to an already running frozen revision-zero node
+ * after a learned activation. No sessions, tables, epochs or coordinator state
+ * are reset. Requires exact global fences/baseline; returns 1 while the shared
+ * writer, ordinary cleanup/backend/lease work or residual ownership must drain.
+ * Success only prepares callbacks; recovery_start acquires the application hold. */
+int lcs_config_recovery_live_attach_activation(lcs_config_recovery_live_t *live,
+                                                lcs_config_recovery_t *recovery, int epoll_fd,
+                                                char *err, size_t err_len);
 /* Mandatory recovery-controller install callback. Requires verified physical
  * cleanup and the controller's exact immutable attempt/plan. Normalize observed
  * ownership to stopped, retain safety epochs/private grants and runtime policies

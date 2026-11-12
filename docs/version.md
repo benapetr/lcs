@@ -464,3 +464,13 @@ records baseline predecessor history at FINISH, and does not fabricate a dynamic
 revision-zero generation. Crash/restart after BEGIN or failed cleanup retains
 all fences until safe application and fresh sync/quorum admission. Automatic
 first-freeze/proposal creation and live activation handoff remain unfinished.
+
+Live frozen nodes also hand a learned revision-one activation into the existing
+recovery/application controller without restarting. The adapter retains daemon
+sessions, coordinator/transaction state, epochs, private promises and table
+indices; it waits for the serialized writer and ordinary workers/ownership to
+drain before acquiring the application hold. Exact frozen definitions and global
+resource fences are mandatory. Admission still requires cleanup, old-owner proof,
+FINISH and fresh generation sync/quorum. This adds no wire, local diagnostic,
+storage format or release-version change. First-freeze and activation-proposal
+creation from ordinary INI remain unfinished.
