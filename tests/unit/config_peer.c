@@ -296,7 +296,7 @@ static void test_dynamic_status_codec(void)
 static lcs_config_store_t readiness_store;
 static char readiness_directory[80];
 
-static void prepare_durable_runtime(void)
+static void prepare_durable_runtime_mode(bool required)
 {
     char error[256];
     strcpy(readiness_directory, "/tmp/lcs-ready-peer.XXXXXX");
@@ -305,15 +305,22 @@ static void prepare_durable_runtime(void)
     lcs_config_runtime_t *runtime = &g_state.config_runtime;
     runtime->base = malloc(sizeof(*runtime->base));
     assert(runtime->base);
-    assert(!lcs_config_activation_open(&runtime->activation, &readiness_store, &g_state.cfg,
+    if (required)
+        assert(!lcs_config_activation_open_requests(&runtime->activation, &readiness_store, &g_state.cfg,
+                                        runtime->base, true, error, sizeof(error)));
+    else
+        assert(!lcs_config_activation_open(&runtime->activation, &readiness_store, &g_state.cfg,
                                         runtime->base, true, error, sizeof(error)));
     assert(!lcs_config_activation_resume(&runtime->activation, &runtime->agreement,
                                           &runtime->application, error, sizeof(error)));
+    if (required) assert(!lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, error, sizeof(error)));
     runtime->requires_recovery = true;
     g_state.config_bootstrap.initialization_locked = true;
     assert(!config_peer_refresh());
     assert(!g_state.config_status.prepared); /* Diagnostic preparation is withdrawn. */
 }
+
+static void prepare_durable_runtime(void) { prepare_durable_runtime_mode(false); }
 
 static void cleanup_durable_runtime(void)
 {
@@ -327,6 +334,8 @@ static void cleanup_durable_runtime(void)
     assert(config_peer_stopped() && !config_peer_configuration_vote_ready());
     lcs_config_runtime_close(&g_state.config_runtime);
     const char *names[] = {"activation.json", "agreement.json", "application.json", "lock"};
+    if (!faccessat(readiness_store.directory_fd, "requests.json", F_OK, 0))
+        assert(!unlinkat(readiness_store.directory_fd, "requests.json", 0));
     if (persisted)
         assert(!unlinkat(readiness_store.directory_fd, "barrier.json", 0));
     else
@@ -911,6 +920,62 @@ static void test_initialization_interruption(void)
     }
 }
 
+static void test_automatic_activation_proposal(void)
+{
+    initialize(); g_state.self_index = 0; g_state.instance_id = 100;
+    prepare_durable_runtime_mode(true);
+    lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    lcs_config_barrier_round_t round; char error[256];
+    assert(!lcs_config_barrier_begin(&round, &runtime->activation, &runtime->agreement, &runtime->application, error, sizeof(error)));
+    for (size_t i = 0; i < 3; i++) assert(!lcs_config_barrier_ready(&round, i, round.membership, round.baseline, error, sizeof(error)));
+    assert(!lcs_config_barrier_seal(&round, error, sizeof(error)));
+    assert(!lcs_config_barrier_open(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application, &round, error, sizeof(error)));
+    lcs_config_coordinator_init(&g_state.config_coordinator, runtime, &g_state.config_readiness);
+    assert(!lcs_config_coordinator_recover(&g_state.config_coordinator));
+    lcs_config_transactions_init(&g_state.config_transactions, &g_state.config_coordinator, 100);
+    g_state.config_transactions.sync.next_ms = UINT64_MAX;
+    g_state.config_activation_auto_resume = true;
+    g_state.config_application_fenced = g_state.config_application_remapping = true;
+    g_state.config_application_drain_mask = UINT32_MAX;
+    config_peer_process(-1); assert(!g_state.config_coordinator.storage.pid && !runtime->requests.count);
+    establish(1, 5); g_state.peers[1].instance_id = 200; g_state.config_activation_retry_ms = 1;
+    config_peer_process(-1); assert(!runtime->requests.count && !g_state.config_activation_attempt);
+    establish(1, 6); g_state.config_application_fenced = false;
+    config_peer_process(-1); assert(!g_state.config_activation_attempt);
+    g_state.config_application_fenced = true; g_state.cfg.nodes[0].role = LCS_NODE_QUORUM_ONLY;
+    config_peer_process(-1); assert(!g_state.config_activation_attempt); g_state.cfg.nodes[0].role = LCS_NODE_FULL;
+    config_peer_process(-1);
+    assert(g_state.config_activation_attempt == 1 && g_state.config_coordinator.storage.pid > 0);
+    const lcs_config_value_t *requested = &g_state.config_transactions.proposer.proposal.requested;
+    assert(requested->revision == 1 && strstr(requested->request_id, "activation-") == requested->request_id);
+    char first[LCS_CONFIG_REQUEST_MAX + 1]; strcpy(first, requested->request_id);
+    lcs_config_t *candidate = malloc(sizeof(*candidate)); uint64_t revision; assert(candidate);
+    assert(!lcs_resource_config_decode(requested->document, requested->length, runtime->base, candidate, &revision, error, sizeof(error)));
+    assert(candidate->resource_schema_version == 2 && !lcs_resource_config_validate_successor(runtime->base, 0, candidate, 1, error, sizeof(error))); free(candidate);
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        config_peer_process(-1);
+        if (g_state.config_transactions.proposer.phase == LCS_CONFIG_PROPOSER_PROMISES) break;
+        usleep(1000); assert(i < 4999);
+    }
+    assert(runtime->requests.count == 1 && runtime->agreement.promised && !runtime->agreement.committed.revision);
+    uint64_t ballot = runtime->agreement.promised;
+    g_state.config_transactions.proposer.deadline_ms = 1; config_peer_process(-1);
+    assert(g_state.config_transactions.proposer.phase == LCS_CONFIG_PROPOSER_UNKNOWN);
+    assert(lcs_config_requests_find(&runtime->requests, first));
+    g_state.config_activation_retry_ms = 1; config_peer_process(-1);
+    assert(g_state.config_activation_attempt == 2 && strcmp(first, g_state.config_transactions.proposer.proposal.requested.request_id));
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        config_peer_process(-1);
+        if (g_state.config_transactions.proposer.phase == LCS_CONFIG_PROPOSER_PROMISES) break;
+        usleep(1000); assert(i < 4999);
+    }
+    assert(runtime->requests.count == 2 && runtime->agreement.promised > ballot && !runtime->agreement.committed.revision);
+    assert(g_state.config_application_fenced && g_state.config_application_remapping && !g_state.resource_generation_admitted);
+    cleanup_durable_runtime();
+}
+
 static void test_activating_status_codec(void)
 {
     initialize(); lcs_config_status_view_t view, decoded;
@@ -1070,6 +1135,7 @@ int main(void)
     test_strict_codecs();
     test_dynamic_status_codec();
     test_activating_status_codec();
+    test_automatic_activation_proposal();
     test_readiness_codecs();
     test_readiness_round();
     test_explicit_peer_readiness();

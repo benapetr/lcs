@@ -554,11 +554,13 @@ int lcs_config_transactions_propose_client(lcs_config_transactions_t *transactio
     if (!lcs_config_agreement_has_quorum(agreement, available))
         return -1;
     lcs_config_proposal_t next = {0};
-    uint64_t ballot = lcs_config_agreement_next_ballot(agreement, 0);
+    uint64_t observed = proposer->observed_ballot;
+    uint64_t ballot = lcs_config_agreement_next_ballot(agreement, observed);
     if (!ballot || lcs_config_proposal_init(&next, agreement, ballot, requested))
         return -1;
     proposer_clear(proposer);
     proposer->proposal = next;
+    proposer->observed_ballot = observed;
     proposer->id = id;
     proposer->deadline_ms = now_ms + LCS_CONFIG_TRANSFER_TIMEOUT_MS;
     for (size_t i = 0; i < agreement->base->node_count; i++)
@@ -598,9 +600,13 @@ static bool matches(const lcs_config_transactions_t *transactions, size_t node, 
 static int proposer_control(lcs_config_transactions_t *transactions, size_t node, const lcs_config_tx_control_t *control)
 {
     lcs_config_network_proposal_t *proposer = &transactions->proposer;
-    if (!matches(transactions, node, control) || control->result != LCS_CONFIG_TX_OK)
-        return 0; /* Unsolicited, stale and negative replies never confer a vote. */
+    if (!matches(transactions, node, control)) return 0;
     const lcs_config_agreement_t *agreement = &transactions->coordinator->runtime->agreement;
+    /* A correlated rejection can raise the NEXT attempt's ballot, never confer
+     * a vote or alter this attempt's immutable proposal. Persist via PREPARE. */
+    if (lcs_config_agreement_ballot_valid(agreement, control->promised) &&
+        control->promised > proposer->observed_ballot) proposer->observed_ballot = control->promised;
+    if (control->result != LCS_CONFIG_TX_OK) return 0;
     if (proposer->phase == LCS_CONFIG_PROPOSER_PROMISES && control->kind == LCS_CONFIG_TX_PROMISE)
     {
         if (control->promised != proposer->proposal.ballot)

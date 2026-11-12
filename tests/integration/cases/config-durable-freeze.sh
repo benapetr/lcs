@@ -33,24 +33,25 @@ start_node node3
 frozen_status() {
     "$LCS" -s "$(node_socket "$1")" --json config status 2>/dev/null | python3 -c '
 import json,sys
-s=json.load(sys.stdin); assert s["authority"]=="ini" and s["application_state"]=="frozen" and not s["admitted"] and not s["dynamic_commands"] and not s["prepared"]
-assert "all-member readiness persisted" in s["error"]
+s=json.load(sys.stdin); assert s["authority"]=="json" and s["admitted"] and s["committed_revision"]==s["applied_revision"]==1
 assert all(n["connected"] and n["metadata_known"] and n["protocol"]==6 for n in s["nodes"])
 ' 2>/dev/null
 }
 for node in node1 node2 node3; do
-    wait_until 10 "$node frozen coordination startup" frozen_status "$node"
+    wait_until 45 "$node frozen coordination startup" frozen_status "$node"
     "$LCS" -s "$(node_socket "$node")" --json status | python3 -c '
 import json,sys
-s=json.load(sys.stdin); assert not s["cluster"]["quorum"]
-r=s["resources"]; assert len(r)==1 and r[0]["address"]=="127.0.0.200/32" and r[0]["state"]!="active"
+s=json.load(sys.stdin); assert s["cluster"]["quorum"]
+r=s["resources"]; assert len(r)==1 and r[0]["address"]=="127.0.0.200/32"
 '
     if "$LCS" -s "$(node_socket "$node")" reload >"$TEST_TMP/$node-reload.log" 2>&1; then die 'frozen node accepted INI reload'; fi
-    if "$LCS" -s "$(node_socket "$node")" --json --request-id frozen-edit --expected-revision 0 resource update vip1 priority=19 >"$TEST_TMP/$node-edit.json"; then die 'frozen node accepted a definition edit'; fi
     "$LCS" -s "$(node_socket "$node")" config export >"$TEST_TMP/$node-export.json"
     python3 - "$TEST_TMP/$node-export.json" "$TEST_TMP/$node-frozen.json" <<'PY'
 import json,sys
 export=json.load(open(sys.argv[1])); frozen=json.loads(json.load(open(sys.argv[2]))['baseline'])
+assert export['schema_version']==2 and export['revision']==1
+for r in export['resources'].values(): assert r.pop('birth_revision')==0
+export['schema_version']=1; export['revision']=0
 assert export==frozen
 PY
     python3 - "$(node_config "$node").state" "$TEST_TMP/$node-frozen.json" <<'PY'
@@ -59,7 +60,7 @@ from pathlib import Path
 state=Path(sys.argv[1]); old=json.load(open(sys.argv[2])); current=json.loads((state/'activation.json').read_text())
 assert current['record_version']==2 and current['phase']=='prepared'
 assert all(old[k]==current[k] for k in ('member','membership','baseline_digest','baseline'))
-assert json.loads((state/'requests.json').read_text())['requests']==[]
+assert any(r['committed'] and r['applied'] for r in json.loads((state/'requests.json').read_text())['requests'])
 barrier=json.loads((state/'barrier.json').read_text())
 assert barrier['ready_voters']==7 and barrier['membership']==current['membership']
 PY
@@ -70,12 +71,12 @@ done
 # while resource heartbeats, votes and placement remain fenced.
 sleep 2
 for node in node1 node2 node3; do frozen_status "$node" || die 'frozen coordination channel lost liveness'; done
-# Signals and restart retain preparation without activating JSON.
+# Signals and restart retain the automatically activated catalog.
 kill -HUP "${LCS_PIDS[0]}"
 stop_node node3
 start_node node3
 LCS_PIDS[2]="${LCS_PIDS[3]}"
-wait_until 10 'quorum-only frozen restart' frozen_status node3
+wait_until 45 'quorum-only frozen restart' frozen_status node3
 for node in node1 node2 node3; do
     config="$(node_config "$node")"; state="$config.state"
     stop_node "$node"
@@ -89,4 +90,4 @@ for node in node1 node2 node3; do
     grep -Fq 'cannot recover distributed resource configuration' "$TEST_TMP/$node-conflict.log" || die 'missing history recovery diagnostic'
 done
 assert_no_vip_ops_in_log node3
-log 'all-member freezes automatically prepare journals, preserve baselines and retain fences through restart'
+log 'durable freezes automatically initialize, confirm readiness and activate while preserving baselines across restart'

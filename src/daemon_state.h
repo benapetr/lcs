@@ -486,6 +486,8 @@ typedef struct
     uint64_t config_initialization_attempt, config_initialization_next_send_ms;
     bool config_initialization_requested;
     bool config_initialization_auto_resume;
+    bool config_activation_auto_resume;
+    uint64_t config_activation_attempt, config_activation_retry_ms;
     uint64_t config_initialization_retry_ms;
     struct
     {

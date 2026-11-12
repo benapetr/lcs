@@ -615,6 +615,20 @@ static void test_network_proposer(void)
     assert(nodes[0].transactions.proposer.proposal.promises == 1);
     assert(!nodes[0].runtime.agreement.accepted.document);
     uint64_t first_ballot = nodes[0].runtime.agreement.promised;
+    lcs_config_tx_control_t rejection = prepare(1, 301, first_ballot);
+    rejection.kind = LCS_CONFIG_TX_PROMISE; rejection.result = LCS_CONFIG_TX_REJECTED;
+    rejection.sender_instance = 101; rejection.target_instance = 100; rejection.promised = (77u << 5) | 1;
+    unsigned char rejection_wire[LCS_CONFIG_TX_CONTROL_MAX]; size_t rejection_length;
+    assert(!lcs_config_tx_encode(&rejection, rejection_wire, sizeof(rejection_wire), &rejection_length));
+    assert(!lcs_config_transactions_receive(&nodes[0].transactions, 1, 101, LCS_MSG_CONFIG_TX_CONTROL,
+        rejection_wire, rejection_length, 1000));
+    assert(!nodes[0].transactions.proposer.observed_ballot); /* Wrong attempt cannot raise even a hint. */
+    rejection.id = 300;
+    assert(!lcs_config_tx_encode(&rejection, rejection_wire, sizeof(rejection_wire), &rejection_length));
+    assert(!lcs_config_transactions_receive(&nodes[0].transactions, 1, 101, LCS_MSG_CONFIG_TX_CONTROL,
+        rejection_wire, rejection_length, 1000));
+    assert(nodes[0].transactions.proposer.observed_ballot == rejection.promised &&
+        nodes[0].transactions.proposer.proposal.promises == 1 && nodes[0].runtime.agreement.promised == first_ballot);
     network_tick(11000);
     assert(nodes[0].transactions.proposer.phase == LCS_CONFIG_PROPOSER_UNKNOWN);
     assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 300, &value, 12000) < 0);
@@ -623,7 +637,7 @@ static void test_network_proposer(void)
     assert(lcs_config_transactions_propose(&nodes[0].transactions, instances, 301, &value, 12000) < 0);
     lcs_config_value_clear(&value); value = candidate("timeout-new-request");
     assert(!lcs_config_transactions_propose(&nodes[0].transactions, instances, 301, &value, 12000));
-    assert(nodes[0].transactions.proposer.proposal.ballot > first_ballot);
+    assert(nodes[0].transactions.proposer.proposal.ballot > rejection.promised);
     network_finish(12000);
     assert(!network_errors);
     lcs_config_value_clear(&value);

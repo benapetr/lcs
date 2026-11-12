@@ -486,6 +486,17 @@ durable distributed configuration protocol.
   definitions, full/quorum-only paths, live checkpoint learning, unchanged daemon
   instances, majority edits with the witness offline and witness catch-up. Initial
   freeze/proposal creation from ordinary INI remains unfinished.
+- [x] Automatically propose the definitions-preserving schema-2 activation after
+  an existing frozen node persists all-member readiness. Prefer the lowest-index
+  connected full member; require an admitted wire-6 majority and retain fences
+  through consensus/application. Allocate fresh instance/attempt request IDs,
+  retain unknown reservations, and retry with higher ballots after deadlines.
+  Correlated rejection hints may raise only the next ballot, never count as votes.
+  Recover earlier majority-accepted values and refuse full/poisoned history rather
+  than evicting evidence. Test isolated recovery, stale rejection hints, timeout
+  retries, all-member initialization through automatic admission, accepted-value
+  recovery, majority edits and witness catch-up. Warm INI first-freeze/drain remains
+  a separate unfinished stage.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

@@ -628,12 +628,57 @@ static void process_checkpoint_sync(void)
     }
 }
 
+static void process_activation(void)
+{
+    lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    uint64_t now = lcs_now_ms();
+    if (!g_state.config_activation_auto_resume || !lcs_config_runtime_activation_pending(runtime) ||
+        !config_peer_configuration_vote_ready() || !g_state.config_application_fenced ||
+        !g_state.config_application_remapping || g_state.resource_generation_enabled ||
+        g_state.cfg.nodes[g_state.self_index].role != LCS_NODE_FULL ||
+        coordinator->phase != LCS_CONFIG_COORD_READY || coordinator->storage.pid > 0 ||
+        coordinator->application_owner || runtime->requests.count >= LCS_CONFIG_REQUEST_HISTORY_MAX) return;
+    if (!g_state.config_activation_retry_ms)
+    { g_state.config_activation_retry_ms = now + 1000u; return; }
+    if (now < g_state.config_activation_retry_ms) return;
+    for (size_t i = 0; i < (size_t)g_state.self_index; i++)
+    {
+        const peer_runtime_t *peer = &g_state.peers[i];
+        if (g_state.cfg.nodes[i].role == LCS_NODE_FULL && peer->fd >= 0 && peer->conn_state == LCS_PEER_ESTABLISHED &&
+            peer->instance_id && peer->protocol_version >= LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS) return;
+    }
+    uint32_t available = UINT32_C(1) << g_state.self_index;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+        if (g_state.peers[i].fd >= 0 && g_state.peers[i].conn_state == LCS_PEER_ESTABLISHED &&
+            g_state.peers[i].instance_id && g_state.peers[i].protocol_version >= LCS_PROTO_FEATURE_CONFIG_TRANSACTIONS)
+            available |= UINT32_C(1) << i;
+    if (!lcs_config_agreement_has_quorum(&runtime->agreement, available)) return;
+    lcs_config_transactions_t *transactions = &g_state.config_transactions;
+    uint64_t serial = g_state.config_activation_attempt > transactions->proposer.id ?
+        g_state.config_activation_attempt : transactions->proposer.id;
+    if (serial == UINT64_MAX) return;
+    lcs_config_t *candidate = malloc(sizeof(*candidate)); char *document = NULL; size_t length;
+    lcs_config_value_t value = {0}; char error[256], request[LCS_CONFIG_REQUEST_MAX + 1];
+    g_state.config_activation_attempt = ++serial;
+    g_state.config_activation_retry_ms = now + LCS_CONFIG_TRANSFER_TIMEOUT_MS + 1000u;
+    snprintf(request, sizeof(request), "activation-%016llx-%016llx", (unsigned long long)g_state.instance_id,
+        (unsigned long long)serial);
+    if (candidate && !lcs_resource_config_assign_identities(runtime->base, 0, runtime->base, candidate, error, sizeof(error)) &&
+        !lcs_resource_config_encode(candidate, 1, &document, &length, error, sizeof(error)) &&
+        !lcs_config_value_init(&value, runtime->base, request, document, length, error, sizeof(error)) &&
+        !config_peer_propose(serial, &value))
+        lcs_log_debug("automatic resource activation proposed request=%s; waiting for majority decision", request);
+    lcs_config_value_clear(&value); free(document); free(candidate);
+}
+
 void config_peer_process(int epoll_fd)
 {
     process_readiness(epoll_fd);
     process_freeze(epoll_fd);
     process_owners(epoll_fd);
     lcs_config_transactions_process(&g_state.config_transactions, lcs_now_ms(), send_transaction, &epoll_fd);
+    process_activation();
     process_checkpoint_sync();
     if (lcs_now_ms() < g_state.config_status_retry_ms)
         return;

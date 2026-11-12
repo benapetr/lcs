@@ -14,14 +14,14 @@ read -r -a fixture_flags <<<"$(pkg-config --cflags --libs jansson libcrypto)"
 "$TEST_TMP/fixture" "$(node_config node2)" activation-reserved
 "$TEST_TMP/fixture" "$(node_config node3)" activation-chosen
 start_node node1
-start_node node2
 frozen() {
     "$LCS" -s "$(node_socket "$1")" --json config status 2>/dev/null | python3 -c '
 import json,sys
 s=json.load(sys.stdin); assert s["authority"]=="ini" and s["application_state"]=="frozen" and not s["admitted"] and not s["dynamic_commands"]
 ' 2>/dev/null
 }
-for node in node1 node2; do wait_until 10 "$node frozen before learning activation" frozen "$node"; done
+wait_until 10 "node1 frozen before quorum" frozen node1
+start_node node2
 first_pid="${LCS_PIDS[0]}"; second_pid="${LCS_PIDS[1]}"
 start_node node3
 admitted() {

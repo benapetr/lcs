@@ -78,6 +78,7 @@ typedef struct
     lcs_config_proposal_t proposal;
     lcs_config_proposer_peer_t peers[LCS_MAX_NODES];
     uint64_t id, deadline_ms, completion;
+    uint64_t observed_ballot; /* Correlated hint for the next PREPARE, never vote evidence. */
     lcs_config_proposer_phase_t phase;
 } lcs_config_network_proposal_t;
 

@@ -474,3 +474,14 @@ resource fences are mandatory. Admission still requires cleanup, old-owner proof
 FINISH and fresh generation sync/quorum. This adds no wire, local diagnostic,
 storage format or release-version change. First-freeze and activation-proposal
 creation from ordinary INI remain unfinished.
+
+Automatic proposal creation now follows a durable readiness barrier on existing
+frozen nodes. The preferred connected full member submits the unchanged baseline
+as a schema-2 revision-one successor through the existing transaction protocol.
+Fresh instance/attempt request IDs preserve earlier unknown reservations; a new
+higher-ballot phase one can recover earlier accepted values. Valid correlated
+rejection hints raise only the next ballot; they never count as votes or rewrite
+an active proposal. Full/poisoned history blocks submission without eviction.
+This uses existing wire 6, local diagnostic formats, request journal and storage
+formats and does not bump the release version. Ordinary INI first-freeze creation
+and live-owner draining remain unfinished.

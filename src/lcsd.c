@@ -385,6 +385,7 @@ static bool open_daemon_log(const daemon_options_t *opts)
 static void initialize_daemon_state(void)
 {
     g_state.config_initialization_auto_resume = true;
+    g_state.config_activation_auto_resume = true;
     lcs_vip_set_backend(g_state.cfg.vip_backend);
     g_state.self_index = lcs_config_self_index(&g_state.cfg);
     g_state.instance_id = lcs_random_u64();

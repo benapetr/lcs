@@ -21,30 +21,33 @@ coordination_ready() {
     "$LCS" -s "$(node_socket "$1")" --json config status 2>/dev/null | python3 -c '
 import json,sys
 s=json.load(sys.stdin)
-assert s["application_state"]=="frozen" and s["authority"]=="ini" and not s["admitted"] and not s["dynamic_commands"]
+assert s["authority"]=="json" and s["admitted"] and s["committed_revision"]==s["applied_revision"]==1
 assert all(n["connected"] and n["metadata_known"] and n["protocol"]==6 for n in s["nodes"])
-assert "all-member readiness persisted" in s["error"]
 ' "$1" 2>/dev/null
 }
-for node in node1 node2 node3; do wait_until 10 "$node partially initialized coordination" coordination_ready "$node"; done
+for node in node1 node2 node3; do wait_until 45 "$node partially initialized coordination" coordination_ready "$node"; done
 sleep 2
 for node in node1 node2 node3; do
     coordination_ready "$node" || die 'partially initialized peers lost coordination liveness'
     "$LCS" -s "$(node_socket "$node")" --json status | python3 -c '
 import json,sys
-s=json.load(sys.stdin); assert not s["cluster"]["quorum"]
-assert s["resources"][0]["address"]=="127.0.0.200/32" and s["resources"][0]["state"]!="active"
+s=json.load(sys.stdin); assert s["cluster"]["quorum"]
+assert s["resources"][0]["address"]=="127.0.0.200/32"
 '
     "$LCS" -s "$(node_socket "$node")" config export >"$TEST_TMP/$node-export.json"
     python3 - "$(node_config "$node").state" "$node" "$TEST_TMP/$node-export.json" <<'PY'
 import json,sys
 from pathlib import Path
 state=Path(sys.argv[1]); intent=json.loads((state/'activation.json').read_text())
-assert json.load(open(sys.argv[3])) == json.loads(intent['baseline'])
+export=json.load(open(sys.argv[3])); baseline=json.loads(intent['baseline'])
+assert export['schema_version']==2 and export['revision']==1
+for r in export['resources'].values(): assert r.pop('birth_revision')==0
+export['schema_version']=1; export['revision']=0
+assert export==baseline
 barrier=json.loads((state/'barrier.json').read_text())
 assert barrier['ready_voters']==7 and barrier['membership']==intent['membership']
 assert intent['record_version']==2 and intent['phase']=='prepared'
-assert json.loads((state/'requests.json').read_text())['requests']==[]
+assert any(r['committed'] and r['applied'] for r in json.loads((state/'requests.json').read_text())['requests'])
 assert all((state/(name+'.json')).exists() for name in ('agreement','application'))
 PY
 done
@@ -54,7 +57,7 @@ for node in node1 node3; do
     stop_node "$node"
     start_node "$node"
     index=$((${node#node}-1)); LCS_PIDS[$index]="${LCS_PIDS[-1]}"
-    wait_until 10 "$node prepared restart" coordination_ready "$node"
+    wait_until 45 "$node prepared restart" coordination_ready "$node"
     for file in activation agreement application requests barrier; do cmp "$(node_config "$node").state/$file.json" "$TEST_TMP/$node-$file.json" || die 'prepared restart rewrote history'; done
 done
 stop_node node1
@@ -64,4 +67,4 @@ if LCS_VIP_DRY_RUN=1 "$LCSD" -c "$(node_config node1)" --no-syslog --no-timestam
 cmp "$(node_config node1).state/activation.json" "$TEST_TMP/node1-activation.json" || die 'missing history changed intent'
 grep -Fq 'request history' "$TEST_TMP/missing-history.log" || die 'missing-history diagnostic absent'
 assert_no_vip_ops_in_log node3
-log 'mixed frozen/prepared/interrupted initialization resumes coordination with unchanged history and resource fences'
+log 'mixed frozen/prepared/interrupted initialization activates and retains chosen state through restart'

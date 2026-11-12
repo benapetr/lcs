@@ -6,9 +6,9 @@ are implemented and unit-tested. Explicit peer readiness queries/replies are wir
 into admitted wire-6 sessions. The network acceptor/learner is registered with
 daemon peer sessions. Runtime definition commands and application/recovery are
 available for already-activated JSON catalogs. Existing durable freezes can now
-resume local preparation through fresh all-member confirmation; automatic first
-freeze, activation and initial application orchestration remain unfinished. Readiness
-collection and persistence now follow successful local preparation automatically. Separate
+resume local preparation through fresh all-member confirmation, persist readiness,
+propose activation and apply its majority decision automatically. Initiating the
+first freeze and draining live INI owners remain unfinished. Separate
 wire-6 bootstrap metadata now reports prepared definitions diagnostically; wire-5
 compatibility and INI authority remain. This document
 records the rules the remaining integration must preserve.
@@ -529,7 +529,30 @@ Invalid authority/fences fail closed; residual workers or ownership defer the
 handoff instead of being erased. After admission, ordinary majority-based edits
 work with the quorum-only member offline; that member can catch up when it rejoins.
 This does not create an activation proposal from version advertisements.
-This does not initiate automatic migration from ordinary INI startup.
+After an existing frozen node persists its all-member readiness barrier, the
+scheduler can propose activation automatically while resource fences remain held.
+The lowest-index connected full member is preferred; quorum-only nodes never
+initiate proposals. A current wire-6 majority is required. The candidate assigns
+schema-2 identities to the exact frozen definitions without resource/group edits.
+Ordinary INI startup still does not initiate the first freeze or drain its owners.
+
+Each attempt reserves a fresh request ID containing the daemon instance and a
+monotonic transport attempt before PREPARE. A fixed proposal deadline and a
+one-second cooldown separate retries. Unknown reservations remain retained; no
+request ID is resubmitted or treated as aborted. The next ballot exceeds the
+local promise and valid correlated promise hints from the preceding attempt.
+Hints never alter the current ballot, count as votes or provide durable proof;
+PREPARE persists the new promise. Stale/unsolicited hints are ignored. Phase one
+still recovers the highest accepted value reported by its majority, including an
+earlier activation request rather than the newly requested identity. Full or
+poisoned history blocks progress instead of evicting evidence. The bounded
+history remains an operator recovery constraint after repeated failed attempts.
+A connected preferred proposer with failed storage must be repaired or taken
+offline before another full member becomes preferred.
+
+A majority decision triggers the existing live recovery/application handoff.
+No positive transport result, timer, version advertisement or minority acceptance
+alone changes resource authority or enables hosting.
 
 Shutdown stops collection and cancels any configuration writer while continuing
 to poll child completion alongside resource shutdown. Runtime/store handles are

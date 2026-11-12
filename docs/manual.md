@@ -37,7 +37,7 @@ activation remain unfinished; local preparation does not enable dynamic commands
 
 After local preparation of an existing durable freeze, the scheduler automatically
 collects readiness from every configured member and persists its barrier.
-`config status` then reports `all-member readiness persisted; awaiting activation`
+`config status` can report `all-member readiness persisted; awaiting activation`
 while retaining frozen INI authority and resource/mutation fences. A valid barrier
 over revision-zero history also permits recovery of retained promises, request
 reservations and an accepted activation value with its exact request identity,
@@ -48,8 +48,12 @@ or on a running frozen node without restarting,
 using retained baseline cleanup, old-owner proof and fresh sync/quorum before
 admission. During baseline cleanup, local diagnostic format 5 reports JSON
 authority with committed revision 1, applied revision 0 and admission disabled;
-cleanup failures remain visible as blocked. Ordinary INI startup still does not
-initiate activation.
+cleanup failures remain visible as blocked. After an existing durable freeze
+reaches readiness, a full member automatically
+proposes the unchanged baseline's schema-2 activation through majority agreement.
+Retries use fresh request IDs and higher ballots, preserving unknown reservations
+and recovering accepted values. Quorum-only members never initiate proposals.
+Ordinary INI startup still awaits first-freeze and live-owner draining support.
 
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means
