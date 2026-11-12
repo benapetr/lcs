@@ -144,6 +144,10 @@ A durable pre-initialization freeze reports application_state frozen, INI
 authority, no admission and no dynamic command capability. On restart it restores
 the retained baseline for coordination, with resource voting, placement and
 mutations fenced; later valid INI resource edits do not replace that baseline.
+An explicit durable freeze also drains a running INI generation with its retained
+hooks and dependency order. Freeze acknowledgements wait for cleanup and lease
+state to drain; failed cleanup retains fences and appears in frozen diagnostics.
+Quorum-only members perform no backend work.
 Existing freezes can resume local preparation after fresh confirmation from every
 member, including quorum-only voters. Pristine prepared restarts preserve history;
 automatic all-member readiness then persists a barrier. Valid barriers over
@@ -154,7 +158,7 @@ remain fenced; this does not enable JSON authority or definition commands.
 Existing durable freezes automatically propose their unchanged baseline after
 all-member readiness, preferring a connected full member and requiring a wire-6
 majority. Timeout retries retain unknown reservations and use fresh identities
-and higher ballots. Ordinary INI first-freeze and live-owner draining are pending.
+and higher ballots. Automatic first-freeze initiation from ordinary INI is pending.
 A learned revision-one activation may resume initial application after restart
 or hand off from a running frozen node without restarting. Existing writer and
 backend work must drain; sessions, epochs and private promises are retained.

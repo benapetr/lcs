@@ -38,6 +38,11 @@ int peer_queue_config_freeze(int epoll_fd, int node, uint16_t type, const void *
 }
 
 bool config_reload_in_progress(void) { return reload_busy; }
+int lcs_config_live_freeze_drain(int epoll_fd, char *err, size_t err_len)
+{
+    (void)epoll_fd; (void)err; (void)err_len;
+    g_state.config_freeze_drained = true; return 1; /* Backend drain is tested in config_reconcile. */
+}
 void lcs_log_debug(const char *fmt, ...) { (void)fmt; }
 void lcs_log_error(const char *fmt, ...) { (void)fmt; }
 int peer_queue_config_status(int epoll_fd, int node, const void *payload, uint32_t length)
@@ -809,6 +814,8 @@ static void test_coordinated_local_initialization(void)
         g_state.config_status.serial = 0; assert(!config_peer_resume_frozen(error, sizeof(error)));
         const lcs_config_t *retained = g_state.config_runtime.base;
         for (size_t i = 0; i < 3; i++) if (i != self) { establish(i, 6); g_state.peers[i].instance_id = 100 + i * 100; }
+        assert(config_peer_initialization_start() == 1); /* Scheduler must drain first. */
+        config_peer_process(-1);
         assert(!config_peer_initialization_start()); config_peer_process(-1);
         assert(g_state.config_initialization_requested && !g_state.config_coordinator.storage.pid);
         size_t pending = 0;
@@ -888,6 +895,7 @@ static void test_initialization_interruption(void)
         memset(g_state.resources, 0, sizeof(g_state.resources)); memset(g_state.lease_grants, 0, sizeof(g_state.lease_grants));
         g_state.config_status.serial = 0; assert(!config_peer_resume_frozen(error, sizeof(error)));
         establish(1, 6); establish(2, 6); g_state.peers[1].instance_id = 200; g_state.peers[2].instance_id = 300;
+        config_peer_process(-1);
         assert(!config_peer_initialization_start()); config_peer_process(-1);
         g_state.peers[1].instance_id++; config_peer_process(-1);
         assert(!g_state.config_initialization_requested && g_state.config_initialization.failed && !g_state.config_coordinator.storage.pid);

@@ -1538,6 +1538,10 @@ int peer_rpc_async(int epoll_fd, int node_idx, uint16_t req_type,
                       peer_inflight_count(peer));
         return -1;
     }
+    /* A fenced legacy release may still be attempted by backend completion.
+     * Refuse it before registering an RPC: queue refusal must not close the
+     * separate configuration channel during freeze/application coordination. */
+    if (g_state.config_application_remapping && lcs_resource_frame_type(req_type)) return -1;
     if (g_state.resource_generation_enabled && lcs_resource_frame_type(req_type) &&
         (!g_state.resource_generation_admitted || !peer->resource_generation_matches ||
          peer->protocol_version < LCS_PROTO_FEATURE_RESOURCE_GENERATION))

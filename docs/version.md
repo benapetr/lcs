@@ -485,3 +485,15 @@ an active proposal. Full/poisoned history blocks submission without eviction.
 This uses existing wire 6, local diagnostic formats, request journal and storage
 formats and does not bump the release version. Ordinary INI first-freeze creation
 and live-owner draining remain unfinished.
+
+A durable freeze on a running INI node now triggers a fenced local resource drain
+before FROZEN acknowledgement or local initialization. Fenced resource RPCs are
+rejected before registration, preserving the separate configuration connection
+when backend completion attempts a legacy release. Existing wire-6 freeze
+query/reply fields and status codes are unchanged: BUSY remains the response until
+old backend/hook workers, grants and ownership drain; failed cleanup cannot return
+FROZEN. Local format-4 diagnostics can report the exact cleanup failure. The drain
+preserves indices, epochs, private promises and administrative state, and does
+not fabricate distributed owner proof or initialize history. Quorum-only nodes
+perform no backend work. This adds no wire/storage format, ordinary local protocol
+or release-version change. Automatic first-freeze initiation remains unfinished.

@@ -53,7 +53,15 @@ reaches readiness, a full member automatically
 proposes the unchanged baseline's schema-2 activation through majority agreement.
 Retries use fresh request IDs and higher ballots, preserving unknown reservations
 and recovering accepted values. Quorum-only members never initiate proposals.
-Ordinary INI startup still awaits first-freeze and live-owner draining support.
+Ordinary INI startup still awaits automatic first-freeze initiation.
+
+An explicit durable freeze of a running INI generation now fences new resource
+work and drains owned backends with the retained hooks and dependency order.
+FROZEN acknowledgements and local initialization wait for cleanup, workers and
+lease state to drain. Failed cleanup remains frozen and is reported by
+`config status`; repair/restart retains the baseline. Quorum-only nodes execute
+no backends. Automatic first-freeze initiation from ordinary INI startup remains
+unfinished. See [the live drain contract](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
 
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means

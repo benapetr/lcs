@@ -2,6 +2,7 @@
 #include "config_peer.h"
 #include "config_reload.h"
 #include "config_candidate.h"
+#include "config_live.h"
 #include "daemon_state.h"
 #include "log.h"
 #include "peer.h"
@@ -379,6 +380,7 @@ int config_peer_freeze_start(void)
         config_reload_in_progress() || !g_state.config_bootstrap.initialization_locked ||
         runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN || runtime->activation.poisoned ||
         !runtime->base || !runtime->activation.store || g_state.config_initialization_attempt == UINT64_MAX) return -1;
+    if (!g_state.config_freeze_drained) return 1;
     uint64_t now = lcs_now_ms(), instances[LCS_MAX_NODES];
     if (!freeze_instances(instances)) return 1;
     if (g_state.config_initialization.active && !g_state.config_initialization.failed &&
@@ -393,6 +395,8 @@ int config_peer_freeze_start(void)
 
 int config_peer_initialization_start(void)
 {
+    if (g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN && !g_state.config_freeze_drained)
+        return *g_state.config_freeze_error ? -1 : 1;
     if (g_state.config_initialization_requested ||
         g_state.config_coordinator.phase == LCS_CONFIG_COORD_INITIALIZING) return 1;
     int result = config_peer_freeze_start();
@@ -425,7 +429,8 @@ static uint8_t freeze_status(const lcs_config_freeze_message_t *query)
     if (runtime->activation.store && (runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ||
         lcs_config_runtime_initialization_prepared(runtime)) &&
         !runtime->activation.poisoned && g_state.config_bootstrap.initialization_locked && !coordinator->storage.pid)
-        return LCS_INITIALIZATION_FROZEN;
+        return !g_state.config_freeze_drained &&
+            runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ? LCS_INITIALIZATION_BUSY : LCS_INITIALIZATION_FROZEN;
     uint64_t instances[LCS_MAX_NODES];
     if (!freeze_instances(instances) || g_state.resource_generation_enabled || runtime->requires_recovery ||
         runtime->base || !g_state.config_bootstrap_initialized || !g_state.config_bootstrap.prepared ||
@@ -675,6 +680,8 @@ static void process_activation(void)
 void config_peer_process(int epoll_fd)
 {
     process_readiness(epoll_fd);
+    if (!g_state.resource_generation_enabled && g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN)
+        (void)lcs_config_live_freeze_drain(epoll_fd, g_state.config_freeze_error, sizeof(g_state.config_freeze_error));
     process_freeze(epoll_fd);
     process_owners(epoll_fd);
     lcs_config_transactions_process(&g_state.config_transactions, lcs_now_ms(), send_transaction, &epoll_fd);
@@ -766,6 +773,8 @@ int config_peer_view(lcs_config_status_view_t *view)
             "resource definitions are frozen; local initialization prepared and all-member readiness persisted; awaiting activation" :
             "resource definitions are frozen; local initialization prepared, awaiting all-member readiness");
     }
+    if (*g_state.config_freeze_error && view->phase == LCS_CONFIG_DIAG_FROZEN)
+        snprintf(view->error, sizeof(view->error), "%s", g_state.config_freeze_error);
     for (size_t i = 0; i < g_state.cfg.node_count; i++)
     {
         lcs_config_status_node_t *node = &view->nodes[i];

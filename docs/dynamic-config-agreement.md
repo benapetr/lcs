@@ -8,7 +8,8 @@ daemon peer sessions. Runtime definition commands and application/recovery are
 available for already-activated JSON catalogs. Existing durable freezes can now
 resume local preparation through fresh all-member confirmation, persist readiness,
 propose activation and apply its majority decision automatically. Initiating the
-first freeze and draining live INI owners remain unfinished. Separate
+automatic first freeze remains unfinished; explicit freezes now drain live INI
+owners before acknowledgement. Separate
 wire-6 bootstrap metadata now reports prepared definitions diagnostically; wire-5
 compatibility and INI authority remain. This document
 records the rules the remaining integration must preserve.
@@ -317,6 +318,32 @@ it on session/generation changes or deadline expiry. Completion does not start
 initialization or change resource authority by itself. The daemon's separate
 resumption workflow below explicitly couples collection to local initialization
 only after a durable freeze exists; automatic first-freeze/activation is unfinished.
+
+### Draining a running INI generation after freezing
+
+After successful durable FROZEN publication, ordinary daemons now fence every
+resource before cancelling moves and lease operations. Fenced resource RPCs are refused before registration so a
+legacy release cannot tear down the separate configuration connection. Legacy placement, new
+acquisition/renewal, incoming resource frames and INI reload remain excluded.
+The drain verifies the complete retained baseline before backend work, stops
+locally owned resources with their old hooks and dependency order, and keeps
+ordinary asynchronous backend/hook processing running. It never resets resource
+indices, epochs, private promises, administrative flags or peer sessions.
+
+A FROZEN reply is withheld while local cleanup, hook/backend workers, lease/move
+operations, residual grants or remote ownership records remain outstanding.
+Remote records expire through the ordinary lease path; expiry does not replace
+physical cleanup of local backends. Failed backend cleanup retains the freeze,
+reports the resource error in local frozen diagnostics and prevents initialization;
+repair and restart resume from the durable baseline. Quorum-only nodes perform
+no backend operations and refuse unexpected local ownership. Only a drained
+member may start its own all-member initialization collection. This local drain
+is not a distributed old-owner application receipt: activation still requires
+its separate cleanup, owner proof and final synchronization/admission sequence.
+
+Ordinary INI startup does not initiate a freeze yet. Explicit admitted freeze
+queries and recovered freezes use this drain; automatic first-freeze initiation
+remains a separate unfinished stage.
 
 ### Fenced restart resumption
 

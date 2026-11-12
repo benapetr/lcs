@@ -21,7 +21,9 @@ int config_peer_readiness_start(void);
 int config_peer_freeze_start(void);
 /* Explicit per-member initialization workflow: collect all current durable
  * freezes (including quorum-only) then promote through the shared writer.
- * An existing collection may be used. The scheduler resumes existing freezes;
+ * Requires the scheduler-verified local drain first (1 while pending, -1 on
+ * cleanup error). An existing collection may be used. The scheduler resumes
+ * existing freezes;
  * this does not create the first freeze or activate JSON. */
 int config_peer_initialization_start(void);
 /* Before listeners/workers only: restore a recovered FROZEN or validated

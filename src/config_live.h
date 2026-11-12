@@ -57,6 +57,12 @@ int lcs_config_live_init_with_owner_network(lcs_config_live_t *live, int epoll_f
                                              lcs_config_bootstrap_t *bootstrap,
                                              lcs_config_owner_network_t *network);
 const lcs_config_reconcile_ops_t *lcs_config_live_ops(void);
+/* After a durable local freeze only: fence new work and drain the retained INI
+ * generation with its old hooks/dependency order. Never resets tables, grants,
+ * epochs or sessions. 1 locally drained, 0 waiting, -1 blocked/invalid. Physical
+ * cleanup, outstanding workers/leases and remote lease expiry must complete
+ * before initialization acknowledgements; this is not distributed owner proof. */
+int lcs_config_live_freeze_drain(int epoll_fd, char *err, size_t err_len);
 /* Resource scheduler hook: during a fenced generation handover, retain existing
  * unchanged leases only until their current deadline; never renew without quorum.
  * Returns true when normal lease maintenance must remain paused. */

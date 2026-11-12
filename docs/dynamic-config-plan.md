@@ -497,6 +497,15 @@ durable distributed configuration protocol.
   retries, all-member initialization through automatic admission, accepted-value
   recovery, majority edits and witness catch-up. Warm INI first-freeze/drain remains
   a separate unfinished stage.
+- [x] Drain a running INI generation after its durable local freeze, before
+  acknowledging FROZEN or authorizing initialization. Fence resource placement,
+  acquisition, renewal and incoming resource traffic before cancelling moves and
+  lease operations. Use old hooks and dependency order; wait for backend/hook
+  workers, residual grants, remote lease expiry and outstanding operations without
+  resetting tables, epochs, private promises or administrative state. Failed
+  cleanup stays frozen, reports its exact error and cannot produce a positive
+  freeze receipt. Exercise active VIP removal, failed removal, repaired restart
+  with unchanged intent, dependency/hook ordering, conflicts and quorum-only behavior. Automatic first-freeze initiation remains open.
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.

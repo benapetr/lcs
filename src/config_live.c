@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_live.h"
 #include "config_candidate.h"
+#include "config_reload.h"
 #include "cluster.h"
 #include "lease.h"
 #include "move.h"
@@ -135,6 +136,61 @@ static int drain(void *context, const lcs_config_reconcile_view_t *view, char *e
             pending = true;
     }
     return pending ? 0 : 1;
+}
+
+int lcs_config_live_freeze_drain(int epoll_fd, char *err, size_t err_len)
+{
+    const lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    g_state.config_freeze_drained = false;
+    if (!runtime->requires_recovery || !runtime->base ||
+        runtime->activation.base != runtime->base || !runtime->activation.store || runtime->activation.poisoned ||
+        runtime->activation.phase != LCS_CONFIG_ACTIVATION_FROZEN || !runtime->activation.requests_required ||
+        !g_state.config_bootstrap.initialization_locked || config_reload_in_progress() ||
+        g_state.resource_generation_enabled || g_state.self_index != lcs_config_self_index(runtime->base) ||
+        !definitions_equal(&g_state.cfg, runtime->base, 0) || !value_matches(&g_state.cfg, &runtime->activation.baseline))
+    { snprintf(err, err_len, "resource drain requires an exact durable frozen INI baseline"); return -1; }
+    if (err && err_len) err[0] = 0;
+    /* Exclude placement, acquisition, renewal, handoff and incoming resource
+     * traffic before cancelling anything. Ordinary backend callbacks still run. */
+    g_state.config_application_fenced = g_state.config_application_remapping = true;
+    g_state.config_application_drain_mask = UINT32_MAX;
+    g_state.resource_generation_admitted = g_state.voting_ready = false;
+    if (!g_state.config_freeze_draining)
+    {
+        g_state.config_freeze_draining = true;
+        move_cancel_all(epoll_fd, "resource definitions are being frozen");
+        lease_cancel_all_operations();
+    }
+    bool pending = false;
+    bool quorum_only = g_state.cfg.nodes[g_state.self_index].role == LCS_NODE_QUORUM_ONLY;
+    for (size_t i = 0; i < LCS_MAX_RESOURCES; i++)
+    {
+        resource_runtime_t *resource = &g_state.resources[i];
+        if (i < g_state.cfg.resource_count && (resource->state == LCS_RES_STOP_FAILED || resource->startup_cleanup_failed))
+        { snprintf(err, err_len, "resource %s cleanup failed during freeze; repair cleanup and restart", g_state.cfg.resources[i].name); return -1; }
+        if (i < g_state.cfg.resource_count && resource->state == LCS_RES_CONFLICT)
+        { snprintf(err, err_len, "resource %s ownership conflict prevents freeze drain; repair and restart", g_state.cfg.resources[i].name); return -1; }
+        if (i < g_state.cfg.resource_count && locally_owned(i))
+        {
+            pending = true;
+            if (quorum_only)
+            { snprintf(err, err_len, "quorum-only member has unexpected local resource ownership"); return -1; }
+            /* Reuse the live drain's dependency predicate with the whole old
+             * generation fenced; a child must finish before its parent stops. */
+            lcs_config_reconcile_view_t view = {.old_config = runtime->base};
+            if (!dependent_busy(&view, i) && resource->state != LCS_RES_STOPPING)
+                resources_release_local((int)i, epoll_fd);
+        }
+        if (resource->state != LCS_RES_STOPPED || workers_busy(resource) || resource->owner_instance_id || resource->lease_id ||
+            resource->lease_deadline_ms || resource->renew_after_ms || g_state.lease_grants[i].active)
+            pending = true;
+    }
+    for (size_t i = 0; i < LCS_LEASE_OP_MAX; i++) if (g_state.lease_ops[i].active) pending = true;
+    for (size_t i = 0; i < LCS_MOVE_OP_MAX; i++) if (g_state.moves[i].active) pending = true;
+    if (pending) return 0;
+    g_state.config_freeze_drained = true;
+    if (err && err_len) err[0] = 0;
+    return 1;
 }
 
 static int owners(void *context, const lcs_config_reconcile_view_t *view, char *err, size_t length)

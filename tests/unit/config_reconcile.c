@@ -19,6 +19,8 @@ daemon_state_t g_state;
 static unsigned generation_cancellations;
 static bool generation_reload, expanded_fixture, all_full_fixture, live_mode, project_ready, owners_ready, invalid_owner_result;
 static unsigned released[16], released_count, projected, dropped;
+static bool freeze_mode;
+static unsigned freeze_cancellations;
 void resources_drop_local(int resource_idx, int epoll_fd)
 { (void)epoll_fd; assert(resource_idx == 0); dropped++; }
 
@@ -38,6 +40,8 @@ bool config_reload_in_progress(void) { return generation_reload; }
 void move_cancel_all(int epoll_fd, const char *message)
 {
     (void)epoll_fd;
+    if (!strcmp(message, "resource definitions are being frozen"))
+    { assert(freeze_mode && g_state.config_application_fenced && g_state.config_application_remapping && !g_state.voting_ready); freeze_cancellations++; return; }
     if (!strcmp(message, "resource definitions are being reconciled"))
     { assert(g_state.config_application_fenced); return; }
     assert(!g_state.resource_generation_admitted && !g_state.voting_ready);
@@ -45,6 +49,7 @@ void move_cancel_all(int epoll_fd, const char *message)
 }
 void lease_cancel_all_operations(void)
 {
+    if (freeze_mode) { freeze_cancellations++; return; }
     assert(generation_cancellations % 3 == 1); generation_cancellations++;
 }
 void peer_close_all_for_config_reload(int epoll_fd)
@@ -1442,9 +1447,78 @@ static void test_owner_release_poisoned_catalog(void)
     lcs_config_value_clear(&first); cleanup();
 }
 
+static void test_frozen_ini_drain(void)
+{
+    for (unsigned q = 0; q < 2; q++)
+    {
+        expanded_fixture = true; setup(q != 0); expanded_fixture = false;
+        memset(&g_state, 0, sizeof(g_state)); g_state.cfg = *runtime.base;
+        g_state.self_index = q ? 2 : 0; g_state.instance_id = 100;
+        /* Supply the already durable freeze boundary, not initialization/vote
+         * evidence. This test performs no disk writes while draining. */
+        g_state.config_runtime.base = runtime.base;
+        g_state.config_runtime.requires_recovery = true;
+        g_state.config_runtime.activation = runtime.activation;
+        g_state.config_runtime.activation.phase = LCS_CONFIG_ACTIVATION_FROZEN;
+        g_state.config_runtime.activation.requests_required = true;
+        g_state.config_bootstrap.initialization_locked = true;
+        g_state.voting_ready = true; g_state.votes_seen = 3;
+        freeze_mode = true; freeze_cancellations = released_count = 0; generation_reload = false;
+        for (size_t i = 0; i < LCS_MAX_RESOURCES; i++)
+        { g_state.resources[i].owner_node = -1; g_state.lease_grants[i].owner_node = -1; }
+        for (size_t i = 0; i < 2; i++)
+        {
+            g_state.resources[i].epoch = 10 + i; g_state.lease_grants[i].promised_epoch = 40 + i;
+            if (!q)
+            {
+                g_state.resources[i].owner_node = 0; g_state.resources[i].owner_instance_id = 100;
+                g_state.resources[i].state = LCS_RES_ACTIVE; g_state.resources[i].lease_id = 500 + i;
+                g_state.resources[i].lease_deadline_ms = 20000;
+            }
+        }
+        g_state.resources[0].disabled = true; g_state.resources[0].disabled_generation = 9;
+        strcpy(g_state.cfg.resources[0].address, "192.0.2.99/32");
+        assert(lcs_config_live_freeze_drain(-1, error, sizeof(error)) < 0 && !freeze_cancellations && !released_count);
+        g_state.cfg = *runtime.base;
+        int result = lcs_config_live_freeze_drain(-1, error, sizeof(error));
+        assert(g_state.config_application_fenced && g_state.config_application_remapping && !g_state.voting_ready && freeze_cancellations == 2);
+        if (!q)
+        {
+            assert(!result && released_count == 1 && released[0] == 1); /* Dependent before parent. */
+            g_state.resources[1].owner_node = -1; g_state.resources[1].owner_instance_id = 0;
+            g_state.resources[1].state = LCS_RES_STOPPED; g_state.resources[1].lease_id = 0; g_state.resources[1].lease_deadline_ms = 0;
+            g_state.resources[1].hook.type = LCS_HOOK_POST_STOP;
+            assert(!lcs_config_live_freeze_drain(-1, error, sizeof(error)) && released_count == 1);
+            g_state.resources[1].hook.type = LCS_HOOK_NONE;
+            assert(!lcs_config_live_freeze_drain(-1, error, sizeof(error)) && released_count == 2 && released[1] == 0);
+            g_state.resources[0].state = LCS_RES_STOP_FAILED;
+            assert(lcs_config_live_freeze_drain(-1, error, sizeof(error)) < 0 && strstr(error, "cleanup failed") && !g_state.config_freeze_drained);
+            g_state.resources[0].state = LCS_RES_STOPPED; g_state.resources[0].owner_node = -1;
+            g_state.resources[0].owner_instance_id = 0; g_state.resources[0].lease_id = 0; g_state.resources[0].lease_deadline_ms = 0;
+        }
+        else assert(result == 1 && !released_count);
+        g_state.resources[0].state = LCS_RES_CONFLICT;
+        assert(lcs_config_live_freeze_drain(-1, error, sizeof(error)) < 0 && strstr(error, "conflict"));
+        g_state.resources[0].state = LCS_RES_STOPPED;
+        g_state.lease_grants[0].active = true;
+        assert(!lcs_config_live_freeze_drain(-1, error, sizeof(error)) && !g_state.config_freeze_drained);
+        g_state.lease_grants[0].active = false; g_state.lease_ops[0].active = true;
+        assert(!lcs_config_live_freeze_drain(-1, error, sizeof(error)));
+        g_state.lease_ops[0].active = false; g_state.resources[LCS_MAX_RESOURCES - 1].vip.pid = 555;
+        assert(!lcs_config_live_freeze_drain(-1, error, sizeof(error)));
+        g_state.resources[LCS_MAX_RESOURCES - 1].vip.pid = 0;
+        assert(lcs_config_live_freeze_drain(-1, error, sizeof(error)) == 1 && g_state.config_freeze_drained && !*error);
+        assert(freeze_cancellations == 2 && g_state.resources[0].epoch == 10 && g_state.lease_grants[0].promised_epoch == 40 &&
+            g_state.resources[0].disabled && g_state.resources[0].disabled_generation == 9);
+        assert(!g_state.resource_generation_enabled && !g_state.resource_generation_admitted);
+        freeze_mode = false; memset(&g_state, 0, sizeof(g_state)); cleanup();
+    }
+}
+
 int main(void)
 {
     parent = getpid();
+    test_frozen_ini_drain();
     test_order_and_blocked_barriers();
     test_pending_target_and_newer_checkpoint();
     test_checkpoint_during_admission();
