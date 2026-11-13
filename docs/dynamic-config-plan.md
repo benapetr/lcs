@@ -1,28 +1,41 @@
 # Dynamic distributed resource configuration migration plan
 
-Status: implementation in progress. Checked items have been implemented; unchecked
-items remain future work. Normal upgrades prepare local JSON snapshots while
-INI remains authoritative; already-activated durable catalogs can resume through
-fenced daemon recovery. Automatic distributed activation and runtime definition
-commands are not implemented yet. See [resource-json.md](resource-json.md) for current behavior.
+Status: implementation in progress; reconciled against the code and tests through
+commit `6f4db5c`. Checked items describe implemented work or existing test coverage;
+unchecked items describe remaining implementation, policy or validation work.
+They do not imply that the feature is ready for release.
+
+Automatic INI-to-JSON activation, runtime resource/group commands, durable majority
+agreement, live application and supported restart/catch-up recovery are implemented.
+Mixed wire-5/6 clusters retain INI authority until every configured member supports
+migration and has matching definitions and healthy startup recovery. Activation
+then temporarily drains old resources before admitting the dynamic generation.
+See [resource-json.md](resource-json.md) for current behavior.
+
+Before extensive testing, prioritize the remaining history-capacity/retention
+policy, retained-INI/static-setting semantics, operator backup/recovery/rollback
+procedure, and package removal/reinstall policy. Lost-history transfer remains an
+implementation gap; unsupported recovery must continue to fail closed. The larger
+partition/crash/disk-failure matrices below are the extensive testing work itself.
 
 The goal is to create, modify, and delete resources and groups through `lcs`
-while the cluster runs. The daemon will distribute and persist their JSON
+while the cluster runs. The daemon distributes and persists their JSON
 definitions on every voting member, including quorum-only nodes. Existing
 installations must remain usable throughout the upgrade and migration.
 
-## Proposed boundaries and storage
+## Boundaries and storage
 
 The human-maintained `/etc/lcs/lcs.conf` continues to define cluster identity,
 members, roles, networking, security, timing, and other daemon settings. Dynamic
 management initially covers resource and group definitions only. Membership
 changes and persistent lease/epoch storage are outside this refactor.
 
-Proposed default paths:
+Implemented default paths:
 
-- `/etc/lcs/resources.json`: daemon-maintained committed dynamic configuration,
-  next to the static configuration. Operators inspect/export it but use CLI
-  transactions to change it.
+- `/etc/lcs/resources.json`: daemon-maintained projection of the committed dynamic
+  configuration, next to the static configuration. Operators inspect/export it but
+  use CLI transactions to change it; this file alone is not a complete backup of
+  agreement and application history.
 - `/var/lib/lcs/`: durable configuration transaction and recovery metadata.
   Its contents must survive daemon restarts, machine reboots, and package upgrades.
 - `/run/lcs/`: existing temporary sockets and other runtime files.
@@ -30,9 +43,12 @@ Proposed default paths:
 The committed document is a complete snapshot containing a schema version,
 cluster identity, committed revision, groups, and resources keyed by name.
 Agreement metadata must identify the exact content and history, rather than
-trusting a revision counter alone. The precise transaction file layout remains
-to be designed. Resource ownership, leases, epochs, and temporary administrative
-stop flags retain their current runtime semantics.
+trusting a revision counter alone. The implemented activation, agreement,
+application, request and readiness records are described in
+[the agreement contract](dynamic-config-agreement.md) and
+[storage documentation](resource-json.md#storage-and-upgrades).
+Resource ownership, leases, epochs, and temporary administrative stop flags retain
+their runtime semantics; they are not a persistent lease-state database.
 
 ## Upgrade experience
 
@@ -45,9 +61,15 @@ JSON is refreshed from successfully applied INI changes during this period.
 Once every configured member, including quorum-only nodes, has confirmed support
 and readiness with compatible effective definitions, the cluster automatically
 commits a durable activation of dynamic configuration. No migration command or
-manual removal of INI sections is required. Activation preserves running resources
-and establishes JSON as the resource authority; retained INI resource/group
-sections are bootstrap history, not an alternative source of definitions.
+manual removal of INI sections is required. Activation preserves definitions and
+lease safety, but temporarily stops old backends and reacquires ownership after
+JSON admission. The mixed-version phase keeps ordinary INI placement and lease
+rules; conversion itself does not promise uninterrupted ownership or an unchanged
+epoch. JSON becomes the resource
+authority. Retained INI resource/group sections no longer supply running resource
+definitions, although the current startup path still parses and validates INI
+before recovering JSON. Clarifying that parsing contract and improving inactive-
+section diagnostics remain open below.
 
 An offline member that has not confirmed readiness delays initial activation.
 Once activation is committed, later disconnections do not revert to legacy mode
@@ -101,20 +123,20 @@ durable distributed configuration protocol.
   before resource transitions. Retain enough information to stop deleted/replaced
   backends after a crash, even when catch-up crosses multiple revisions. The
   tested local application-catalog core retains complete old/pending snapshots
-  and computes incarnation/dependency cleanup plans; daemon workers and backend
-  application are not connected yet.
+  and computes incarnation/dependency cleanup plans. Daemon workers, live backend
+  application and startup recovery consume these catalogs.
 - [x] Add persistent resource incarnation identity so deletion/recreation cannot
   reuse an old name's lease/grant state on returning nodes. Schema-2 snapshots,
-  candidate allocation and agreement validation are implemented; daemon resource
-  message admission and runtime remapping still require integration.
+  candidate allocation, agreement validation, daemon resource-message admission
+  and incarnation-aware runtime remapping are implemented.
 - [x] Specify recovery when JSON and journal disagree or one is missing/corrupt.
   Fail safely with actionable diagnostics; never silently reset to empty state.
 - [x] Implement local atomic record replacement, file and parent-directory
   syncing, exclusive locking, and bounded regular-file reads.
 - [x] Implement and test persistent acceptor records (promises, accepted values,
   committed predecessor/value, acknowledgement mask, node/membership binding,
-  and checksum) plus proposer selection and majority tracking. These cores are
-  not yet wired into daemon activation. See [agreement design](dynamic-config-agreement.md).
+  and checksum) plus proposer selection and majority tracking. These cores drive
+  daemon activation and runtime definition transactions. See [agreement design](dynamic-config-agreement.md).
 - [x] Implement nonblocking storage workers, bounded result handoff, monotonic
   state import, and cancellation that waits for child exit before disk recovery.
   Agreement and application begin/finish now share one writer; catalog imports
@@ -122,18 +144,28 @@ durable distributed configuration protocol.
 - [x] Implement durable committed checkpoint catch-up across multiple revisions,
   retaining higher promises and applied/pending cleanup snapshots. Keep normal
   worker imports strict and validate incarnation continuity on checkpoint imports.
-- [ ] Implement durable request-status history, backup/recovery policy and safe
-  history retention/compaction for the complete distributed transaction manager.
+- [x] Integrate durable request reservations, learned-decision facts, originating
+  client descriptors and local admitted/applied receipts with the transaction
+  manager and public request-status/mutation results.
+- [ ] Define and implement safe request-history retention/compaction or an explicit
+  supported exhaustion policy. The current journal retains at most 128 identities
+  and refuses new IDs without eviction; retries remain readable/idempotent.
+  Capacity handling must preserve promises, accepted values, uncertain outcomes,
+  cleanup obligations and immutable retry identities.
+- [ ] Publish a consistent backup/restore and lost-state recovery procedure for
+  agreement, application, activation, readiness and request history together.
 - [x] Add an explicit local request-fact journal core: bind member/membership,
   immutable request ID/expected base/canonical value fingerprint, idempotent
   reservation and exact learned-decision observation. Persist atomically with
   checksums, retain all observed IDs at bounded capacity, and reject stale worker
   imports. Test restart, process exits, uncertain syncs, corruption and conflicts.
-  This records reservation/commit facts, not admission or final client outcomes.
+  A reservation/commit fact alone is not admission or a final client outcome;
+  separate applied receipts below record historical local admission.
 - [x] Add request reservation and learned-decision observation jobs to the same
   serialized storage worker as agreement/catalog work. Publish only after durable
   child completion; test writer exclusion, retries/conflicts, crashes, cancellation
-  and recovery. History must already be explicitly opened; no daemon auto-creation.
+  and recovery. History must already be explicitly opened; missing history is
+  created only through guarded coordinated first initialization, never loss repair.
 - [x] Recover existing request history at daemon startup against the frozen base;
   reject unsafe/corrupt/foreign/orphan records and locally contradictory learned or
   accepted identities before listeners open. Keep missing older history unavailable
@@ -149,7 +181,8 @@ durable distributed configuration protocol.
   Keep request completions separate from votes/catalog/projection completions;
   gate new IDs on voting eligibility and valid successors while allowing known-ID
   checks and learned observations during application lag without releasing fences.
-  Do not infer initialization authorization or expose public mutation commands.
+  This storage entry point alone cannot authorize initialization or mutation;
+  the public command path applies the separate admission checks.
 - [x] Reserve the local proposer's original immutable request identity through
   the coordinator before PREPARE or proposal frames. Require healthy existing
   history, refuse known IDs even with newer transport IDs, and keep recovered
@@ -166,10 +199,12 @@ durable distributed configuration protocol.
   progress until observation completes or recovery is required. Record only the
   exact current proven outcome across checkpoint gaps; never initialize missing
   legacy history or report committed facts as application/client success.
-- [ ] Integrate coordinated first-initialization authorization, lost-history recovery
-  and proposer/acceptor paths before enabling public mutation endpoints. Handle
-  missing-history/checkpoint transfer, completed admission acknowledgements and
-  deliberate retention/compaction; unrecorded requests remain outcome-unknown.
+- [x] Integrate coordinated first-initialization authorization and proposer/acceptor
+  paths with public mutation endpoints. Persist local admission acknowledgements;
+  unrecorded requests and checkpoint-gap outcomes remain unknown.
+- [ ] Implement verified lost request-history recovery/checkpoint transfer without
+  resetting journals or inferring missing outcomes. Keep missing mandatory history
+  unavailable until that recovery is defined and implemented.
 - [x] Define full-cluster restart, stale-majority prevention, disk loss, backup
   restoration, and explicit disaster recovery. A lone high revision or a former
   minority must not establish authority by itself.
@@ -190,12 +225,13 @@ durable distributed configuration protocol.
 - [x] Persist the exact revision-zero baseline before creating agreement or
   application records. Resume interrupted local initialization from that frozen
   value, reject missing records after preparation, and block INI snapshot refresh
-  once the intent exists. This local prerequisite does not authorize activation;
-  automatic first-freeze/activation coordination remains unfinished.
+  once the intent exists. This local prerequisite alone does not authorize
+  activation; the all-member freeze/readiness and majority decision do.
 - [x] Run local initialization through the shared nonblocking storage worker,
   excluding INI refresh and withholding prepared handles until successful child
   exit. Preserve recovery requirements on cancellation, uncertain writes and
-  conflicting history. The distributed manager does not invoke it yet.
+  conflicting history. The distributed manager invokes it only after explicit
+  all-member initialization authorization.
 - [x] Bind first request-history creation to a durable format-2 initialization
   intent: persist agreement, application and empty requests before PREPARED.
   Resume only while INITIALIZING; never recreate lost/corrupt PREPARED history
@@ -203,23 +239,24 @@ durable distributed configuration protocol.
   only after the initialization child exits successfully, keep format-1 recovery
   compatible, and refuse to silently upgrade legacy intents. Cover all ten sync/
   crash boundaries, no parent-side I/O, cancellation and pre-listener recovery.
-- [ ] Use one resource/group authority at a time: INI before activation, JSON
+- [x] Use one resource/group authority at a time: INI before activation, JSON
   after activation. Do not introduce a permanent mixed static/dynamic namespace.
-- [ ] Route existing coordinated reload and dynamic updates through compatible
+- [x] Route existing coordinated reload and dynamic updates through compatible
   serialization rules so they cannot race or overwrite each other's changes.
 - [x] Add an explicit internal application sequencer through the shared storage
   coordinator: persist pending cleanup before callbacks, enforce quiesce/drain/
   old-owner/install ordering, persist the applied marker before admission, and
   hold voting until admission succeeds. Resume exact pending targets across
   newer checkpoints, skip backend work for quorum-only nodes, and retain holds
-  on failed cleanup or uncertain persistence. Live adapters remain unfinished.
+  on failed cleanup or uncertain persistence. Live adapters and the daemon manager
+  are integrated below.
 - [x] Bind dynamic resource requests/replies, state sync and voting heartbeats to
   complete applied generation digests, membership and daemon instances before
   resource dispatch or RPC completion. Reject in-place session generation changes;
   keep configuration catch-up available for mismatches and reject wire-5 dynamic
   sessions. Explicit install/admit APIs cancel indexed peer operations before
   remapping and require durable matching applied state before generation traffic.
-  Live backend/remap/startup adapters are not connected yet.
+  Live backend/remap/startup adapters use these APIs under the manager's fences.
 - [x] Implement explicit local backend callbacks with definition fences, existing
   stop machinery/old hooks, dependency/post-stop ordering, failed-cleanup blocking,
   incarnation-aware sorted remapping and preserved unchanged ownership/promises.
@@ -335,10 +372,14 @@ durable distributed configuration protocol.
   membership and normalized expected base; retain the fingerprint across learning,
   restart and admission. Read older journals without inventing client evidence,
   reject descriptor replacement/attachment through worker imports, and exercise
-  reservation timeout/cancellation/recovery. This is internal submission support;
-  public mutation/wait endpoints remain unfinished.
-- [ ] Extend request diagnostics to complete distributed client outcomes after that lifecycle is implemented; retain unknown results where
-  durable proof is unavailable.
+  reservation timeout/cancellation/recovery. Public mutation/wait endpoints use
+  this evidence for exact origin retries and structured results.
+- [x] Expose origin-bound mutation results and local durable request facts through
+  the public CLI, including applied, rejected, pending and unknown. An origin's
+  historical local admission is not all-peer acknowledgement or current health.
+- [ ] Define/implement recovery of missing request/outcome evidence across nodes
+  and checkpoint gaps. Cross-origin queries/retries must retain unknown results
+  where the original descriptor or durable outcome proof is unavailable.
 
 ## 4. Add protocol support and synchronization
 
@@ -349,8 +390,8 @@ durable distributed configuration protocol.
   over negotiated wire-6 sessions. Expose local and per-member preparation through
   read-only `lcs config status`, clearing observations at session teardown and
   marking preparation unavailable during reload/persistence. This is not the
-  durable activation-readiness barrier; dynamic mutations remain disabled.
-- [ ] Define bounded snapshot transfer, transaction messages, revision/digest
+  durable activation-readiness barrier; metadata alone cannot enable mutations.
+- [x] Define bounded snapshot transfer, transaction messages, revision/digest
   exchange, reconnect synchronization, and retry/idempotency behavior.
 - [x] Implement transport-independent bounded BEGIN/CHUNK snapshot codecs,
   exact metadata validation, fixed deadlines, duplicate handling, membership
@@ -361,12 +402,13 @@ durable distributed configuration protocol.
   serialized nonblocking persistence, and application-aware configuration-vote
   eligibility. Recover proof before INI refresh and reject orphan or premature
   readiness. Automatic initialization and peer configuration-transaction admission
-  remain unfinished.
+  use the explicit freeze and readiness workflows below.
 - [x] Add distinct wire-6 readiness query/reply messages with strict codecs,
   established-peer and instance binding, monotonic attempt correlation, a fixed
   deadline, and collection from every configured member. INI-only nodes answer
   not-ready without creating files. Starting collection is still an internal
-  coordinator operation; startup does not trigger initialization or activation.
+  coordinator operation; the automatic startup workflow invokes it after local
+  frozen initialization.
 - [x] Reject INI reload requests and peer reload transitions after local definitions
   are frozen, so explicit durable readiness cannot race a legacy resource reload.
 - [x] Hand a completed explicit peer readiness round to the shared barrier writer
@@ -393,7 +435,8 @@ durable distributed configuration protocol.
   Use one fixed deadline and shared storage writer; report unknown on interruption,
   and require newer IDs/ballots for retries. Notify acknowledged acceptors, leaving
   nonparticipating/reconnected members to checkpoint synchronization.
-  This explicit internal entry point does not automatically activate or apply resources.
+  The activation manager and public mutation path invoke this proposer; agreement
+  remains separate from resource application.
 - [x] Pull committed checkpoint snapshots over admitted wire-6 sessions, binding
   requests to instances, static membership and frozen baseline. Validate original
   majority decisions relayed by any configured member, serialize persistence,
@@ -409,8 +452,8 @@ durable distributed configuration protocol.
   local reload generation and a fixed deadline. Revalidate sealed rounds before
   forking, consume authorization once, and reject incomplete member sets, stale
   replies, restarts, disconnects, changed definitions and withdrawn freezes.
-  This core does not send freeze messages. Responder persistence is implemented
-  below; peer exchange and live startup coordination remain required before use.
+  The peer exchange and live startup coordinator below use this collector;
+  collection alone is not activation authorization.
 - [x] Add the durable local freeze responder storage primitive on the shared
   writer. Persist only a format-3 FROZEN baseline before acknowledging; create
   no journals and never thaw/promote it on restart or collector timeout. Retain
@@ -418,14 +461,15 @@ durable distributed configuration protocol.
   authorization to promote the retained runtime to format-2 initialization.
   Verify both freeze sync boundaries and all ten promotion sync boundaries with
   failures/crashes, immutable baselines, empty-history exclusion, and recovery
-  before listeners. Explicit peer exchange and fenced restart resumption are
-  implemented below; first-freeze/activation coordination remains open.
+  before listeners. Explicit peer exchange, fenced restart resumption and automatic
+  first-freeze/activation coordination are integrated below.
 - [x] Add explicit wire-6 freeze query/reply framing and admitted peer dispatch,
   with destination/source instances, monotonic attempt correlation, strict codecs
   and complete baseline/membership binding. Route responder persistence through
   the coordinator's existing shared writer, count quorum-only members, and refuse
   storage while any configured member is offline/old or local reload is pending.
-  Send FROZEN only after child publication, retain bounded replies across output
+  Send LOCKED only after durable child publication and FROZEN only after drain;
+  retain bounded replies across output
   backpressure, and drop stale/expired requesters without thawing durable state.
   Add the explicit scheduler-driven collector after local durable freeze. A
   collection-only entry does not initialize or switch authority; the separate
@@ -451,8 +495,8 @@ durable distributed configuration protocol.
   missing history, promises, reservations, barriers and advanced state rather than
   resetting them. Exercise full/quorum-only workflows, stale/replaced instances,
   shared-writer interruption/shutdown, all sync/crash boundaries, real three-node
-  automatic preparation and mixed frozen/prepared/interrupted restart. This does
-  not initiate the first freeze from INI, create readiness, or activate JSON.
+  automatic preparation and mixed frozen/prepared/interrupted restart. First-freeze,
+  readiness and activation are separate integrated stages below.
 - [x] Automatically collect explicit all-member readiness after pristine local
   preparation, persist the sealed proof through the shared writer, and recover
   valid barriers over pristine revision-zero history without rewriting them.
@@ -460,14 +504,16 @@ durable distributed configuration protocol.
   persistence uncertainty requires recovery. Keep resource voting/placement,
   reload, JSON authority and mutation admission fenced. Verify stale replies,
   timeout retry, writer exclusion, full/quorum-only restart, unchanged proof and
-  missing/corrupt history. First-freeze creation and JSON activation remain open.
+  missing/corrupt history. Separate first-freeze and activation controllers are
+  integrated below.
 - [x] Resume the undecided revision-one activation slot after restart when a
   valid all-member barrier and mandatory request history exist. Preserve promises,
   reservations and accepted schema-2 activation values without rewriting records
   or resubmitting request IDs. Require the accepted value's exact reservation;
   retain resource, reload and mutation fences and frozen baseline cleanup. Cover
   lower-ballot rejection, missing proof/history, full/quorum-only restart and
-  byte-identical evidence. Learned activation and initial application remain open.
+  byte-identical evidence. Learned activation and initial application are handled
+  by the recovery stages below.
 - [x] Recover a learned schema-2 revision-one activation before listeners when
   its baseline remains applied, with either no pending application or that exact
   pending value. Keep mandatory history/barrier checks, clean retained baseline
@@ -476,7 +522,7 @@ durable distributed configuration protocol.
   Quorum-only members perform no backend work. Report baseline-applied recovery
   and cleanup failures using local diagnostic format 5. Test cleanup failure and
   crash/restart after BEGIN, absent history, baseline preservation, initial
-  admission and retained learned decisions. Live activation handoff remains open.
+  admission and retained learned decisions. Live activation uses the handoff below.
 - [x] Hand a learned revision-one activation on a running frozen node to the
   recovery controller without restarting or resetting its coordinator, sessions,
   transactions, resource epochs, private promises or table indices. Wait for the
@@ -484,8 +530,8 @@ durable distributed configuration protocol.
   frozen baseline, resource fences and stopped/unowned tables before acquiring
   the application hold. Exercise busy writer/workers, missing fences, differing
   definitions, full/quorum-only paths, live checkpoint learning, unchanged daemon
-  instances, majority edits with the witness offline and witness catch-up. Initial
-  freeze/proposal creation from ordinary INI remains unfinished.
+  instances, majority edits with the witness offline and witness catch-up. Automatic
+  freeze/proposal creation is integrated below.
 - [x] Automatically propose the definitions-preserving schema-2 activation after
   an existing frozen node persists all-member readiness. Prefer the lowest-index
   connected full member; require an admitted wire-6 majority and retain fences
@@ -495,8 +541,8 @@ durable distributed configuration protocol.
   Recover earlier majority-accepted values and refuse full/poisoned history rather
   than evicting evidence. Test isolated recovery, stale rejection hints, timeout
   retries, all-member initialization through automatic admission, accepted-value
-  recovery, majority edits and witness catch-up. Warm INI first-freeze/drain remains
-  a separate unfinished stage.
+  recovery, majority edits and witness catch-up. Warm INI first-freeze/drain uses
+  the following integrated stages.
 - [x] Drain a running INI generation after its durable local freeze, before
   acknowledging FROZEN or authorizing initialization. Fence resource placement,
   acquisition, renewal and incoming resource traffic before cancelling moves and
@@ -505,7 +551,8 @@ durable distributed configuration protocol.
   resetting tables, epochs, private promises or administrative state. Failed
   cleanup stays frozen, reports its exact error and cannot produce a positive
   freeze receipt. Exercise active VIP removal, failed removal, repaired restart
-  with unchanged intent, dependency/hook ordering, conflicts and quorum-only behavior. Automatic first-freeze initiation remains open.
+  with unchanged intent, dependency/hook ordering, conflicts and quorum-only behavior.
+  Automatic first-freeze initiation is integrated below.
 - [x] Confirm a durable reload/acquisition lock from every configured member before
   draining any running INI owner. Keep exact unexpired lease renewals during lock
   collection, reject new/replacement grants, and refuse wire 5 immediately after
@@ -525,21 +572,26 @@ durable distributed configuration protocol.
   INI reload regressions on a current-source wire-5 fixture without a production
   bypass for the capability gate.
 
-- [ ] Connect the durable activation barrier to live INI reload and dynamic
+- [x] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local
   authority.
-- [ ] Persist activation across restarts and catch up lagging nodes. After
+- [x] Persist activation across restarts and catch up lagging nodes. After
   activation, use normal quorum requirements for edits rather than requiring
   all members to stay online; never automatically revert to legacy mode.
-- [ ] After activation, prevent older binaries or stale static configurations
+- [x] After activation, prevent older binaries or stale static configurations
   from rejoining as voters/owners under an incompatible resource definition.
-- [ ] Apply existing peer security checks to configuration transfer and mutation;
-  restrict local mutation commands through the Unix socket access policy.
+- [x] Route configuration transfer and mutation through existing admitted-peer
+  paths, including source allowlists, optional configured-peer restrictions,
+  configured shared-secret and instance/version checks. Local commands use the
+  existing Unix socket; this adds neither encryption nor a separate mutation ACL.
+- [ ] Audit/document and, where needed, enforce Unix socket ownership/mode policy
+  for foreground, daemonized and systemd execution. Test unauthorized local
+  mutation attempts; inherited umask must not be assumed to be a sufficient policy.
 
 ## 5. Add runtime management commands
 
-Definition commands below are available for already-activated JSON clusters.
-Automatic activation remains a separate unfinished phase. Existing
+Definition commands below are available on admitted JSON full members after
+supported automatic activation or recovery. Existing
 `resource start/stop/move` remain runtime controls with their current semantics.
 
 - [x] Model new resource/group definition commands on `pcs` syntax and conventions
@@ -595,36 +647,52 @@ Automatic activation remains a separate unfinished phase. Existing
 
 ## 6. Support automatic upgrade and migration from existing releases
 
-- [ ] Test rolling binary upgrades from the currently released wire-5 version
-  with existing INI resources, unchanged placement, and no dynamic files present.
+- [x] Test rolling binary upgrades from released v1.1.1 with existing INI
+  resources and no dynamic files on the released nodes. Preserve owner/epoch
+  during the mixed-version phase; after the final witness upgrade, verify
+  automatic conversion and JSON admission. Conversion includes a resource drain.
 - [x] Verify pre-activation rolling peering against the released v1.1.1 wire-5
   daemon: no dynamic files on released nodes, mixed wire-5/6 quorum, upgrading the
   other full member and quorum-only voter, unchanged active owner/epoch, and no
-  new frames sent to old sessions. This does not yet test automatic activation.
-- [ ] Implement deterministic automatic bootstrap from effective INI definitions,
-  preserving resource identity, ownership, lease safety, and running resources.
-  Use compatible voting fingerprints during the rolling-upgrade phase.
+  new frames sent to old sessions. The compatibility test now also verifies
+  automatic activation after the final upgrade.
+- [x] Implement deterministic automatic bootstrap from effective INI definitions,
+  preserving definitions, incarnation continuity and lease safety. Use compatible
+  voting fingerprints and preserve placement during the mixed-version phase;
+  drain/reacquire resources during the actual dynamic conversion.
 - [x] Refresh prepared JSON after each successful legacy INI reload and startup.
   Perform runtime filesystem work in a background worker, coalescing refreshes
   without blocking lease renewal.
-- [ ] Serialize final conversion/activation against pending reloads and workers
+- [x] Serialize final conversion/activation against pending reloads and workers
   so an earlier prepared snapshot cannot replace newer agreed resource definitions.
-- [ ] Automatically activate dynamic authority after every member confirms
+- [x] Automatically activate dynamic authority after every member confirms
   capability, matching configuration, and durable readiness. No administrator
   migration command or configuration cleanup may be required.
-- [ ] Persist resumable initialization and activation metadata. Distinguish a
-  never-initialized node from lost/corrupt state; missing JSON after initialization
-  must trigger recovery rather than reimporting stale INI resources.
-- [ ] Leave human-maintained INI files untouched. After activation, ignore their
-  resource/group definitions as configuration inputs, report their inactive
-  status clearly, and direct attempted INI resource edits to runtime commands.
-- [ ] Define parsing/reload behavior for retained INI sections, static daemon
-  settings, new installations, and newly provisioned stale nodes joining an
-  already activated cluster; synchronize committed state before participation.
+- [x] Persist resumable initialization and activation metadata. Distinguish a
+  never-initialized node from lost/corrupt state. Missing initialized shadow state
+  fails closed; an activated resources.json projection is recoverable only from
+  validated durable history, never by reimporting stale INI definitions.
+- [x] Leave human-maintained INI files untouched and recover running definitions
+  from the validated JSON catalog after activation. Report JSON authority and
+  reject INI resource reloads while frozen/activated.
+- [ ] Complete the retained-INI parsing and inactive-section diagnostic contract.
+  Startup still parses/validates INI before JSON recovery, and reload rejection
+  does not yet give explicit resource/group command guidance. Decide how stale,
+  removed or invalid inactive sections and static daemon edits should behave.
+- [ ] Define and implement safe provisioning/rejoin of a node without the required
+  local dynamic history into an already activated cluster. Distinguish a new
+  member from a previously voting node with lost/rolled-back promises; stale INI
+  and an empty journal must not authorize participation. Membership changes remain
+  outside this refactor.
 - [ ] Document rollback before activation and a deliberate export/conversion path
   after activation. Downgrading binaries alone must not silently discard state.
-- [ ] Verify migration interruption, failed writes, node reboot, and offline-node
-  return; retrying migration must not create resources twice or revert a commit.
+- [x] Exercise retained frozen/initializing/prepared/accepted/chosen activation,
+  interrupted storage publication, failed cleanup/repaired restart, and witness
+  return in existing unit and process regressions. Preserve decisions and avoid
+  implicit INI reimport or empty-history recreation.
+- [ ] Expand migration failure testing into an end-to-end interruption/reboot
+  matrix across rolling upgrades, activation/application boundaries and offline
+  returns, checking duplicate backend creation and commit non-regression.
 
 ## 7. Update installation, packaging, and service integration
 
@@ -649,29 +717,69 @@ Automatic activation remains a separate unfinished phase. Existing
 
 - [x] Unit-test local schema validation, canonicalization, candidate construction,
   bootstrap recovery, atomic-write failure boundaries, and background refresh.
-- [ ] Unit-test revision conflicts, distributed journal recovery, and
-  malformed/oversized wire transfers.
+- [x] Unit-test revision conflicts, supported distributed journal recovery, and
+  malformed/oversized wire transfers. Missing-history repair remains unsupported;
+  corruption/missing mandatory records are tested as fail-closed cases.
 - [x] Test the agreement core against competing coordinators, accepted-majority
   recovery after restart, duplicate/conflicting replies, corrupt/foreign journals,
   write/sync failures, old worker replays, cancellation, large worker results,
   and malformed/incomplete/expired snapshot transfers.
-- [ ] Integration-test create/update/delete/import with VIPs, services, groups,
-  dependencies, quorum-only voters, and existing runtime controls.
-- [ ] Test simultaneous edits, partitions, quorum loss, coordinator changes,
-  delayed/duplicate messages, stale reconnects, and configuration ID remapping.
-- [ ] Inject crashes at persistence and resource-transition boundaries; verify
-  acknowledged updates survive restarts and conflicting updates cannot commit.
-- [ ] Test full-cluster restart, stale snapshots, corrupt files, full disks,
-  permission failures, and interruption of checkpointing and migration.
-- [ ] Verify legacy INI behavior during mixed-version rolling upgrades, automatic
-  activation only after every configured node is ready, reload during upgrade,
-  partial activation recovery, and continued dynamic operation with a node offline.
-- [ ] Update `docs/config.md`, `docs/manual.md`, packaged examples, man pages,
-  release notes, and version locations from `docs/version.md`. Keep advanced
-  operational detail out of README.
+- [x] Integration-test public VIP create/update/delete/import, groups, policies,
+  dependencies, quorum-only refusal/participation, origin retry/restart, and
+  existing runtime controls (`dynamic-mutations.sh`, `config-import.sh`,
+  `dynamic-live-application.sh`, `config-mutation-failures.sh`).
+- [ ] Extend public dynamic create/update/delete/import coverage to systemd
+  services and mixed VIP/service dependency transitions. Existing systemd worker
+  and runtime-control tests are not this complete definition-command matrix.
+- [x] Cover competing proposers and stale/duplicate/expired messages in unit
+  transport harnesses; exercise public-command quorum loss, detached clients,
+  origin restart, reconnects and definition remapping in process regressions.
+- [ ] Extend the real-daemon matrix to simultaneous public edits, asymmetric
+  partitions, coordinator changes, delayed/duplicate messages and stale reconnects
+  during repeated remaps. Existing unit/harness coverage is not this full matrix.
+- [x] Inject unit storage failures and process exits at activation/request journal
+  sync boundaries; exercise blocked application, restart repair and uncertain
+  writes in the existing process suite.
+- [ ] Expand real-daemon crash injection across persistence and backend-transition
+  boundaries, checking every acknowledged update survives and conflicting
+  successors never commit.
+- [x] Exercise supported full-cluster restart, retained stale checkpoints,
+  corrupt/missing mandatory records and startup recovery with pending cleanup.
+- [ ] Complete real-filesystem full-disk, permission-loss, stale-backup and
+  interrupted-checkpoint/migration matrices. Existing validation/sync-failure
+  injection does not substitute for those end-to-end conditions.
+- [x] Verify legacy INI behavior during released-version mixed upgrades,
+  all-member capability/definition/startup-readiness gating, reload before
+  conversion, partial activation recovery, majority-based dynamic creation with
+  the witness offline, and witness catch-up (`wire5-upgrade.sh`,
+  `config-bootstrap-status.sh`, `config-initialization-recovery.sh`,
+  `config-activation-live.sh`).
+- [x] Document implemented runtime commands, storage, automatic migration and
+  supported recovery in `docs/config.md`, `docs/manual.md`, `docs/resource-json.md`
+  and `packaging/lcs.8`; record unreleased wire/local/storage changes in
+  `docs/version.md`. Keep advanced operator detail out of the top-level README.
+- [ ] Finish the packaged configuration/example and daemon-man-page audit, release
+  notes and version-location updates for the eventual release. No release/version
+  bump is implied by this reconciliation.
 - [ ] Publish operator instructions for upgrade, migration, backup/restore,
   recovery, rollback, and package lifecycle behavior before releasing the feature.
 
-Implementation should follow the numbered phases. Do not expose mutating commands
-as supported functionality until durable agreement, crash recovery, compatibility,
-and migration tests are complete.
+Public mutation commands and automatic activation are implemented and exercised
+by the current suite. Unchecked recovery/retention/policy work and the extended
+fault/packaging matrices remain release-readiness work; passing the existing suite
+must not be described as completing those broader matrices.
+
+
+## Evidence used for this reconciliation
+
+These pointers identify implemented behavior and existing regressions, not new
+validation runs or completion of the remaining fault matrices.
+
+| Area | Implementation | Existing evidence |
+| --- | --- | --- |
+| Automatic freeze/readiness/activation | [config_peer.c](../src/config_peer.c), [config_coordinator.c](../src/config_coordinator.c) | [config-bootstrap-status.sh](../tests/integration/cases/config-bootstrap-status.sh), [wire5-upgrade.sh](../tests/integration/compatibility/wire5-upgrade.sh), [startup-cleanup.sh](../tests/integration/cases/startup-cleanup.sh) |
+| Authority, recovery and live application | [config_manager.c](../src/config_manager.c), [config_recovery.c](../src/config_recovery.c), [config_live.c](../src/config_live.c) | [dynamic-startup-recovery.sh](../tests/integration/cases/dynamic-startup-recovery.sh), [config-activation-live.sh](../tests/integration/cases/config-activation-live.sh), [dynamic-live-application.sh](../tests/integration/cases/dynamic-live-application.sh) |
+| Public commands and local outcomes | [cli_server.c](../src/cli_server.c), [config_transaction.c](../src/config_transaction.c), [config_requests.h](../src/config_requests.h) | [dynamic-mutations.sh](../tests/integration/cases/dynamic-mutations.sh), [config-import.sh](../tests/integration/cases/config-import.sh), [config-mutation-results.sh](../tests/integration/cases/config-mutation-results.sh), [config-mutation-failures.sh](../tests/integration/cases/config-mutation-failures.sh) |
+| Agreement, storage and transport | [config_agreement.c](../src/config_agreement.c), [config_transfer.c](../src/config_transfer.c), [config_store.c](../src/config_store.c) | [config_agreement.c unit tests](../tests/unit/config_agreement.c), [config_transaction.c unit tests](../tests/unit/config_transaction.c), [config_activation.c unit tests](../tests/unit/config_activation.c), [config_requests.c unit tests](../tests/unit/config_requests.c) |
+| Admission and access policy | [peer.c](../src/peer.c), [lcsd.c](../src/lcsd.c) | [config-freeze-exchange.sh](../tests/integration/cases/config-freeze-exchange.sh), [config-readiness.sh](../tests/integration/cases/config-readiness.sh), [source-allowlist.sh](../tests/integration/cases/source-allowlist.sh), [peers-only.sh](../tests/integration/cases/peers-only.sh); foreground socket-mode policy still needs audit |
+| Package directory creation | [Makefile](../Makefile), [lcs.postinst](../debian/lcs.postinst), [package-rpm.sh](../packaging/package-rpm.sh), [lcsd.service](../packaging/lcsd.service) | State-directory creation/ownership is present; package lifecycle matrix remains unchecked |
