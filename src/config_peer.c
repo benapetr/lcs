@@ -6,6 +6,7 @@
 #include "daemon_state.h"
 #include "log.h"
 #include "peer.h"
+#include "resources.h"
 #include "util.h"
 
 #include <stdlib.h>
@@ -432,7 +433,7 @@ static uint8_t freeze_status(const lcs_config_freeze_message_t *query)
         return !g_state.config_freeze_drained &&
             runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN ? LCS_INITIALIZATION_LOCKED : LCS_INITIALIZATION_FROZEN;
     uint64_t instances[LCS_MAX_NODES];
-    if (!freeze_instances(instances) || g_state.resource_generation_enabled || runtime->requires_recovery ||
+    if (!resources_startup_cleanup_complete() || !freeze_instances(instances) || g_state.resource_generation_enabled || runtime->requires_recovery ||
         runtime->base || !g_state.config_bootstrap_initialized || !g_state.config_bootstrap.prepared ||
         g_state.config_bootstrap.initialization_locked || g_state.config_bootstrap.refresh_pending ||
         g_state.config_bootstrap.worker_pid > 0) return LCS_INITIALIZATION_BUSY;
@@ -451,6 +452,39 @@ static int send_freeze(int epoll_fd, size_t node, const lcs_config_freeze_messag
     return peer_queue_config_freeze(epoll_fd, (int)node,
         message->kind == LCS_FREEZE_QUERY ? LCS_MSG_CONFIG_FREEZE_QUERY : LCS_MSG_CONFIG_FREEZE_REPLY,
         payload, (uint32_t)length);
+}
+
+/* Advertisements may initiate durable locking, never authorize initialization
+ * or activation. Those still require explicit lock, drain and readiness rounds. */
+static void process_first_freeze(void)
+{
+    lcs_config_runtime_t *runtime = &g_state.config_runtime;
+    lcs_config_coordinator_t *coordinator = &g_state.config_coordinator;
+    lcs_config_bootstrap_t *bootstrap = &g_state.config_bootstrap;
+    if (!g_state.config_initialization_auto_resume || g_state.self_index < 0 ||
+        !g_state.instance_id || !g_state.voting_ready || g_state.resource_generation_enabled || runtime->requires_recovery ||
+        runtime->base || runtime->activation.store || coordinator->closing || coordinator->failed ||
+        config_reload_in_progress() || !g_state.config_bootstrap_initialized || !bootstrap->prepared ||
+        bootstrap->initialization_locked || bootstrap->refresh_pending || bootstrap->worker_pid > 0 ||
+        bootstrap->state.directory_fd < 0 || bootstrap->state.lock_fd < 0 || config_peer_refresh()) return;
+    uint64_t instances[LCS_MAX_NODES];
+    if (!freeze_instances(instances)) return;
+    for (size_t i = 0; i < g_state.cfg.node_count; i++)
+    {
+        if ((int)i == g_state.self_index) continue;
+        const peer_runtime_t *peer = &g_state.peers[i];
+        /* Require healthy startup/recovery before initiating conversion. Once a
+         * member locks, its explicit queries bring remaining members into the
+         * same freeze even if advisory preparation/readiness is withdrawn. */
+        if (!peer->voting_ready || !peer->config_status_known ||
+            strcmp(peer->config_status.membership, g_state.config_status.membership) ||
+            strcmp(peer->config_status.baseline, g_state.config_status.baseline)) return;
+    }
+    if (!coordinator->initialized)
+        lcs_config_coordinator_init(coordinator, runtime, &g_state.config_readiness);
+    char error[256];
+    if (!lcs_config_coordinator_start_freeze(coordinator, bootstrap, &g_state.cfg, error, sizeof(error)))
+        lcs_log_debug("all configured members support matching resource definitions; starting durable freeze");
 }
 
 static void process_freeze_locks(int epoll_fd)
@@ -723,6 +757,7 @@ static void process_activation(void)
 void config_peer_process(int epoll_fd)
 {
     process_readiness(epoll_fd);
+    process_first_freeze();
     process_freeze_locks(epoll_fd);
     if (!g_state.resource_generation_enabled && g_state.config_runtime.activation.phase == LCS_CONFIG_ACTIVATION_FROZEN)
         (void)lcs_config_live_freeze_drain(epoll_fd, g_state.config_freeze_error, sizeof(g_state.config_freeze_error));

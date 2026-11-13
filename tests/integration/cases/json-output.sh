@@ -33,6 +33,14 @@ wait_for_socket node2
 wait_for_socket node3
 wait_for_quorum node1
 wait_for_owner node1 node1
+json_catalog_admitted()
+{
+    "$LCS" -s "$(node_socket node1)" --json config status | python3 -c '
+import json,sys
+s=json.load(sys.stdin); assert s["authority"]=="json" and s["admitted"]
+' 2>/dev/null
+}
+wait_until 45 'automatic JSON catalog admission' json_catalog_admitted
 
 status_json="$("$LCS" --json -s "$(node_socket node1)" status)"
 [[ "$(printf '%s\n' "$status_json" | json_get 'data["cluster"]["quorum"]')" == "true" ]] ||
@@ -60,9 +68,13 @@ nrpe_json="$("$LCS" -s "$(node_socket node1)" --json nrpe)"
 [[ "$(printf '%s\n' "$nrpe_json" | json_get 'data["state"]')" == "OK" ]] ||
     die "nrpe JSON did not report OK"
 
-reload_json="$("$LCS" -s "$(node_socket node1)" --json reload)"
-[[ "$(printf '%s\n' "$reload_json" | json_get 'data["ok"]')" == "true" ]] ||
-    die "reload JSON did not report an accepted request"
+reload_result=0
+reload_json="$("$LCS" -s "$(node_socket node1)" --json reload)" || reload_result=$?
+[[ "$reload_result" == 1 ]] || die "JSON-authority reload did not reject INI definition changes"
+[[ "$(printf '%s\n' "$reload_json" | json_get 'data["ok"]')" == "false" ]] ||
+    die "reload JSON did not report rejection"
+printf '%s\n' "$reload_json" | json_get 'data["message"]' | grep -Fq 'resource definitions are frozen' ||
+    die "reload JSON did not explain the authority restriction"
 
 version_json_a="$("$LCS" --json --version)"
 version_json_b="$("$LCS" --version --json)"

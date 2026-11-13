@@ -400,7 +400,7 @@ durable distributed configuration protocol.
   and poll peers in rotation only after a durable barrier. Cover revision gaps,
   delete/recreate cleanup, quorum-only receivers, deadlines and disconnected writes.
   Learning remains separate from application and distributed startup admission.
-- [ ] Gate automatic activation on explicit capability and readiness confirmation
+- [x] Gate automatic activation on explicit capability and readiness confirmation
   from every configured member, including quorum-only nodes, with matching
   effective configuration. Unknown/offline members must not count as upgraded.
 - [x] Add the same-process all-member first-initialization freeze collector and
@@ -513,6 +513,17 @@ durable distributed configuration protocol.
   LOCKED proof and drained FROZEN receipts; LOCKED never authorizes initialization.
   Cover timeout/retry, stale replies, owner renewal, failed cleanup and restart.
   This prerequisite does not initiate the first freeze from ordinary INI startup.
+- [x] Initiate the first durable freeze automatically from ordinary INI startup
+  after every configured member, including quorum-only voters, has a current
+  wire-6 session and matching complete-definition metadata. Require all members
+  to finish legacy startup cleanup/lease-voting recovery; explicit responders also
+  defer until local physical cleanup is verified. Exclude local reload
+  and bootstrap refresh; accept matching peers already locked. Follow explicit
+  all-member lock/drain/readiness proofs and majority activation before admission.
+  Test real v1.1.1 rolling upgrade, offline/mismatching witnesses, conversion after
+  coordinated reload, retained human INI and quorum-only restart. Keep pre-upgrade
+  INI reload regressions on a current-source wire-5 fixture without a production
+  bypass for the capability gate.
 
 - [ ] Connect the durable activation barrier to live INI reload and dynamic
   transaction serialization; version advertisements alone must not switch local

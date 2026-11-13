@@ -9,8 +9,10 @@ after values are also supported.
 
 The daemon automatically prepares a local JSON resource snapshot and initialization
 metadata on startup and refreshes the snapshot after successful resource reloads.
-Normal upgrades retain INI authority; supported already-activated catalogs resume
-JSON authority through fenced recovery. See
+Mixed wire-5/6 upgrades retain INI authority. After every configured member
+supports wire 6 and advertises matching definitions, conversion starts automatically
+through durable locking, draining, readiness and majority agreement. Existing
+JSON catalogs resume through fenced recovery. See
 [resource JSON and storage](resource-json.md) for paths, permissions, recovery
 behavior, and the schema. `lcs config status` (also with `--json`) reports
 prepared snapshots and matching members; these observations do not activate
@@ -18,19 +20,24 @@ dynamic management. For activated catalogs, it also
 reports local committed/applied/pending revisions and digests, recovery/admission
 state and cleanup errors. These read-only observations do not authorize edits. Admitted JSON full members
 with healthy request history support [runtime definition commands](resource-json.md#runtime-definition-commands)
-through the local Unix socket; automatic upgrade activation remains unfinished.
+through the local Unix socket; automatic upgrade activation starts once every configured member supports wire 6
+and advertises matching definitions.
 New coordinated format-2 initialization makes request history mandatory before
 preparation: missing/corrupt history after that point requires recovery, never
 empty-journal recreation. Older format-1 catalogs keep their existing read-only
 compatibility. See [required initialization history](resource-json.md#required-request-history-during-initialization).
+
+Automatic initiation waits for every member's legacy startup cleanup and
+lease-voting recovery. Startup cleanup failures can retry before migration
+installs resource-frame fences.
 
 A recovered format-3 freeze uses its retained resource/group definitions despite
 later valid INI resource edits. It opens wire-6 coordination and read-only CLI
 access with resource voting/placement, reload and mutations fenced. `config status`
 reports `application_state: frozen`. Existing freezes resume local initialization
 after fresh all-member confirmation, while pristine prepared restarts preserve
-their journals and fences. Automatic first-freeze creation and JSON activation
-remain unfinished. INI syntax/static validation still runs before recovery.
+their journals and fences. Ordinary INI startup now initiates this sequence automatically after all-member
+capability and definition checks. INI syntax/static validation still runs before recovery.
 
 After local preparation of an existing durable freeze, the scheduler automatically
 collects readiness from every configured member and persists its barrier.
@@ -50,7 +57,8 @@ reaches readiness, a full member automatically
 proposes the unchanged baseline's schema-2 activation through majority agreement.
 Retries use fresh request IDs and higher ballots, preserving unknown reservations
 and recovering accepted values. Quorum-only members never initiate proposals.
-Ordinary INI startup still awaits automatic first-freeze initiation.
+Ordinary INI startup now starts durable locking automatically once every
+configured member supports wire 6 and advertises matching complete definitions.
 
 An explicit durable freeze of a running INI generation blocks new acquisitions.
 Every member, including quorum-only voters, must confirm its durable reload lock
@@ -60,8 +68,8 @@ a lock confirmation alone cannot authorize initialization.
 FROZEN acknowledgements and local initialization wait for cleanup, workers and
 lease state to drain. Failed cleanup remains frozen and is reported by
 `config status`; repair/restart retains the baseline. Quorum-only nodes execute
-no backends. Automatic first-freeze initiation from ordinary INI startup remains
-unfinished. See [the live drain contract](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
+no backends. Automatic first-freeze initiation includes quorum-only members in the capability
+and definition checks; offline, unknown or older members block it. See [the live drain contract](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
 
 `lcs config request-status ID` (also with `--json`) reads published local request
 facts during normal operation or recovery. Missing/poisoned history and unrecorded

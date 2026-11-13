@@ -49,7 +49,9 @@ rm "$state/application.json"
 log "checking legacy startup still works without distributed state"
 start_node node1
 start_node node2
-start_node node3
+# Keep one pre-upgrade witness while testing legacy shadow/recovery records.
+# Full members and the explicit recovery subprocesses use the production daemon.
+LCSD="$(python3 "$ROOT_DIR/tests/integration/helpers/wire5_daemon.py")" start_node node3
 for node in node1 node2 node3; do
     wait_for_socket "$node"
     wait_for_quorum "$node"

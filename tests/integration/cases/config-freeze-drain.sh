@@ -76,7 +76,10 @@ for failed in (False,True):
                         send(s,19,struct.pack('!Q',peers[s])+body[8:],seq)
                     elif kind in (20,22,23): send(s,21,struct.pack('!I',0)+b'ok'.ljust(128,b'\0'),seq)
                     elif kind==30:
-                        digests=body[11:]; send(s,30,body)
+                        digests=body[11:]
+                        # Keep one peer metadata-unknown so this test controls
+                        # freeze initiation explicitly after acquiring the VIP.
+                        if peers[s]==200: send(s,30,body)
                     elif kind==47 and confirm_locks:
                         reply=bytearray(body); reply[2]=2; reply[27]=4; send(s,48,reply)
                     elif kind==48: replies.append(body)

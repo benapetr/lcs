@@ -508,3 +508,17 @@ acquisitions, replacement identities and expired renewals are refused. FROZEN
 still requires drained owners, and only FROZEN can authorize initialization.
 Wire 5 is refused immediately after durable locking, even before backend drain.
 Automatic first-freeze initiation from ordinary INI startup remains unfinished.
+
+Ordinary INI startup now initiates first-freeze creation automatically after all
+configured members (including quorum-only voters) have current wire-6 sessions
+and matching complete-definition metadata. Metadata initiates locking only;
+explicit durable lock/drain/readiness receipts and majority agreement still
+precede JSON admission. Mixed wire-5 clusters retain INI management until the
+last member upgrades. Local reload/refresh work excludes freeze initiation, and
+human INI files remain unchanged. This connects existing unreleased wire-6 and
+storage primitives without changing their formats or bumping the release.
+
+Automatic first-freeze initiation also requires every member's legacy lease-voting
+readiness, so failed/incomplete startup cleanup can recover before migration.
+Explicit responders defer local freezing until physical startup cleanup is
+verified. These are local admission checks, without additional wire fields.

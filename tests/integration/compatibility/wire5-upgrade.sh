@@ -74,6 +74,16 @@ wait_until 10 "two matching new members with effective wire 5" check_members 2 5
 # old quorum-only voter online until the upgraded full member can actually vote.
 wait_until 10 "upgraded full member is eligible to vote" node_status_has node1 "node2 role=full-member state=online"
 
+# Until the final member upgrades, the active INI lease is unchanged and no
+# durable freeze may be created.
+"$LCS" -s "$(node_socket node1)" --json status | python3 -c '
+import json,sys
+r=json.load(sys.stdin)["resources"][0]
+assert r["owner"]=="node1" and r["epoch"]==int(sys.argv[1])
+' "$initial_epoch"
+for node in node1 node2; do
+    [[ ! -e "$(node_config "$node").state/activation.json" ]] || die 'mixed cluster froze before witness upgrade'
+done
 log "upgrading the quorum-only member and negotiating wire 6"
 stop_node node3
 if [[ "$LCS_WIRE5_HAS_ALLOW_FROM" == 0 ]]; then
@@ -81,13 +91,23 @@ if [[ "$LCS_WIRE5_HAS_ALLOW_FROM" == 0 ]]; then
 fi
 start_node node3
 wait_for_socket node3
-wait_for_quorum node3
-wait_until 10 "all matching snapshots after final upgrade" check_members 3 6
-"$LCS" -s "$(node_socket node1)" --json status | python3 -c '
+activated_status()
+{
+    "$LCS" -s "$(node_socket "$1")" --json config status 2>/dev/null | python3 -c '
 import json,sys
-r=json.load(sys.stdin)["resources"][0]
-assert r["owner"] == "node1" and r["epoch"] == int(sys.argv[1]), (r, sys.argv[1])
-' "$initial_epoch"
+s=json.load(sys.stdin)
+assert s["authority"]=="json" and s["admitted"]
+assert s["dynamic_commands"] == (next(n for n in s["nodes"] if n["self"])["role"] != "quorum-only")
+assert s["committed_revision"]==s["applied_revision"]==1
+assert all(n["connected"] and n["protocol"]==6 for n in s["nodes"])
+' 2>/dev/null
+}
+for node in node1 node2 node3; do
+    wait_until 45 "$node automatic migration after final upgrade" activated_status "$node"
+    wait_for_quorum "$node"
+done
+wait_for_owner node1 node1
+assert_no_vip_ops_in_log node3
 if grep -Eq 'unsupported peer message|message requires a newer negotiated protocol|protocol error' "$TEST_TMP"/logs/*.log; then
     die "a new message escaped onto a legacy session or a legacy HELLO was broken"
 fi

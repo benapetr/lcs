@@ -7,9 +7,8 @@ into admitted wire-6 sessions. The network acceptor/learner is registered with
 daemon peer sessions. Runtime definition commands and application/recovery are
 available for already-activated JSON catalogs. Existing durable freezes can now
 resume local preparation through fresh all-member confirmation, persist readiness,
-propose activation and apply its majority decision automatically. Initiating the
-automatic first freeze remains unfinished; explicit freezes now drain live INI
-owners before acknowledgement. Separate
+propose activation and apply its majority decision automatically. Ordinary INI startup now initiates durable locking automatically after all-member
+capability and matching-definition checks, before draining live INI owners. Separate
 wire-6 bootstrap metadata now reports prepared definitions diagnostically; wire-5
 compatibility and INI authority remain. This document
 records the rules the remaining integration must preserve.
@@ -150,7 +149,8 @@ Format 3 adds a prior `frozen` state: it preserves the exact effective definitio
 and excludes legacy reloads, without authorizing agreement/application/request
 history creation. This local responder primitive is not invoked automatically.
 First creation requires explicit coordinated authorization; advisory peer metadata
-is insufficient. Ordinary legacy startup does not create this record.
+is insufficient. Ordinary INI startup creates this record through the serialized freeze writer
+after all-member capability and matching-definition checks.
 
 Recovery uses the frozen baseline even if INI resource definitions changed after
 the intent was written. While `initializing`, it may create missing journal and
@@ -203,8 +203,8 @@ without writes. Initialization's compact acknowledgement accepts only empty
 history and sends nonempty state through normal recovery instead.
 
 The daemon now resumes already-durable freezes through fresh all-member collection
-and the initialization writer. Ordinary INI startup does not create the first
-freeze from version/bootstrap advertisements. Preparing local files alone never
+and the initialization writer. Ordinary INI startup uses matching version/bootstrap advertisements to initiate
+durable locking; explicit receipts still authorize initialization and activation. Preparing local files alone never
 permits configuration voting or switches resource authority.
 
 ### First-initialization authorization round
@@ -239,7 +239,7 @@ the guarded round entry point instead.
 
 These are same-process collection objects, not serialized proofs. The explicit
 peer freeze exchange and fenced startup resumption are implemented below;
-automatic first-freeze and JSON activation coordination remains unfinished. The local durable responder preserves reload exclusion across
+automatic first-freeze initiation now connects ordinary INI startup to this workflow. The local durable responder preserves reload exclusion across
 restart. Collector expiry alone must never authorize a responder to thaw.
 A completed collection authorizes
 only local storage preparation; it is neither the durable readiness barrier nor
@@ -319,7 +319,9 @@ queries and passes correlated replies to the all-member collector, invalidating
 it on session/generation changes or deadline expiry. Completion does not start
 initialization or change resource authority by itself. The daemon's separate
 resumption workflow below explicitly couples collection to local initialization
-only after a durable freeze exists; automatic first-freeze/activation is unfinished.
+only after a durable freeze exists. Ordinary INI startup now initiates that local
+freeze after every configured member advertises matching definitions over a
+current wire-6 session. Advisory metadata never replaces the explicit receipts.
 
 ### Draining a running INI generation after freezing
 
@@ -358,9 +360,24 @@ member may start its own all-member initialization collection. This local drain
 is not a distributed old-owner application receipt: activation still requires
 its separate cleanup, owner proof and final synchronization/admission sequence.
 
-Ordinary INI startup does not initiate a freeze yet. Explicit admitted freeze
-queries and recovered freezes use this drain; automatic first-freeze initiation
-remains a separate unfinished stage.
+Ordinary INI startup initiates a local durable freeze after matching metadata
+arrives over established upgrade-capable sessions from every configured member,
+including quorum-only voters. Every member must also finish legacy startup cleanup
+and lease-voting recovery before initiation; otherwise a recoverable startup stop
+failure could be stranded behind resource-frame fences. Explicit freeze requests
+also defer while the responder's physical startup cleanup is incomplete.
+Unknown/offline/older members and full-definition mismatches block initiation. Local INI reloads, bootstrap refreshes and the shared
+configuration writer serialize the freeze. Peers that have already locked may
+withdraw advisory preparation without blocking another member from joining the
+same baseline. All subsequent explicit lock/drain/readiness/agreement proofs
+remain mandatory. Human-maintained INI files are never rewritten.
+
+Mixed clusters retain INI resource management until the last member upgrades.
+The automatic conversion temporarily drains old resources; after majority
+activation and fresh synchronization/quorum, admitted full members resume resource
+hosting and allow dynamic definition commands. Quorum-only members convert and
+vote but never host backends or initiate mutations. Failed persistence or cleanup
+retains the recovery fences; restart resumes existing durable intent.
 
 ### Fenced restart resumption
 
@@ -394,7 +411,8 @@ Existing resource-frame fences remain intact. Periodic unchanged advisory
 metadata maintains the separate wire-6 coordination channel without resource
 heartbeats or voting readiness; cold frozen nodes reject wire-5 HELLO admission.
 The separate resumption workflow can subsequently initialize local journals only
-after fresh all-member confirmation. Activation remains unfinished.
+after fresh all-member confirmation. Readiness, majority activation and
+application then follow through their separate controllers.
 
 `config status` uses local diagnostic format 4 for phase `frozen`, with INI
 authority, no admission, no revisions and no dynamic command capability. Read-only
@@ -451,8 +469,8 @@ equivalent to an ordinary daemon restart and must not silently reset promises.
 
 The barrier core, serialized persistence worker, and explicit peer readiness
 exchange are implemented. Ordinary daemons automatically collect readiness after
-resuming an existing freeze and completing local preparation. Automatic first-freeze
-creation and JSON activation remain unfinished. A readiness round begins only after local frozen initialization is
+resuming an existing freeze and completing local preparation. Ordinary INI startup now initiates durable locking automatically after
+all-member capability and matching-definition checks. A readiness round begins only after local frozen initialization is
 durable and pristine. It counts that local member and explicit durable-readiness
 receipts for the same membership and full baseline digest from every configured
 member, including quorum-only members. A majority is insufficient. Duplicate
@@ -578,7 +596,8 @@ scheduler can propose activation automatically while resource fences remain held
 The lowest-index connected full member is preferred; quorum-only nodes never
 initiate proposals. A current wire-6 majority is required. The candidate assigns
 schema-2 identities to the exact frozen definitions without resource/group edits.
-Ordinary INI startup still does not initiate the first freeze or drain its owners.
+Ordinary INI startup now initiates locking after all-member capability and
+matching-definition checks, then follows the same explicit drain/readiness path.
 
 Each attempt reserves a fresh request ID containing the daemon instance and a
 monotonic transport attempt before PREPARE. A fixed proposal deadline and a
@@ -774,10 +793,9 @@ recovery must inspect the journal after an unknown outcome. Matching/lower serve
 revisions are read-only. IDs and ten-second deadlines are never reused/extended.
 
 The scheduler polls admitted wire-6 peers in rotation after a durable barrier is
-available, with one pull in flight and at least a second between starts. This does
-not authorize automatic initialization, switch resource authority, or bypass the
-existing refusal to start a daemon with distributed history. Startup/resource
-reconciliation and automatic activation remain unfinished. The transport harness
+available, with one pull in flight and at least a second between starts. Checkpoint transfer does not itself authorize initialization or switch resource
+authority. Valid retained history is recovered by the startup/application
+controllers; missing or conflicting mandatory history fails closed. The transport harness
 covers multi-revision delete/recreate catch-up, a relayed ballot, quorum-only
 receivers, retained pending cleanup and higher promises, recovery from disk,
 baseline mismatch, fixed deadlines, stale instances and disconnect during a write.

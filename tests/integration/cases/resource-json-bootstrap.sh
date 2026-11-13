@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib.sh"
+# INI resource reloads remain available before the all-member wire-6 upgrade.
+use_wire5_daemon
 trap cleanup_cluster EXIT
 
 snapshot_has_address()

@@ -5,11 +5,13 @@ local backend callbacks, receipt retirement and explicit startup cleanup are
 implemented, including completed scopes backed by retained predecessor history.
 Differing pending generations now recover through daemon startup when their
 predecessor history is retained. The activated manager also applies newly learned
-definitions live. Missing-history catch-up, public definition commands and
-automatic activation remain unfinished. Ordinary upgrades retain
-INI authority and support wire 5–6; supported already-activated catalogs resume
-JSON authority through the fenced startup path. Wire-6 bootstrap metadata does
-not enable dynamic edits.
+definitions live, including public definition commands on admitted full members.
+Missing-history predecessor transfer remains unfinished. Mixed upgrades retain
+INI authority and support wire 5–6; after every configured member supports wire 6
+and advertises matching definitions, ordinary INI startup automatically initiates
+durable locking. Explicit lock/drain/readiness proofs and majority agreement
+precede JSON admission. Supported activated catalogs resume JSON authority through
+the fenced startup path. Wire-6 bootstrap metadata alone does not enable edits.
 See [the agreement core](dynamic-config-agreement.md) and
 [implementation checklist](dynamic-config-plan.md).
 
@@ -29,8 +31,8 @@ full-snapshot catch-up. Inferring identity from just the old and new endpoint
 definitions is insufficient: a node can miss deletion and recreation between
 two identical definitions. The existing schema-1 shadow JSON has no incarnation
 metadata. The implemented schema-2 library carries and validates these identities;
-daemon activation remains unfinished; explicit generation-bound resource framing
-is now implemented below.
+automatic activation assigns those identities to the unchanged frozen baseline;
+generation-bound resource framing is implemented below.
 The coordinator allocates identities; acceptors check them against the immediate
 predecessor. Clients cannot supply or reuse birth revisions.
 
@@ -101,7 +103,8 @@ rules. The 64-KiB frame limit includes the prefix.
 The daemon invokes these APIs for supported already-activated startup recovery.
 The local runtime adapter below implements normal backend/remap callbacks, whose
 running-daemon integration is now driven by the activated manager. Missing-history
-catch-up and automatic activation remain unfinished. Tests cover
+predecessor transfer remains unfinished; ordinary INI automatic activation follows
+the separate all-member freeze/readiness sequence. Tests cover
 strict codecs, stale instances and generations, inner reply/sequence preservation,
 legacy refusal with an intact config channel, worker/marker admission barriers,
 and cancellation-before-remap ordering. They do not yet constitute a running
@@ -504,7 +507,8 @@ exchange below permits the next scope after the previous application is confirme
 Supported differing-old-generation recovery uses verified startup cleanup below. Creating
 a fresh network object to discard required receipts is not a supported recovery
 action. The activated daemon manager initializes and runs the local adapter after
-startup admission; ordinary INI startup does not activate dynamic authority.
+startup admission. Ordinary INI startup follows the separate automatic
+all-member freeze/readiness and majority activation sequence.
 
 Tests exercise three full-member transport participants, delayed local drains,
 PENDING responses, bounded output backpressure, fixed deadlines, instance changes,
@@ -996,7 +1000,11 @@ Normal indexed resource work and CLI mutations remain fenced until recovery
 transfers ownership. Blocked rounds retry with fresh evidence; terminal failures
 retain fences and stop the daemon. Shutdown stops both configuration transport
 and recovery, retaining borrowed storage until cleanup and writer children exit.
-Legacy INI startup follows its existing path and does not trigger activation.
+Mixed wire-5/6 INI startup retains its existing resource path. Once every configured
+member supports wire 6 and advertises matching complete definitions, the scheduler
+initiates durable locking and proceeds through explicit all-member lock, drain,
+readiness and majority activation before handing off to this manager. Human INI
+files remain unchanged. See [automatic migration](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
 
 The real-process integration regression starts two full members with different
 saved pending revisions and a quorum-only member already applied at the latest

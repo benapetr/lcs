@@ -54,8 +54,11 @@ LCS_WIRE5_DAEMON=/path/to/v1.1.1/lcsd LCS_WIRE5_HAS_ALLOW_FROM=0 \
 
 That mode omits `allow_from` on the old nodes and adds it before starting their
 upgraded daemons. It also checks that the released nodes begin without dynamic
-state. The test covers legacy-mode upgrade and JSON preparation, not the complete
-distributed migration/activation path. It starts a new
-full member with old full/quorum-only peers, upgrades the peers one at a time,
-checks wire-5/6 negotiation and unknown old metadata, and verifies that ownership
-and resource epoch are preserved. Dynamic commands remain disabled throughout.
+state. The test preserves legacy ownership and epoch while an old member remains,
+then checks automatic conversion and JSON admission after the final upgrade.
+Quorum-only members participate in migration without hosting resources or enabling
+local definition commands.
+
+Cases specifically testing pre-upgrade INI reloads use a cached current-source
+wire-5 fixture. Only its advertised maximum peer version changes; normal cases
+use the production wire-6 daemon, with no production migration bypass.

@@ -4,8 +4,12 @@ LCS is a lightweight high-availability daemon that manages resources such as vir
 
 `lcsd` is the cluster daemon. `lcs` is the CLI used to query and control the local daemon.
 
-The daemon prepares a local JSON resource snapshot while retaining INI as the
-configuration authority. See [resource JSON and storage](resource-json.md) for
+The daemon prepares a local JSON resource snapshot while the cluster uses INI
+authority. Once every configured member supports wire 6 and advertises matching
+definitions, it automatically locks the baseline, drains old resources, collects
+readiness and agrees on JSON activation. Admitted full members then resume hosting
+and allow dynamic resource commands. Mixed-version clusters retain INI operation.
+See [resource JSON and storage](resource-json.md) for
 the current implementation stage, build dependencies, state paths, and recovery
 behavior. Use `lcs config status` or `lcs --json config status` to inspect
 prepared definitions across members. Matching snapshots do not enable dynamic
@@ -22,8 +26,12 @@ policy updates with `--request-id` and optional expected-base checks. Mutation
 results use exits 0 applied, 1 rejected, 2 pending and 3 unknown.
 Coordinated initialization now seals required request history before preparation.
 A format-2 prepared intent with missing/corrupt history fails before listeners;
-retain/recover its state. This is a prerequisite for automatic upgrade activation,
-which is still unfinished. See [initialization history](resource-json.md#required-request-history-during-initialization).
+retain/recover its state. Automatic upgrade activation uses this history after
+all-member capability, definition, freeze and readiness checks. See [initialization history](resource-json.md#required-request-history-during-initialization).
+
+Automatic initiation also waits for every member's legacy startup cleanup and
+lease-voting recovery to complete. A failed startup cleanup can retry before
+migration locks and resource-frame fences are installed.
 
 A node restarting from a durable resource freeze can rejoin wire-6 coordination
 with voting, resource placement and mutations fenced. It restores the retained
@@ -32,8 +40,9 @@ baseline before startup cleanup, reports `application_state: frozen` in
 Later valid INI resource edits do not replace it. Existing durable freezes resume
 local initialization after fresh confirmations from every configured member,
 including quorum-only voters. Pristine prepared nodes retain their journals and
-resource fences across restart. Automatic first-freeze creation and JSON
-activation remain unfinished; local preparation does not enable dynamic commands.
+resource fences across restart. Ordinary INI startup now initiates durable locking
+after all-member capability and matching-definition checks; local preparation
+alone does not enable dynamic commands.
 
 After local preparation of an existing durable freeze, the scheduler automatically
 collects readiness from every configured member and persists its barrier.
@@ -53,7 +62,8 @@ reaches readiness, a full member automatically
 proposes the unchanged baseline's schema-2 activation through majority agreement.
 Retries use fresh request IDs and higher ballots, preserving unknown reservations
 and recovering accepted values. Quorum-only members never initiate proposals.
-Ordinary INI startup still awaits automatic first-freeze initiation.
+Ordinary INI startup now starts durable locking automatically once every
+configured member supports wire 6 and advertises matching complete definitions.
 
 An explicit durable freeze of a running INI generation blocks new acquisitions.
 Every member, including quorum-only voters, must confirm its durable reload lock
@@ -63,8 +73,8 @@ a lock confirmation alone cannot authorize initialization.
 FROZEN acknowledgements and local initialization wait for cleanup, workers and
 lease state to drain. Failed cleanup remains frozen and is reported by
 `config status`; repair/restart retains the baseline. Quorum-only nodes execute
-no backends. Automatic first-freeze initiation from ordinary INI startup remains
-unfinished. See [the live drain contract](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
+no backends. Automatic first-freeze initiation includes quorum-only members in the capability
+and definition checks; offline, unknown or older members block it. See [the live drain contract](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
 
 Use `lcs config request-status ID` or `lcs --json config request-status ID` to
 inspect a request's published local reservation/commit/admission facts. `committed` means

@@ -89,12 +89,21 @@ wait_for_votes()
         node_status_has "$node" "quorum: yes ($votes votes, need $need,"
 }
 
+catalog_admitted()
+{
+    "$LCS" -s "$(node_socket "$1")" --json config status 2>/dev/null | python3 -c '
+import json,sys
+s=json.load(sys.stdin); assert s["authority"]=="json" and s["admitted"]
+' 2>/dev/null
+}
+
 run_large_cluster_case()
 {
     local count="$1"
     local need=$((count / 2 + 1))
     local failover_owner="node2"
     local tmp_root="$TEST_TMP"
+    local i
 
     if (( count >= 10 )); then
         failover_owner="node10"
@@ -107,8 +116,18 @@ run_large_cluster_case()
     log "large cluster scenario: $count nodes need=$need"
     start_large_cluster "$count"
     wait_for_large_sockets "$count"
+    # Initial migration requires every full member's owner/application proofs;
+    # this grows with cluster size and is separate from steady-state failover.
+    for ((i = 1; i <= count; i++)); do
+        wait_until 90 "node$i automatic conversion admission" catalog_admitted "node$i"
+    done
     wait_for_votes node1 "$count" "$need"
     wait_for_votes "node$count" "$count" "$need"
+    # Members finish initial admission asynchronously; the first eligible
+    # member may place the VIP before node1 is eligible. Establish the starting
+    # owner explicitly so the subsequent failover preference check is stable.
+    wait_until 20 "initial VIP placement" node_status_has node2 "dev=lo state=active owner=node"
+    "$LCS" -s "$(node_socket node2)" resource move vip1 node1 >/dev/null
     wait_for_owner node2 node1
 
     stop_node node1
