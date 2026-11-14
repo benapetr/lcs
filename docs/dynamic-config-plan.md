@@ -1,8 +1,12 @@
 # Dynamic distributed resource configuration migration plan
 
-Status: implementation in progress; reconciled against the code and tests through
-commit `6f4db5c`. Checked items describe implemented work or existing test coverage;
-unchecked items describe remaining implementation, policy or validation work.
+Status: functional integration is implemented; the next phase is runtime
+availability under storage failure, before history-retention work and the wider
+fault matrix. The functional checklist was reconciled through implementation commit
+`6f4db5c` in `304cb2f`; the storage-isolation requirement below supersedes the earlier
+ordering of remaining priorities. Checked items describe implemented work, existing
+test coverage, or an explicitly agreed contract; unchecked items describe remaining
+implementation, policy or validation work.
 They do not imply that the feature is ready for release.
 
 Automatic INI-to-JSON activation, runtime resource/group commands, durable majority
@@ -12,11 +16,13 @@ migration and has matching definitions and healthy startup recovery. Activation
 then temporarily drains old resources before admitting the dynamic generation.
 See [resource-json.md](resource-json.md) for current behavior.
 
-Before extensive testing, prioritize the remaining history-capacity/retention
-policy, retained-INI/static-setting semantics, operator backup/recovery/rollback
-procedure, and package removal/reinstall policy. Lost-history transfer remains an
-implementation gap; unsupported recovery must continue to fail closed. The larger
-partition/crash/disk-failure matrices below are the extensive testing work itself.
+The immediate priority is proving and enforcing that storage stalls cannot stop
+ordinary operation of the already-loaded cluster. Background persistence workers
+are implemented, but their existence alone does not establish this guarantee.
+After that phase, address history-capacity/retention, retained-INI/static-setting
+semantics, operator backup/recovery/rollback procedures and package lifecycle
+policy, then expand the partition/crash/storage-failure matrices. Lost-history
+transfer remains an implementation gap; unsupported recovery must fail closed.
 
 The goal is to create, modify, and delete resources and groups through `lcs`
 while the cluster runs. The daemon distributes and persists their JSON
@@ -76,6 +82,107 @@ Once activation is committed, later disconnections do not revert to legacy mode
 or require every member to remain online for subsequent majority-based edits.
 Activation and configuration synchronization must complete locally before a node
 can serve dynamic mutations or participate under the new configuration rules.
+
+## Next phase: runtime availability under storage failure
+
+This phase takes precedence over the remaining numbered implementation items.
+The cluster may depend on storage to load/recover configuration at startup and to
+persist changes to resource definitions or static cluster configuration. Once a
+valid configuration is loaded and admitted, network-storage I/O may stall for tens
+of seconds without stopping normal operation under that configuration.
+
+| Operation | Storage dependency permitted? |
+| --- | --- |
+| Heartbeat send/receive and network membership tracking | No |
+| Operational quorum tracking and lease votes/renewals | No |
+| Ownership tracking, ordinary failover and moves of existing VIPs | No |
+| Resource/group definition changes and their durable agreement | Yes; changes may remain pending, fail or be refused while storage is unavailable |
+| Initial configuration load and recovery after restart | Yes; recovery still requires valid configuration and safety evidence |
+
+Configuration agreement votes are separate from operational lease votes. Pausing
+configuration persistence must not withdraw operational quorum or invalidate the
+healthy applied generation merely because its writer is slow or unavailable.
+Runtime ownership, leases, epochs, stop receipts and heartbeat/communication state
+remain in RAM. Existing configuration journals concern definition transactions;
+this phase does not add persistent runtime lease or move records, and it does not
+remove necessary configuration agreement/cleanup evidence without a safe design.
+
+A resource being deleted/replaced may need to remain fenced while its definition
+transition is unresolved. That does not authorize globally fencing unrelated
+resources, stopping their renewals or preventing ordinary VIP moves. Actual
+conflicting ownership, unverified backend cleanup or invalid configuration proof
+still requires the appropriate safety fences. A storage delay/error alone is not
+proof of a network partition or loss of operational quorum.
+
+### Ordered implementation and acceptance steps
+
+- [x] Agree on the architectural boundary above: storage may block persistent
+  configuration changes and startup recovery, but cannot be a dependency for
+  ordinary operation of the healthy, already-loaded cluster.
+- [ ] Audit the active event-loop and runtime paths before changing behavior.
+  Trace heartbeat/membership, operational quorum, leases, moves, configuration
+  writer failure/timeout, projection/outcome publication, logging and shutdown.
+  Classify storage operations and every transition to global/resource-specific
+  fences; distinguish actual proof loss from persistence unavailability.
+  Record which checks protect definitions being changed versus the already-valid
+  applied generation. Do not label existing behavior compliant without evidence.
+- [ ] Build test-only storage fault injection with explicit reached/release
+  synchronization. Pause selected read/write/fsync/rename/directory-sync workers
+  for 30 and 60 seconds, and inject errors separately. Cover existing storage
+  children and writer queues without sleeping in the production event loop or
+  making the whole test host unavailable. Artificial delays are test machinery,
+  not a normal daemon feature or deployment setting.
+- [ ] Establish baseline regressions under an unchanged admitted configuration:
+  storage unavailable, sustained heartbeats/lease renewals, CLI responsiveness,
+  an explicit existing-VIP move, and owner failure followed by takeover using
+  the surviving network quorum. Test loss/stall of storage on one node and on
+  all running nodes. Keep CPU, memory, network and built-in VIP backend available
+  so these tests isolate configuration-storage dependence.
+- [ ] Add in-flight configuration-change regressions with at least one unrelated
+  running VIP. Pause/fail reservation, agreement, catalog, projection and final
+  request-outcome writes at distinct boundaries. The new definition operation
+  may be pending/rejected/unknown as appropriate; unrelated VIP renewal, move
+  and failover must continue. Preserve the exact safety obligations for changed
+  backends and never report unpersisted changes as durably successful.
+- [ ] Separate configuration-writer failure/busy state from operational admission,
+  quorum and lease/move eligibility for the healthy applied generation. Replace
+  unnecessary global fences with the required transition-specific holds, and
+  keep runtime scheduling active while persistence is pending or unavailable.
+  Audit request-status/outcome bookkeeping too: failure to persist a client
+  receipt alone must not revoke an otherwise valid running configuration.
+- [ ] Isolate incidental blocking storage paths, particularly synchronous stderr
+  and syslog output. Define bounded, nonblocking/best-effort logging behavior under
+  backpressure; test a blocked sink independently of configuration writers.
+  Configuration durability must not depend on a log line being written.
+- [ ] Handle long-lived/stuck workers without blocking the event loop on reaping,
+  spawning competing writers, thawing uncertain configuration or replaying late
+  results against a newer attempt. Verify release/late completion after the stall,
+  continued operation during the stall, and safe retry/recovery afterward.
+- [ ] Measure heartbeat/renewal gaps and record operational quorum/owner timelines
+  during the injected stalls; a final healthy status alone is insufficient.
+  Assert no lease expiry, false peer loss or resource loss caused by storage
+  waits. During deliberate owner failure, allow only the expected failure-detection
+  and lease-expiry interval before takeover; check for duplicate VIP ownership.
+- [ ] Document the proven availability contract and any remaining dependencies,
+  update the implementation evidence, and complete the targeted regressions before
+  returning to history retention and the broader release-testing matrix.
+
+### Current audit leads, not completed fixes
+
+- [scheduler.c](../src/scheduler.c) continues ordinary runtime work during many
+  background jobs, but skips it while the configuration manager is recovering or
+  failed; inspect whether persistence-only failures can take those paths.
+- [config_manager.c](../src/config_manager.c) has a global failure path that clears
+  operational voting/admission, and application/outcome work depends on the shared
+  writer. Distinguish configuration safety failures from writer unavailability.
+- [cluster.c](../src/cluster.c) gates operational quorum/voting on configuration
+  remapping/admission flags; audit the provenance and lifetime of those flags.
+- [log.c](../src/log.c) calls stderr stdio and syslog synchronously. The current
+  child-based configuration writer does not isolate these logging calls.
+
+These are audit entry points, not a claim that every storage error currently
+stops VIPs. Existing asynchronous I/O and crash-boundary tests do not establish
+30–60-second storage-stall survival for heartbeats, operational quorum and moves.
 
 ## 1. Specify the contract before implementation
 
@@ -147,8 +254,8 @@ durable distributed configuration protocol.
 - [x] Integrate durable request reservations, learned-decision facts, originating
   client descriptors and local admitted/applied receipts with the transaction
   manager and public request-status/mutation results.
-- [ ] Define and implement safe request-history retention/compaction or an explicit
-  supported exhaustion policy. The current journal retains at most 128 identities
+- [ ] After runtime/storage isolation, define and implement safe request-history
+  retention/compaction or an explicit supported exhaustion policy. The current journal retains at most 128 identities
   and refuses new IDs without eviction; retries remain readable/idempotent.
   Capacity handling must preserve promises, accepted values, uncertain outcomes,
   cleanup obligations and immutable retry identities.
@@ -746,7 +853,8 @@ supported automatic activation or recovery. Existing
 - [x] Exercise supported full-cluster restart, retained stale checkpoints,
   corrupt/missing mandatory records and startup recovery with pending cleanup.
 - [ ] Complete real-filesystem full-disk, permission-loss, stale-backup and
-  interrupted-checkpoint/migration matrices. Existing validation/sync-failure
+  interrupted-checkpoint/migration matrices, following the targeted runtime
+  storage-isolation acceptance tests above. Existing validation/sync-failure
   injection does not substitute for those end-to-end conditions.
 - [x] Verify legacy INI behavior during released-version mixed upgrades,
   all-member capability/definition/startup-readiness gating, reload before
@@ -766,8 +874,10 @@ supported automatic activation or recovery. Existing
 
 Public mutation commands and automatic activation are implemented and exercised
 by the current suite. Unchecked recovery/retention/policy work and the extended
-fault/packaging matrices remain release-readiness work; passing the existing suite
-must not be described as completing those broader matrices.
+fault/packaging matrices remain release-readiness work. Runtime availability under
+long storage stalls is a newly explicit acceptance requirement and is not yet
+verified; passing the existing suite must not be described as meeting it or
+completing those broader matrices.
 
 
 ## Evidence used for this reconciliation
