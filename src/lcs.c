@@ -3,15 +3,21 @@
 
 #include "common.h"
 #include "protocol.h"
+#include "config_status_protocol.h"
+#include "config_export_protocol.h"
+#include "config_request_status_protocol.h"
+#include "config_mutation_protocol.h"
 #include "util.h"
 
 #include <errno.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 static bool colors_enabled;
@@ -48,11 +54,19 @@ static void usage(FILE *out)
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] status\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] nrpe\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] reload\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config status\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config request-status ID\n");
+    fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] config export [committed|applied]\n");
+    fprintf(out, "       lcs [--socket SOCKET] [--json] [--request-id ID] [--expected-revision N] [--expected-digest SHA256] config import FILE|-\n");
+    fprintf(out, "       lcs [-c CONFIG|--config CONFIG] [--json] config validate FILE|-\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource list\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource move RESOURCE NODE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource start RESOURCE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource stop RESOURCE\n");
     fprintf(out, "       lcs [-s SOCKET|--socket SOCKET] [--json] resource clear-conflict RESOURCE\n");
+    fprintf(out, "       lcs [--json] [--request-id ID] [--expected-revision N] [--expected-digest SHA256] resource create NAME vip|service key=value...\n");
+    fprintf(out, "       lcs [OPTIONS] resource update NAME key=value... | resource delete NAME\n");
+    fprintf(out, "       lcs [OPTIONS] resource group create|update|add|remove|delete GROUP [options|resources]\n");
     fprintf(out, "\nColors are enabled on terminals. Use --no-colors to disable them.\n");
 }
 
@@ -691,6 +705,248 @@ static int cmd_clear_conflict(const char *socket_path, const char *vip, bool jso
     return 0;
 }
 
+static int cmd_config_validate(const char *config_path, const char *input_path, bool json_output)
+{
+    lcs_config_t *configs = calloc(2, sizeof(*configs));
+    char *document = NULL, error[256] = ""; uint64_t revision = 0;
+    size_t length = 0; FILE *input = NULL; bool valid = false;
+    if (!configs) { snprintf(error, sizeof(error), "cannot allocate validation context"); goto result; }
+    if (lcs_config_load(config_path, &configs[0], error, sizeof(error))) goto result;
+    input = !strcmp(input_path, "-") ? stdin : fopen(input_path, "rb");
+    if (!input) { snprintf(error, sizeof(error), "cannot open resource JSON: %s", strerror(errno)); goto result; }
+    document = malloc(LCS_RESOURCE_DOCUMENT_MAX + 1u);
+    if (!document) { snprintf(error, sizeof(error), "cannot allocate resource JSON input"); goto result; }
+    while (length < LCS_RESOURCE_DOCUMENT_MAX + 1u)
+    {
+        size_t count = fread(document + length, 1, LCS_RESOURCE_DOCUMENT_MAX + 1u - length, input);
+        length += count;
+        if (ferror(input)) { snprintf(error, sizeof(error), "cannot read resource JSON input"); goto result; }
+        if (!count) break;
+    }
+    valid = !lcs_resource_config_decode(document, length, &configs[0], &configs[1], &revision, error, sizeof(error));
+result:
+    if (input && input != stdin) fclose(input);
+    if (json_output)
+    {
+        printf("{\"valid\":%s", valid ? "true" : "false");
+        if (valid)
+            printf(",\"schema_version\":%u,\"revision\":%llu,\"resource_count\":%zu,\"group_count\":%zu",
+                configs[1].resource_schema_version, (unsigned long long)revision, configs[1].resource_count, configs[1].group_count);
+        else { printf(",\"error\":"); json_string(stdout, error); }
+        printf("}\n");
+    }
+    else if (valid)
+        printf("Resource configuration is valid: schema=%u revision=%llu resources=%zu groups=%zu\n",
+            configs[1].resource_schema_version, (unsigned long long)revision, configs[1].resource_count, configs[1].group_count);
+    else fprintf(stderr, "lcs: %s\n", error);
+    free(document); free(configs);
+    if (fflush(stdout)) return 1;
+    return valid ? 0 : 1;
+}
+
+static int cmd_config_export(const char *socket_path, uint8_t selection)
+{
+    int fd = connect_socket(socket_path);
+    if (fd < 0) return 1;
+    unsigned char payload[LCS_MAX_FRAME]; size_t length;
+    uint32_t seq = lcs_next_seq(), received = 0;
+    char *document = NULL;
+    lcs_config_export_chunk_t first = {0};
+    if (lcs_config_export_request_encode(selection, payload, sizeof(payload), &length) ||
+        lcs_write_frame(fd, LCS_MSG_CONFIG_EXPORT_REQ, seq, payload, (uint32_t)length)) goto invalid;
+    do
+    {
+        lcs_frame_header_t header;
+        if (lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0 || header.seq != seq) goto invalid;
+        if (header.type == LCS_MSG_ERROR)
+        {
+            int32_t status; char message[256];
+            if (lcs_decode_simple_resp(payload, header.length, &status, message, sizeof(message))) goto invalid;
+            fprintf(stderr, "lcs: %s\n", message); free(document); close(fd); return 1;
+        }
+        lcs_config_export_chunk_t chunk; const void *data; size_t size;
+        if (header.type != LCS_MSG_CONFIG_EXPORT_CHUNK ||
+            lcs_config_export_chunk_decode(payload, header.length, &chunk, &data, &size) ||
+            chunk.selection != selection || chunk.offset != received) goto invalid;
+        if (!document)
+        {
+            first = chunk; document = malloc(first.total);
+            if (!document) goto invalid;
+        }
+        if (chunk.total != first.total || chunk.revision != first.revision || chunk.authority != first.authority) goto invalid;
+        memcpy(document + received, data, size); received += (uint32_t)size;
+    } while (received < first.total);
+    close(fd);
+    int failed = fwrite(document, 1, first.total, stdout) != first.total || fflush(stdout) != 0;
+    free(document); return failed ? 1 : 0;
+invalid:
+    fprintf(stderr, "lcs: invalid or incomplete configuration export response\n");
+    free(document); close(fd); return 1;
+}
+
+static int cmd_config_request_status(const char *socket_path, const char *id, bool json_output)
+{
+    unsigned char payload[LCS_MAX_FRAME]; size_t length;
+    if (lcs_config_request_id_encode(id, payload, sizeof(payload), &length))
+    { fprintf(stderr, "lcs: invalid request ID (use 1-63 letters, digits, underscores, dots or hyphens)\n"); return 2; }
+    int fd = connect_socket(socket_path); if (fd < 0) return 1;
+    uint32_t seq = lcs_next_seq(); lcs_frame_header_t header;
+    int failed = lcs_write_frame(fd, LCS_MSG_CONFIG_REQUEST_STATUS_REQ, seq, payload, (uint32_t)length) ||
+        lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0;
+    close(fd);
+    if (failed) { fprintf(stderr, "lcs: request-status query failed: %s\n", lcs_protocol_error()); return 1; }
+    if (header.seq != seq) { fprintf(stderr, "lcs: mismatched request-status response\n"); return 1; }
+    if (header.type == LCS_MSG_ERROR)
+    {
+        int32_t status; char message[256];
+        if (!lcs_decode_simple_resp(payload, header.length, &status, message, sizeof(message))) fprintf(stderr, "lcs: %s\n", message);
+        else fprintf(stderr, "lcs: invalid request-status error\n");
+        return 1;
+    }
+    lcs_config_request_view_t view;
+    if (header.type != LCS_MSG_CONFIG_REQUEST_STATUS_RESP ||
+        lcs_config_request_view_decode(payload, header.length, &view) || strcmp(view.id, id))
+    { fprintf(stderr, "lcs: invalid request-status response\n"); return 1; }
+    const char *state = view.state == LCS_CONFIG_REQUEST_APPLIED ? "applied" : view.state == LCS_CONFIG_REQUEST_COMMITTED ? "committed" :
+        view.state == LCS_CONFIG_REQUEST_RESERVED ? "reserved" : "unknown";
+    const char *history = view.history == LCS_CONFIG_HISTORY_AVAILABLE ? "available" :
+        view.history == LCS_CONFIG_HISTORY_RECOVERY ? "recovery-required" : "unavailable";
+    if (json_output)
+    {
+        printf("{\"scope\":\"local\",\"request_id\":"); json_string(stdout, view.id);
+        printf(",\"history\":\"%s\",\"state\":\"%s\",\"base_revision\":", history, state);
+        if (view.state) printf("%llu,\"value_revision\":%llu,\"base_digest\":\"%s\",\"value_digest\":\"%s\"",
+            (unsigned long long)view.base_revision, (unsigned long long)(view.base_revision + 1), view.base_digest, view.value_digest);
+        else printf("null,\"value_revision\":null,\"base_digest\":null,\"value_digest\":null");
+        puts("}");
+    }
+    else
+    {
+        printf("request: %s\nscope: local\nhistory: %s\nstate: %s%s\n", view.id, history, state,
+            view.state == LCS_CONFIG_REQUEST_RESERVED ? " (outcome unknown)" : "");
+        if (view.state) printf("expected base: %llu %s\nvalue: %llu %s\n",
+            (unsigned long long)view.base_revision, view.base_digest, (unsigned long long)(view.base_revision + 1), view.value_digest);
+    }
+    return fflush(stdout) ? 1 : 0;
+}
+
+static int cmd_config_status(const char *socket_path, bool json_output)
+{
+    int fd = connect_socket(socket_path);
+    if (fd < 0)
+        return 1;
+    unsigned char payload[LCS_MAX_FRAME];
+    lcs_frame_header_t header;
+    uint32_t seq = lcs_next_seq();
+    if (lcs_write_frame(fd, LCS_MSG_CONFIG_STATUS_REQ, seq, NULL, 0) ||
+        lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0)
+    {
+        fprintf(stderr, "lcs: configuration status request failed: %s\n", lcs_protocol_error());
+        close(fd);
+        return 1;
+    }
+    close(fd);
+    if (header.type == LCS_MSG_ERROR)
+    {
+        int32_t status;
+        char message[256];
+        if (!lcs_decode_simple_resp(payload, header.length, &status, message, sizeof(message)))
+            fprintf(stderr, "lcs: %s\n", message);
+        else
+            fprintf(stderr, "lcs: invalid configuration status error\n");
+        return 1;
+    }
+    lcs_config_status_view_t view;
+    if (header.type != LCS_MSG_CONFIG_STATUS_RESP || header.seq != seq ||
+        lcs_config_status_view_decode(payload, header.length, &view))
+    {
+        fprintf(stderr, "lcs: invalid configuration status response\n");
+        return 1;
+    }
+    unsigned prepared = 0, matching = 0;
+    for (size_t i = 0; i < view.count; i++)
+    {
+        prepared += view.nodes[i].known && view.nodes[i].status.prepared;
+        matching += lcs_config_status_node_matches(&view, i);
+    }
+    const lcs_config_status_t *local = &view.nodes[view.self].status;
+    if (json_output)
+    {
+        printf("{\"authority\":\"%s\",\"dynamic_commands\":%s,\"activation_ready\":false,\"prepared\":%s,",
+               view.authority == LCS_CONFIG_AUTHORITY_JSON ? "json" : "ini", view.dynamic_commands ? "true" : "false", local->prepared ? "true" : "false");
+        if (view.phase == LCS_CONFIG_DIAG_FROZEN)
+        {
+            printf("\"application_state\":\"frozen\",\"admitted\":false,\"error\":");
+            if (*view.error) json_string(stdout, view.error); else printf("null");
+            putchar(',');
+        }
+        if (view.authority == LCS_CONFIG_AUTHORITY_JSON)
+        {
+            printf("\"application_state\":"); json_string(stdout, lcs_config_status_phase_name(view.phase));
+            printf(",\"admitted\":%s,\"committed_revision\":%llu,\"committed_digest\":",
+                view.admitted ? "true" : "false", (unsigned long long)view.committed_revision);
+            json_string(stdout, view.committed_digest);
+            printf(",\"applied_revision\":%llu,\"applied_digest\":", (unsigned long long)view.applied_revision);
+            json_string(stdout, view.applied_digest);
+            printf(",\"pending_revision\":");
+            if (view.pending_revision) printf("%llu", (unsigned long long)view.pending_revision); else printf("null");
+            printf(",\"pending_digest\":");
+            if (view.pending_revision) json_string(stdout, view.pending_digest); else printf("null");
+            printf(",\"error\":");
+            if (*view.error) json_string(stdout, view.error); else printf("null");
+            putchar(',');
+        }
+        printf("\"membership\":"); json_string(stdout, local->membership);
+        printf(",\"baseline_digest\":"); json_string(stdout, local->baseline);
+        printf(",\"prepared_members\":%u,\"matching_members\":%u,\"configured_members\":%u,\"nodes\":[",
+               prepared, matching, view.count);
+        for (size_t i = 0; i < view.count; i++)
+        {
+            const lcs_config_status_node_t *node = &view.nodes[i];
+            if (i) putchar(',');
+            printf("{\"name\":"); json_string(stdout, node->name);
+            printf(",\"role\":"); json_string(stdout, role_name(node->role));
+            printf(",\"self\":%s,\"connected\":%s,\"protocol\":%u,\"metadata_known\":%s,\"prepared\":",
+                   i == view.self ? "true" : "false", node->connected ? "true" : "false",
+                   node->protocol, node->known ? "true" : "false");
+            printf("%s,\"matches\":%s,\"baseline_digest\":",
+                   node->known ? (node->status.prepared ? "true" : "false") : "null",
+                   lcs_config_status_node_matches(&view, i) ? "true" : "false");
+            if (node->known) json_string(stdout, node->status.baseline); else printf("null");
+            putchar('}');
+        }
+        printf("]}\n");
+    }
+    else
+    {
+        printf("Resource configuration: %s\n", view.authority == LCS_CONFIG_AUTHORITY_JSON ? "JSON" : "INI");
+        if (view.phase == LCS_CONFIG_DIAG_FROZEN)
+            printf("Definition state: frozen; awaiting coordinated initialization\n");
+        if (view.authority == LCS_CONFIG_AUTHORITY_JSON)
+        {
+            printf("Application: %s; admitted: %s\nCommitted: %llu %s\nApplied: %llu %s\n",
+                lcs_config_status_phase_name(view.phase), view.admitted ? "yes" : "no",
+                (unsigned long long)view.committed_revision, view.committed_digest,
+                (unsigned long long)view.applied_revision, view.applied_digest);
+            if (view.pending_revision) printf("Pending: %llu %s\n", (unsigned long long)view.pending_revision, view.pending_digest);
+            else printf("Pending: none\n");
+            if (*view.error) printf("Recovery error: %s\n", view.error);
+        }
+        printf("Dynamic definition commands: %s\n", view.dynamic_commands ? "enabled" : "unavailable");
+        printf("Prepared snapshots: %u/%u; matching local snapshot: %u/%u\n", prepared, view.count, matching, view.count);
+        printf("Dynamic commands: unavailable\n");
+        for (size_t i = 0; i < view.count; i++)
+        {
+            const lcs_config_status_node_t *node = &view.nodes[i];
+            printf("%s role=%s connected=%s protocol=%u prepared=%s matching=%s\n",
+                   node->name, role_name(node->role), node->connected ? "yes" : "no", node->protocol,
+                   node->known ? (node->status.prepared ? "yes" : "no") : "unknown",
+                   lcs_config_status_node_matches(&view, i) ? "yes" : "no");
+        }
+    }
+    return 0;
+}
+
 static int cmd_reload(const char *socket_path, bool json_output)
 {
     int fd = connect_socket(socket_path);
@@ -858,6 +1114,121 @@ static int cmd_move(const char *socket_path, const char *vip, const char *node, 
     return 0;
 }
 
+static int print_mutation_result(const lcs_config_mutation_result_t *response, bool json_output)
+{
+    static const char *names[] = {"applied", "rejected", "pending", "unknown"};
+    const lcs_config_request_view_t *view = &response->request;
+    if (json_output)
+    {
+        printf("{\"scope\":\"local\",\"request_id\":"); json_string(stdout, view->id);
+        printf(",\"result\":\"%s\",\"committed_revision\":", names[response->result]);
+        if (view->state >= LCS_CONFIG_REQUEST_COMMITTED)
+        { printf("%llu,\"committed_digest\":", (unsigned long long)(view->base_revision + 1)); json_string(stdout, view->value_digest); }
+        else printf("null,\"committed_digest\":null");
+        printf(",\"applied_revision\":");
+        if (view->state == LCS_CONFIG_REQUEST_APPLIED) printf("%llu", (unsigned long long)(view->base_revision + 1)); else printf("null");
+        printf(",\"reason\":"); json_string(stdout, response->reason); puts("}");
+    }
+    else
+    {
+        printf("request: %s\nresult: %s\n%s\n", view->id, names[response->result], response->reason);
+        if (view->state >= LCS_CONFIG_REQUEST_COMMITTED)
+            printf("committed value: %llu %s\n", (unsigned long long)(view->base_revision + 1), view->value_digest);
+    }
+    return response->result;
+}
+static int cmd_definition_mutation(const char *socket_path, int argc, char **argv, const char *id,
+                                     bool revision_set, uint64_t revision, const char *digest, bool json_output,
+                                     const char *import_document, size_t import_length)
+{
+    lcs_config_mutation_t *request = calloc(1, sizeof(*request));
+    if (!request) { fprintf(stderr, "lcs: cannot allocate request\n"); return 1; }
+    if (id && (strlen(id) > LCS_CONFIG_REQUEST_MAX || !lcs_valid_name(id)))
+    { free(request); fprintf(stderr, "lcs: invalid request ID\n"); return 2; }
+    if (id) strcpy(request->id, id);
+    else snprintf(request->id, sizeof(request->id), "cli-%016llx-%016llx", (unsigned long long)lcs_random_u64(), (unsigned long long)lcs_random_u64());
+    request->revision_set = revision_set; request->revision = revision;
+    if (digest)
+    {
+        if (strlen(digest) != 64) { free(request); fprintf(stderr, "lcs: expected digest must be lowercase SHA-256\n"); return 2; }
+        request->digest_set = true; strcpy(request->digest, digest);
+    }
+    request->argc = argc;
+    if (argc > LCS_CONFIG_MUTATION_ARG_MAX) { free(request); fprintf(stderr, "lcs: too many definition arguments\n"); return 2; }
+    for (int i = 0; i < argc; i++) request->argv[i] = argv[i];
+    unsigned char payload[LCS_MAX_FRAME]; size_t length;
+    if (import_document ? lcs_config_import_begin_encode(request, (uint32_t)import_length, payload, sizeof(payload), &length) :
+        lcs_config_mutation_encode(request, payload, sizeof(payload), &length))
+    { free(request); fprintf(stderr, "lcs: invalid or oversized definition request/base\n"); return 2; }
+    lcs_config_mutation_result_t response = {.result = LCS_CONFIG_MUTATION_UNKNOWN};
+    strcpy(response.request.id, request->id); free(request);
+    fprintf(stderr, "lcs: request_id=%s\n", response.request.id);
+    snprintf(response.reason, sizeof(response.reason), "transport outcome unknown; query or retry this request ID on the original node");
+    int fd = connect_socket(socket_path);
+    if (fd < 0) return print_mutation_result(&response, json_output);
+    struct timeval timeout = {.tv_sec = 35};
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)))
+    { close(fd); return print_mutation_result(&response, json_output); }
+    /* A peer may reject BEGIN or disconnect while a bulk body is still being
+     * written. Preserve the request ID/unknown outcome rather than dying on EPIPE. */
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
+    { close(fd); return print_mutation_result(&response, json_output); }
+    uint32_t seq = lcs_next_seq(); lcs_frame_header_t header;
+    int failed = lcs_write_frame(fd, import_document ? LCS_MSG_CONFIG_IMPORT_BEGIN : LCS_MSG_CONFIG_MUTATION_REQ,
+        seq, payload, (uint32_t)length);
+    for (size_t offset = 0; import_document && !failed && offset < import_length; )
+    {
+        size_t count = import_length - offset;
+        if (count > LCS_MAX_FRAME - LCS_CONFIG_IMPORT_CHUNK_HEADER) count = LCS_MAX_FRAME - LCS_CONFIG_IMPORT_CHUNK_HEADER;
+        failed = lcs_config_import_chunk_encode((uint32_t)offset, import_document + offset, count, payload, sizeof(payload), &length) ||
+            lcs_write_frame(fd, LCS_MSG_CONFIG_IMPORT_CHUNK, seq, payload, (uint32_t)length);
+        offset += count;
+    }
+    if (!failed) failed = lcs_read_frame(fd, &header, payload, sizeof(payload)) <= 0;
+    close(fd);
+    if (failed) return print_mutation_result(&response, json_output);
+    lcs_config_mutation_result_t decoded;
+    if (header.seq != seq || header.type != LCS_MSG_CONFIG_MUTATION_RESP ||
+        lcs_config_mutation_result_decode(payload, header.length, &decoded) || strcmp(decoded.request.id, response.request.id))
+    {
+        snprintf(response.reason, sizeof(response.reason), "unsupported or invalid mutation response; outcome unknown, query this ID on the original node");
+        return print_mutation_result(&response, json_output);
+    }
+    return print_mutation_result(&decoded, json_output);
+}
+
+static int cmd_config_import(const char *socket_path, const char *path, const char *id,
+                                bool revision_set, uint64_t revision, const char *digest, bool json_output)
+{
+    FILE *input = !strcmp(path, "-") ? stdin : fopen(path, "rb");
+    char *document = NULL, error[256] = ""; size_t length = 0;
+    if (!input) snprintf(error, sizeof(error), "cannot open resource JSON: %s", strerror(errno));
+    else if (!(document = malloc(LCS_RESOURCE_DOCUMENT_MAX + 1u))) snprintf(error, sizeof(error), "cannot allocate import input");
+    else
+    {
+        while (length <= LCS_RESOURCE_DOCUMENT_MAX)
+        {
+            size_t count = fread(document + length, 1, LCS_RESOURCE_DOCUMENT_MAX + 1u - length, input);
+            length += count;
+            if (ferror(input)) { snprintf(error, sizeof(error), "cannot read import input"); break; }
+            if (!count) break;
+        }
+        if (!*error && (!length || length > LCS_RESOURCE_DOCUMENT_MAX))
+            snprintf(error, sizeof(error), "import document must contain 1 to 524288 bytes");
+    }
+    if (input && input != stdin) fclose(input);
+    if (*error)
+    {
+        if (json_output) print_simple_response_json(false, error); else fprintf(stderr, "lcs: %s\n", error);
+        free(document); return 1; /* No request was constructed or sent. */
+    }
+    char *arguments[] = {"config", "import", "json"};
+    int result = cmd_definition_mutation(socket_path, 3, arguments, id, revision_set, revision, digest,
+        json_output, document, length);
+    free(document); return result;
+}
+
 static int cmd_resource(const char *socket_path, int argc, char **argv, int optind, bool json_output)
 {
     if (optind >= argc)
@@ -924,24 +1295,36 @@ static int cmd_resource(const char *socket_path, int argc, char **argv, int opti
 int main(int argc, char **argv)
 {
     const char *socket_path = LCS_DEFAULT_SOCKET_PATH;
+    const char *config_path = NULL;
+    const char *request_id = NULL, *expected_digest = NULL;
+    bool expected_revision_set = false; uint64_t expected_revision = 0;
+    bool socket_selected = false;
     bool json_output = false;
     bool show_version = false;
     bool no_colors = false;
     int opt;
     static const struct option long_opts[] = {
         { "socket", required_argument, NULL, 's' },
+        { "config", required_argument, NULL, 'c' },
         { "json", no_argument, NULL, 'j' },
         { "no-colors", no_argument, NULL, 1000 },
+        { "request-id", required_argument, NULL, 1001 },
+        { "expected-revision", required_argument, NULL, 1002 },
+        { "expected-digest", required_argument, NULL, 1003 },
         { "version", no_argument, NULL, 'V' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
     };
-    while ((opt = getopt_long(argc, argv, "s:jhV", long_opts, NULL)) != -1)
+    while ((opt = getopt_long(argc, argv, "s:c:jhV", long_opts, NULL)) != -1)
     {
         switch (opt)
         {
             case 's':
                 socket_path = optarg;
+                socket_selected = true;
+                break;
+            case 'c':
+                config_path = optarg;
                 break;
             case 'j':
                 json_output = true;
@@ -949,6 +1332,21 @@ int main(int argc, char **argv)
             case 1000:
                 no_colors = true;
                 break;
+            case 1001:
+                if (request_id) { fprintf(stderr, "lcs: repeated --request-id\n"); return 2; }
+                request_id = optarg; break;
+            case 1002:
+                if (expected_revision_set || !*optarg) return 2;
+                for (const unsigned char *p = (const unsigned char *)optarg; *p; p++)
+                {
+                    if (*p < '0' || *p > '9' || expected_revision > ((uint64_t)INT64_MAX - 1 - (*p - '0')) / 10)
+                    { fprintf(stderr, "lcs: invalid expected revision\n"); return 2; }
+                    expected_revision = expected_revision * 10 + (*p - '0');
+                }
+                expected_revision_set = true; break;
+            case 1003:
+                if (expected_digest) return 2;
+                expected_digest = optarg; break;
             case 'V':
                 show_version = true;
                 break;
@@ -983,6 +1381,34 @@ int main(int argc, char **argv)
         return 2;
     }
     const char *cmd = argv[optind++];
+    bool definition_mutation = !strcmp(cmd, "resource") && optind < argc &&
+        (!strcmp(argv[optind], "create") || !strcmp(argv[optind], "update") || !strcmp(argv[optind], "delete") ||
+         !strcmp(argv[optind], "remove") || !strcmp(argv[optind], "group"));
+    if (definition_mutation)
+    {
+        if (config_path) { fprintf(stderr, "lcs: --config is only supported for config validate\n"); return 2; }
+        return cmd_definition_mutation(socket_path, argc - optind + 1, argv + optind - 1, request_id,
+            expected_revision_set, expected_revision, expected_digest, json_output, NULL, 0);
+    }
+    bool import_command = !strcmp(cmd, "config") && optind < argc && !strcmp(argv[optind], "import");
+    if (import_command)
+    {
+        if (config_path || optind + 2 != argc) { usage(stderr); return 2; }
+        return cmd_config_import(socket_path, argv[optind + 1], request_id,
+            expected_revision_set, expected_revision, expected_digest, json_output);
+    }
+    if (request_id || expected_revision_set || expected_digest)
+    { fprintf(stderr, "lcs: request/base options require a resource definition or config import command\n"); return 2; }
+    bool validation_command = !strcmp(cmd, "config") && optind < argc && !strcmp(argv[optind], "validate");
+    if (config_path && !validation_command)
+    { fprintf(stderr, "lcs: --config is only supported for config validate\n"); return 2; }
+    if (validation_command)
+    {
+        if (optind + 2 != argc) { usage(stderr); return 2; }
+        if (socket_selected)
+        { fprintf(stderr, "lcs: config validate is offline; --socket is not supported\n"); return 2; }
+        return cmd_config_validate(config_path ? config_path : LCS_DEFAULT_CONFIG_PATH, argv[optind + 1], json_output);
+    }
 
     /*
      * Temporary compatibility alias for the pre-resource CLI syntax.
@@ -1026,6 +1452,25 @@ int main(int argc, char **argv)
             return 2;
         }
         return cmd_reload(socket_path, json_output);
+    }
+    if (strcmp(cmd, "config") == 0)
+    {
+        if (optind + 2 == argc && !strcmp(argv[optind], "request-status"))
+            return cmd_config_request_status(socket_path, argv[optind + 1], json_output);
+        if (optind + 1 == argc && !strcmp(argv[optind], "status"))
+            return cmd_config_status(socket_path, json_output);
+        if (optind < argc && !strcmp(argv[optind], "export") && optind + 2 >= argc)
+        {
+            uint8_t selection = LCS_CONFIG_EXPORT_COMMITTED;
+            if (optind + 2 == argc)
+            {
+                if (!strcmp(argv[optind + 1], "applied")) selection = LCS_CONFIG_EXPORT_APPLIED;
+                else if (strcmp(argv[optind + 1], "committed")) { usage(stderr); return 2; }
+            }
+            return cmd_config_export(socket_path, selection);
+        }
+        usage(stderr);
+        return 2;
     }
     if (strcmp(cmd, "resource") == 0)
         return cmd_resource(socket_path, argc, argv, optind, json_output);

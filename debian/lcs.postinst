@@ -2,6 +2,9 @@
 set -e
 
 CONFIG_ROOT="${DPKG_ROOT:-}"
+if [ "$1" = configure ]; then
+	install -d -m 0700 "$CONFIG_ROOT/var/lib/lcs"
+fi
 if [ "$1" = configure ] && [ ! -e "$CONFIG_ROOT/etc/lcs/lcs.conf" ]; then
 	install -d "$CONFIG_ROOT/etc/lcs"
 	cp -p "$CONFIG_ROOT/usr/share/lcs/lcs.conf.example" "$CONFIG_ROOT/etc/lcs/lcs.conf"

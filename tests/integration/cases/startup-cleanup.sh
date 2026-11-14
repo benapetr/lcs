@@ -40,6 +40,11 @@ if grep -Fq "activated service app" "$TEST_TMP/logs/node1.log" "$TEST_TMP/logs/n
     die "service activated while startup cleanup could not prove it inactive"
 fi
 
+for node in node1 node2 node3; do
+    [[ ! -e "$(node_config "$node").state/activation.json" ]] ||
+        die "migration froze resources before every member completed startup cleanup"
+done
+
 log "allowing startup service cleanup retry to succeed"
 rm -f "$fail_file"
 wait_until 8 "successful startup cleanup retry" \

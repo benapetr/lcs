@@ -25,8 +25,10 @@ lcs_node_state_t cluster_node_state(size_t node_idx)
     if (!cluster_node_is_online(node_idx))
         return LCS_NODE_OFFLINE;
     if ((int)node_idx == g_state.self_index)
-        return g_state.voting_ready ? LCS_NODE_ONLINE : LCS_NODE_RECOVERING;
-    return g_state.peers[node_idx].voting_ready ? LCS_NODE_ONLINE : LCS_NODE_RECOVERING;
+        return cluster_local_voting_ready() ? LCS_NODE_ONLINE : LCS_NODE_RECOVERING;
+    return g_state.peers[node_idx].voting_ready &&
+        (!g_state.resource_generation_enabled || g_state.peers[node_idx].resource_generation_matches) ?
+        LCS_NODE_ONLINE : LCS_NODE_RECOVERING;
 }
 
 int cluster_first_online_full_member(void)
@@ -51,17 +53,21 @@ const char *cluster_node_name_or_none(int node_idx)
 
 int cluster_has_quorum(void)
 {
-    return g_state.votes_seen >= g_state.quorum_needed;
+    return !g_state.config_application_remapping &&
+        (!g_state.resource_generation_enabled || g_state.resource_generation_admitted) &&
+        g_state.votes_seen >= g_state.quorum_needed;
 }
 
 bool cluster_local_voting_ready(void)
 {
-    return g_state.voting_ready;
+    return !g_state.config_application_remapping && g_state.voting_ready &&
+        (!g_state.resource_generation_enabled || g_state.resource_generation_admitted);
 }
 
 void cluster_update_recovery_state(void)
 {
-    if (g_state.voting_ready || lcs_now_ms() < g_state.voting_not_before_ms)
+    if (g_state.config_application_remapping || (g_state.resource_generation_enabled && !g_state.resource_generation_admitted) ||
+        g_state.voting_ready || lcs_now_ms() < g_state.voting_not_before_ms)
         return;
     if (!resources_startup_cleanup_complete())
         return;
@@ -71,7 +77,8 @@ void cluster_update_recovery_state(void)
     {
         if ((int)i == g_state.self_index)
             continue;
-        if (g_state.peers[i].initial_sync_complete && cluster_node_is_online(i))
+        if (g_state.peers[i].initial_sync_complete && cluster_node_is_online(i) &&
+            (!g_state.resource_generation_enabled || g_state.peers[i].resource_generation_matches))
             synchronized_votes++;
     }
     if (synchronized_votes < g_state.quorum_needed)
@@ -98,11 +105,12 @@ void cluster_recompute_votes(void)
         if ((int)i == g_state.self_index)
         {
             online = true;
-            voting_ready = g_state.voting_ready;
+            voting_ready = cluster_local_voting_ready();
         } else if (g_state.peers[i].online && now - g_state.peers[i].last_seen_ms <= g_state.cfg.peer_timeout_ms)
         {
             online = true;
-            voting_ready = g_state.peers[i].voting_ready;
+            voting_ready = g_state.peers[i].voting_ready &&
+                (!g_state.resource_generation_enabled || g_state.peers[i].resource_generation_matches);
         } else
         {
             if (g_state.peers[i].online)

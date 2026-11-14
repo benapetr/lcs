@@ -22,6 +22,8 @@ void cli_server_complete_move(int epoll_fd, int slot_idx, uint64_t cli_server_id
 void cli_server_accept(int epoll_fd, int listen_fd);
 void cli_server_pump_epoll_event(int epoll_fd, const struct epoll_event *ev);
 void cli_server_expire(int epoll_fd);
+/* Best-effort nonblocking diagnostic for existing waiters on fatal failure. */
+void cli_server_fail_mutations(int epoll_fd);
 void cli_server_close_all(int epoll_fd);
 int  cli_server_index_from_epoll_id(uint32_t id);
 

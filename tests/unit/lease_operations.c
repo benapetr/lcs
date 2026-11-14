@@ -434,8 +434,29 @@ static void test_lost_quorum_and_expired_acquires_preserve_observation(void)
     }
 }
 
+static void test_frozen_lock_blocks_acquire_but_preserves_renewal(void)
+{
+    initialize_state();
+    lcs_config_store_t store = {0}; g_state.config_runtime.activation.store = &store;
+    assert(lease_start_acquire(0, 0, 1, 11, -1) < 0);
+    assert(lease_grant_local_acquire(0, 0, 1, 11, fake_now_ms + 5000) < 0);
+    assert(!active_operation() && !pending[1].active && !pending[2].active);
+    establish_local_ownership(fake_now_ms + 5000);
+    assert(!lease_start_renew(0, -1));
+    assert(active_operation() && pending[1].active && pending[2].active);
+    finish_rpc(1, 0); finish_rpc(2, 0); lease_process_operations(-1);
+    assert(!active_operation() && g_state.resources[0].state == LCS_RES_ACTIVE);
+    g_state.resources[0].lease_id = 78;
+    assert(lease_start_renew(0, -1) < 0);
+    g_state.resources[0].lease_id = 77;
+    fake_now_ms = g_state.lease_grants[0].deadline_ms;
+    assert(lease_start_renew(0, -1) < 0);
+    assert(!active_operation() && g_state.lease_grants[0].promised_epoch == 7);
+}
+
 int main(void)
 {
+    test_frozen_lock_blocks_acquire_but_preserves_renewal();
     test_acquire_requires_processed_majority();
     test_acquire_commits_after_majority();
     test_failed_renew_does_not_extend_owner_deadline();

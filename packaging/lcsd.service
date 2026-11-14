@@ -11,6 +11,8 @@ Restart=on-failure
 RestartSec=2s
 RuntimeDirectory=lcs
 RuntimeDirectoryMode=0755
+StateDirectory=lcs
+StateDirectoryMode=0700
 ConfigurationDirectory=lcs
 KillSignal=SIGTERM
 # Let lcsd handle SIGTERM first so VIP removal and hook helpers are not

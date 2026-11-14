@@ -4,6 +4,7 @@
 #include "vip.h"
 
 #include "log.h"
+#include "worker.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -724,11 +725,13 @@ int lcs_vip_conflict_check_async(const lcs_config_t *cfg,
 {
     if (!cfg || !vip || !pid)
         return -1;
+    pid_t parent = getpid();
     pid_t child = fork();
     if (child < 0)
         return -1;
     if (child == 0)
     {
+        lcs_worker_bind_parent(parent);
         (void)setpgid(0, 0);
         /* The probe needs no daemon listeners or peer connections. */
         (void)close_range(3, ~0u, 0);
@@ -840,11 +843,13 @@ int lcs_vip_operation_async(const lcs_config_t *cfg,
          action != LCS_VIP_WORKER_ANNOUNCE))
         return -1;
 
+    pid_t parent = getpid();
     pid_t child = fork();
     if (child < 0)
         return -1;
     if (child == 0)
     {
+        lcs_worker_bind_parent(parent);
         (void)setpgid(0, 0);
         /* Backend helpers must not retain daemon sockets while blocked. */
         (void)close_range(3, ~0u, 0);

@@ -62,6 +62,35 @@ lcs \- command line client for the Lightweight Cluster Service daemon
 .br
 .B lcs
 .B \-\-version
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET | \-\-socket
+.IR SOCKET ]
+.RB [ \-\-json ]
+.B config status
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET ]
+.RB [ \-\-json ]
+.B config request-status
+.I ID
+.br
+.B lcs
+.RB [ \-s
+.IR SOCKET ]
+.RB [ \-\-json ]
+.B config export
+.RB [ committed | applied ]
+.br
+.B lcs
+.RB [ \-c
+.IR CONFIG | \-\-config
+.IR CONFIG ]
+.RB [ \-\-json ]
+.B config validate
+.IR FILE | \-
 .SH DESCRIPTION
 .B lcs
 talks to the local
@@ -101,6 +130,144 @@ cluster section includes the current membership shape duration.
 Print a single monitoring-plugin style status line and exit with Nagios
 compatible status codes. Exit status is 0 for OK, 1 for WARNING, 2 for
 CRITICAL, and 3 for UNKNOWN.
+.TP
+.B config status
+Report resource authority, local prepared-snapshot status, canonical digests,
+and prepared/matching member counts, including quorum-only members. Wire-5 and
+offline peers have unknown metadata. These observations are diagnostic only;
+metadata can initiate durable locking, while explicit receipts and majority
+agreement still authorize activation. For JSON catalogs,
+also report local committed/applied/pending revisions and digests, recovery state,
+admission and blocked errors. Absent pending work and errors are JSON null.
+Admission does not imply current quorum or resource ownership. Supports
+.BR \-\-json .
+A durable pre-initialization freeze reports application_state frozen, INI
+authority, no admission and no dynamic command capability. On restart it restores
+the retained baseline for coordination, with resource voting, placement and
+mutations fenced; later valid INI resource edits do not replace that baseline.
+An explicit durable freeze blocks new acquisitions. Every member, including
+quorum-only voters, must confirm its durable reload lock before owners drain.
+Exact unexpired leases can renew during lock collection. Owners then drain with
+the retained hooks and dependency order. Lock receipts cannot authorize
+initialization. Drained freeze acknowledgements wait for cleanup and lease
+state to drain; failed cleanup retains fences and appears in frozen diagnostics.
+Quorum-only members perform no backend work.
+Existing freezes can resume local preparation after fresh confirmation from every
+member, including quorum-only voters. Pristine prepared restarts preserve history;
+automatic all-member readiness then persists a barrier. Valid barriers over
+revision-zero preparation survive restart without rewrites, retaining promises,
+reservations and an accepted activation with its exact request identity. Missing
+proof/history fails closed. Resource voting/placement
+remain fenced; this does not enable JSON authority or definition commands.
+Existing durable freezes automatically propose their unchanged baseline after
+all-member readiness, preferring a connected full member and requiring a wire-6
+majority. Timeout retries retain unknown reservations and use fresh identities
+and higher ballots. Ordinary INI startup now initiates durable locking once every
+configured member, including quorum-only voters, has a current wire-6 session and
+matching complete definitions. Older/offline/unknown members block initiation.
+Every member must first complete legacy startup cleanup and lease-voting recovery.
+Explicit responders also wait for verified local cleanup. Lock/drain/readiness
+proofs and majority agreement remain mandatory.
+Conversion temporarily drains old resources; human INI files remain unchanged.
+A learned revision-one activation may resume initial application after restart
+or hand off from a running frozen node without restarting. Existing writer and
+backend work must drain; sessions, epochs and private promises are retained.
+Local diagnostic format 5 reports committed revision 1 and applied revision 0
+with admission disabled during baseline cleanup. Cleanup and old-owner proof
+precede generation installation; fresh synchronization and quorum precede
+admission. Older clients reject this new diagnostic format.
+.TP
+.B resource create NAME vip|service key=value...
+Create one definition through majority agreement and local configuration admission.
+Requires an admitted full member of an activated JSON cluster with healthy history.
+.B resource update NAME key=value...
+replaces fields; empty values remove optional overrides.
+.B resource delete NAME
+(or remove) deletes one resource without cascading through dependencies.
+.TP
+.B resource group create|update|add|remove|delete GROUP [options|resources]
+Manage groups, memberships and type/mode policies. Group removal without resources
+ungroups members and removes the definition without deleting resources.
+These commands accept
+.BR --request-id " ID, " --expected-revision " N and " --expected-digest " SHA256."
+Omitted bases use the current committed value for new IDs and original base for
+known IDs. Exact ordered argument retries return existing facts, never a second
+proposal. Use the original coordinator; peer records lack client descriptors.
+The CLI prints generated IDs before sending and waits up to 30 seconds for local
+admission. Exit codes: 0 applied, 1 rejected, 2 committed but pending admission,
+3 unknown. Usage errors retain exit 2. Supports
+.BR --json .
+Reasons include bound backend/projection errors and repair instructions when
+available. Committed cleanup failures stay pending; uncertain storage failures
+stay unknown. Fatal shutdown attempts a nonblocking diagnostic to existing waiters,
+but lost delivery still leaves unknown. Historical admission is never undone by
+a later failure. Retain state and query the original ID after repair/restart.
+Timeout/disconnect never cancels storage or proves abort. Query request-status
+with the same ID. Automatic activation remains unavailable.
+.TP
+.B config import FILE|-
+Atomically replace all resource/group definitions from a schema-1/2 JSON document
+(up to 512 KiB), using the same activated JSON full-member, quorum and request-history
+gates as definition edits. Omitted definitions are deleted; static INI settings
+cannot be imported. Source revision and identities are validated but the daemon
+assigns the next revision and backend identities from the committed predecessor.
+Accepts --request-id, --expected-revision, --expected-digest and --json, with the same
+mutation outcomes/exits. Retry requires exact original bytes, including whitespace;
+the local filename is not part of the identity. A partial/invalid upload cannot
+reserve or propose. Upload deadline is ten seconds, followed by the ordinary
+thirty-second admission wait. Input errors before submission exit 1. This command
+does not activate a cluster or initialize missing request history.
+New coordinated format-2 initialization requires request history before the intent
+becomes prepared. Missing/corrupt history afterwards requires recovery and is never
+recreated merely because no promise is visible. Format-1 catalogs retain their
+legacy recovery compatibility. Ordinary INI startup automatically begins durable
+locking after every configured member supports wire 6 and advertises matching
+definitions. Explicit lock/drain/readiness proofs and majority agreement precede
+JSON admission. Human INI files remain unchanged.
+.TP
+.B config request-status ID
+Read published local request facts from daemon memory, also available with
+.BR \-\-json .
+History is available, unavailable, or recovery-required. A committed request has
+an exact recorded consensus decision; it does not imply resource application or
+final client success. An applied request additionally records completed local
+configuration admission, persisted after the handoff. It is historical completion,
+not current resource health or an acknowledgement from every peer. Quorum-only
+members record metadata admission, never backend execution. A reserved request's
+eventual outcome is unknown. Unknown
+is not rejection, abort or permission to reuse its ID. The query performs no file
+I/O, peer query, initialization or proposal retry and remains available during
+recovery and application transitions. IDs use 1-63 letters, digits, underscores,
+dots or hyphens. Exit 0 means a valid response, including unknown; 1 indicates a
+connection/daemon/protocol error; 2 indicates invalid arguments.
+.TP
+.B config export [committed|applied]
+Write canonical resource/group JSON to stdout. The default is locally committed
+definitions; applied selects definitions already applied locally. With INI authority,
+both describe effective running definitions at revision zero. Export is read-only
+and available during recovery or blocked application. Each response pins one
+snapshot and supports bounded transfers larger than one frame. Transfer failure
+returns status 1 without partial stdout; invalid syntax returns status 2.
+.B \-\-json
+produces the same document. Static daemon settings and recovery journals are
+managed separately. Use config import for an atomic replacement.
+.TP
+.B config validate FILE|-
+Validate resource/group JSON offline against the static context from
+.B \-c CONFIG
+or
+.BR \-\-config " CONFIG"
+(default /etc/lcs/lcs.conf). A filename of - reads stdin. Input is limited to
+512 KiB. The shared strict parser checks schemas, cluster identity, field bounds,
+incarnations, groups, home nodes and dependencies. No daemon connection, resource
+operation or file write occurs. This establishes document validity, not live
+transaction eligibility or backend/hook availability.
+.B \-\-socket
+is rejected; --config is supported only for this command. Exit status is 0 for
+valid, 1 for validation/input/context errors and 2 for syntax errors.
+.B \-\-json
+reports valid, schema_version, revision, resource_count and group_count on success,
+or valid=false with error on failure. Plain failures go to stderr.
 .TP
 .B reload
 Asynchronously refresh cached peer DNS addresses and ask the local daemon to

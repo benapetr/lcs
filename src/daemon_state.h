@@ -5,7 +5,16 @@
 #define LCS_DAEMON_STATE_H
 
 #include "config.h"
+#include "config_bootstrap.h"
+#include "config_runtime.h"
 #include "protocol.h"
+#include "config_status_protocol.h"
+#include "config_readiness.h"
+#include "config_freeze_protocol.h"
+#include "config_coordinator.h"
+#include "config_transaction.h"
+#include "config_owner_network.h"
+#include "resource_frame.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -242,6 +251,11 @@ typedef struct
     size_t out_off;
     size_t out_len;
     uint16_t protocol_version;
+    lcs_config_status_t config_status;
+    bool config_status_known;
+    uint64_t config_status_sent;
+    lcs_resource_generation_t resource_generation;
+    bool resource_generation_known, resource_generation_matches;
 } peer_runtime_t;
 
 typedef struct
@@ -274,6 +288,18 @@ typedef struct
     size_t out_off;
     size_t out_len;
     bool close_after_flush;
+    char *import_document;
+    uint32_t import_total, import_used, import_seq;
+    unsigned char import_metadata[256];
+    size_t import_metadata_length;
+    bool mutation_waiting;
+    char mutation_id[LCS_CONFIG_REQUEST_MAX + 1];
+    uint32_t mutation_seq;
+    char *export_document;
+    size_t export_length, export_offset;
+    uint64_t export_revision;
+    uint32_t export_seq;
+    uint8_t export_authority, export_selection;
 } cli_server_runtime_t;
 
 typedef enum
@@ -445,9 +471,51 @@ typedef struct
     resource_runtime_t resources[LCS_MAX_RESOURCES];
     lease_grant_t lease_grants[LCS_MAX_RESOURCES];
     config_reload_runtime_t config_reload;
+    lcs_resource_generation_t resource_generation;
+    bool resource_generation_enabled, resource_generation_admitted;
+    bool config_application_fenced, config_application_remapping;
+    uint32_t config_application_drain_mask;
+    lcs_config_bootstrap_t config_bootstrap;
+    lcs_config_runtime_t config_runtime;
+    lcs_config_status_t config_status;
+    uint64_t config_status_generation;
+    uint64_t config_status_retry_ms;
+    uint64_t config_status_keepalive_ms;
+    lcs_config_readiness_t config_readiness;
+    lcs_config_initialization_round_t config_initialization;
+    uint64_t config_initialization_attempt, config_initialization_next_send_ms;
+    bool config_initialization_requested;
+    bool config_initialization_auto_resume;
+    bool config_freeze_draining, config_freeze_drained, config_freeze_locks_confirmed;
+    lcs_config_initialization_round_t config_freeze_locks;
+    uint64_t config_freeze_locks_next_ms, config_freeze_locks_retry_ms;
+    char config_freeze_error[256];
+    bool config_activation_auto_resume;
+    uint64_t config_activation_attempt, config_activation_retry_ms;
+    uint64_t config_initialization_retry_ms;
+    struct
+    {
+        lcs_config_freeze_message_t query;
+        uint64_t deadline_ms, next_send_ms;
+        bool pending;
+    } config_freeze_waiters[LCS_MAX_NODES];
+    lcs_config_coordinator_t config_coordinator;
+    lcs_config_transactions_t config_transactions;
+    lcs_config_owner_network_t config_owners;
+    uint64_t config_readiness_attempt;
+    uint64_t config_readiness_next_send_ms;
+    uint64_t config_readiness_retry_ms;
+    bool config_bootstrap_initialized;
 } daemon_state_t;
 
 extern daemon_state_t g_state;
+
+static inline bool resource_config_is_fenced(int resource_idx)
+{
+    return g_state.config_application_fenced &&
+        (g_state.config_application_remapping || (resource_idx >= 0 && resource_idx < LCS_MAX_RESOURCES &&
+         (g_state.config_application_drain_mask & (UINT32_C(1) << resource_idx))));
+}
 
 enum
 {

@@ -10,7 +10,180 @@ CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-fingerprint.XXXXXX")"
 PROTOCOL_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-protocol-negotiation.XXXXXX")"
 PEER_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-peer-broadcasts.XXXXXX")"
 ALLOWLIST_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-source-allowlist.XXXXXX")"
-trap 'rm -f "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN"' EXIT
+RESOURCE_CONFIG_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-resource-json.XXXXXX")"
+STORE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-store.XXXXXX")"
+BOOTSTRAP_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-bootstrap.XXXXXX")"
+AGREEMENT_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-agreement.XXXXXX")"
+ACTIVATION_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-activation.XXXXXX")"
+CONFIG_PEER_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-peer.XXXXXX")"
+TRANSACTION_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-transaction.XXXXXX")"
+RESOURCE_FRAME_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-resource-frame.XXXXXX")"
+STARTUP_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-startup.XXXXXX")"
+RECONCILE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-reconcile.XXXXXX")"
+COORDINATOR_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-coordinator.XXXXXX")"
+FREEZE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-reload-freeze.XXXXXX")"
+CANDIDATE_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-candidate.XXXXXX")"
+REQUESTS_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-requests.XXXXXX")"
+EXPORT_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-config-export.XXXXXX")"
+REQUEST_STATUS_BIN="$(mktemp "${TMPDIR:-/tmp}/lcs-request-status.XXXXXX")"
+trap 'rm -f "$REQUEST_STATUS_BIN" "$GRANT_BIN" "$OPERATIONS_BIN" "$RECOVERY_BIN" "$SYNC_BIN" "$CONFIG_BIN" "$PROTOCOL_BIN" "$PEER_BIN" "$ALLOWLIST_BIN" "$RESOURCE_CONFIG_BIN" "$STORE_BIN" "$BOOTSTRAP_BIN" "$AGREEMENT_BIN" "$CANDIDATE_BIN" "$CONFIG_PEER_BIN" "$ACTIVATION_BIN" "$FREEZE_BIN" "$COORDINATOR_BIN" "$TRANSACTION_BIN" "$RECONCILE_BIN" "$RESOURCE_FRAME_BIN" "$STARTUP_BIN" "$EXPORT_BIN" "$REQUESTS_BIN"' EXIT
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_mutation_diagnostic.c" "$ROOT_DIR/src/config_mutation_diagnostic.c" -o "$REQUEST_STATUS_BIN"
+"$REQUEST_STATUS_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_mutation.c" "$ROOT_DIR/src/config_mutation_protocol.c" \
+    "$ROOT_DIR/src/config_request_status_protocol.c" "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/util.c" -o "$REQUEST_STATUS_BIN"
+"$REQUEST_STATUS_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_request_status.c" "$ROOT_DIR/src/config_request_status_protocol.c" \
+    "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/util.c" -o "$REQUEST_STATUS_BIN"
+"$REQUEST_STATUS_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_export.c" "$ROOT_DIR/src/config_export_protocol.c" \
+    "$ROOT_DIR/src/protocol.c" -o "$EXPORT_BIN"
+"$EXPORT_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_candidate.c" "$ROOT_DIR/src/config_candidate.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -o "$CANDIDATE_BIN"
+"$CANDIDATE_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
+    "$ROOT_DIR/tests/unit/config_reload_freeze.c" "$ROOT_DIR/src/config_reload.c" "$ROOT_DIR/src/config_candidate.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--gc-sections -o "$FREEZE_BIN"
+"$FREEZE_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "$ROOT_DIR/tests/unit/resource_frame.c" \
+    "$ROOT_DIR/src/resource_frame.c" "$ROOT_DIR/src/protocol.c" -o "$RESOURCE_FRAME_BIN"
+"$RESOURCE_FRAME_BIN"
+
+read -ra JSON_CFLAGS <<< "$(pkg-config --cflags jansson)"
+read -ra JSON_LIBS <<< "$(pkg-config --libs jansson)"
+read -ra CRYPTO_CFLAGS <<< "$(pkg-config --cflags libcrypto)"
+read -ra CRYPTO_LIBS <<< "$(pkg-config --libs libcrypto)"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 -Wall -Wextra -Wpedantic \
+    "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_requests.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_application.c" \
+    "$ROOT_DIR/src/config_bootstrap.c" "$ROOT_DIR/src/config_activation.c" \
+    "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
+    "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_store.c" \
+    "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/config_candidate.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$REQUESTS_BIN"
+"$REQUESTS_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_transaction.c" "$ROOT_DIR/src/config_transaction.c" "$ROOT_DIR/src/config_transfer.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
+    "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_store.c" \
+    "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/protocol.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$TRANSACTION_BIN"
+"$TRANSACTION_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_reconcile.c" "$ROOT_DIR/src/config_reconcile.c" "$ROOT_DIR/src/protocol.c" \
+    "$ROOT_DIR/src/resource_generation.c" "$ROOT_DIR/src/resource_frame.c" "$ROOT_DIR/src/config_live.c" "$ROOT_DIR/src/config_projection.c" "$ROOT_DIR/src/config_owner_barrier.c" "$ROOT_DIR/src/config_owner_network.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
+    "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_store.c" \
+    "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/config.c" \
+    "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$RECONCILE_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_startup.c" "$ROOT_DIR/src/config_startup.c" "$ROOT_DIR/src/config_recovery.c" \
+    "$ROOT_DIR/src/cluster.c" "$ROOT_DIR/src/config_recovery_live.c" "$ROOT_DIR/src/config_projection.c" "$ROOT_DIR/src/resource_generation.c" "$ROOT_DIR/src/resource_frame.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_owner_barrier.c" "$ROOT_DIR/src/config_owner_network.c" \
+    "$ROOT_DIR/src/config_runtime.c" "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" \
+    "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_store.c" \
+    "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/config.c" \
+    "$ROOT_DIR/src/vip.c" "$ROOT_DIR/src/systemd_service.c" "$ROOT_DIR/src/log.c" \
+    "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync -Wl,--wrap=waitpid -Wl,--gc-sections "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$STARTUP_BIN"
+"$STARTUP_BIN"
+"$RECONCILE_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_coordinator.c" "$ROOT_DIR/src/config_coordinator.c" \
+    "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" \
+    "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_store.c" \
+    "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/protocol.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync -Wl,--wrap=lcs_config_store_read "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$COORDINATOR_BIN"
+"$COORDINATOR_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_activation.c" "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" \
+    "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" "$ROOT_DIR/src/config_bootstrap.c" \
+    "$ROOT_DIR/src/config_runtime.c" "$ROOT_DIR/src/config_agreement.c" "$ROOT_DIR/src/config_application.c" \
+    "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync -Wl,--wrap=lcs_config_store_read "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$ACTIVATION_BIN"
+"$ACTIVATION_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_peer.c" "$ROOT_DIR/src/config_peer.c" "$ROOT_DIR/src/config_freeze_protocol.c" \
+    "$ROOT_DIR/src/config_owner_barrier.c" "$ROOT_DIR/src/config_owner_network.c" \
+    "$ROOT_DIR/src/config_transaction.c" "$ROOT_DIR/src/config_transfer.c" \
+    "$ROOT_DIR/src/config_coordinator.c" "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" \
+    "$ROOT_DIR/src/config_readiness.c" "$ROOT_DIR/src/config_barrier.c" \
+    "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_application.c" "$ROOT_DIR/src/config_runtime.c" \
+    "$ROOT_DIR/src/config_status_protocol.c" "$ROOT_DIR/src/config_agreement.c" \
+    "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
+    "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$CONFIG_PEER_BIN"
+"$CONFIG_PEER_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" "${CRYPTO_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_agreement.c" "$ROOT_DIR/src/config_agreement.c" \
+    "$ROOT_DIR/src/config_initialization.c" "$ROOT_DIR/src/config_agreement_worker.c" "$ROOT_DIR/src/config_requests.c" "$ROOT_DIR/src/config_application.c" \
+    "$ROOT_DIR/src/config_transfer.c" "$ROOT_DIR/src/config_activation.c" "$ROOT_DIR/src/config_barrier.c" "$ROOT_DIR/src/config_runtime.c" "$ROOT_DIR/src/protocol.c" \
+    "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    -Wl,--wrap=fsync "${JSON_LIBS[@]}" "${CRYPTO_LIBS[@]}" -o "$AGREEMENT_BIN"
+"$AGREEMENT_BIN"
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/resource_config.c" "$ROOT_DIR/src/resource_config.c" "$ROOT_DIR/src/config_candidate.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    "${JSON_LIBS[@]}" -o "$RESOURCE_CONFIG_BIN"
+"$RESOURCE_CONFIG_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic \
+    "$ROOT_DIR/tests/unit/config_store.c" "$ROOT_DIR/src/config_store.c" \
+    -Wl,--wrap=fsync -Wl,--wrap=renameat -o "$STORE_BIN"
+"$STORE_BIN"
+
+"${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
+    -Wall -Wextra -Wpedantic "${JSON_CFLAGS[@]}" \
+    "$ROOT_DIR/tests/unit/config_bootstrap.c" "$ROOT_DIR/src/config_bootstrap.c" \
+    "$ROOT_DIR/src/config_store.c" "$ROOT_DIR/src/config_candidate.c" "$ROOT_DIR/src/resource_config.c" \
+    "$ROOT_DIR/src/config.c" "$ROOT_DIR/src/util.c" "$ROOT_DIR/src/source_allowlist.c" \
+    "${JSON_LIBS[@]}" -o "$BOOTSTRAP_BIN"
+"$BOOTSTRAP_BIN"
 
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
@@ -23,7 +196,7 @@ echo "source IP allowlist unit tests passed"
 "${CC:-cc}" -D_GNU_SOURCE -I"$ROOT_DIR/src" -std=c11 \
     -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections \
     "$ROOT_DIR/tests/unit/peer_broadcasts.c" \
-    "$ROOT_DIR/src/peer.c" "$ROOT_DIR/src/protocol.c" \
+    "$ROOT_DIR/src/peer.c" "$ROOT_DIR/src/protocol.c" "$ROOT_DIR/src/resource_frame.c" \
     -Wl,--gc-sections -o "$PEER_BIN"
 "$PEER_BIN"
 echo "peer broadcast unit tests passed"

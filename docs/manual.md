@@ -4,6 +4,114 @@ LCS is a lightweight high-availability daemon that manages resources such as vir
 
 `lcsd` is the cluster daemon. `lcs` is the CLI used to query and control the local daemon.
 
+The daemon prepares a local JSON resource snapshot while the cluster uses INI
+authority. Once every configured member supports wire 6 and advertises matching
+definitions, it automatically locks the baseline, drains old resources, collects
+readiness and agrees on JSON activation. Admitted full members then resume hosting
+and allow dynamic resource commands. Mixed-version clusters retain INI operation.
+See [resource JSON and storage](resource-json.md) for
+the current implementation stage, build dependencies, state paths, and recovery
+behavior. Use `lcs config status` or `lcs --json config status` to inspect
+prepared definitions across members. Matching snapshots do not enable dynamic
+authority. Already
+activated durable catalogs can resume through fenced startup recovery, as
+described in [activated startup recovery](resource-json.md#activated-startup-recovery).
+For those catalogs, `lcs config status` also shows local durable committed,
+applied and pending revisions/digests, recovery state, admission and cleanup
+errors. Peer entries remain advisory preparation metadata. Dynamic definition
+commands are available on admitted JSON full members with healthy request history;
+see [runtime definition commands](resource-json.md#runtime-definition-commands).
+Use `resource create/update/delete`, `resource group add/remove/delete` and group
+policy updates with `--request-id` and optional expected-base checks. Mutation
+results use exits 0 applied, 1 rejected, 2 pending and 3 unknown.
+Coordinated initialization now seals required request history before preparation.
+A format-2 prepared intent with missing/corrupt history fails before listeners;
+retain/recover its state. Automatic upgrade activation uses this history after
+all-member capability, definition, freeze and readiness checks. See [initialization history](resource-json.md#required-request-history-during-initialization).
+
+Automatic initiation also waits for every member's legacy startup cleanup and
+lease-voting recovery to complete. A failed startup cleanup can retry before
+migration locks and resource-frame fences are installed.
+
+A node restarting from a durable resource freeze can rejoin wire-6 coordination
+with voting, resource placement and mutations fenced. It restores the retained
+baseline before startup cleanup, reports `application_state: frozen` in
+`lcs --json config status`, and exports that baseline through `lcs config export`.
+Later valid INI resource edits do not replace it. Existing durable freezes resume
+local initialization after fresh confirmations from every configured member,
+including quorum-only voters. Pristine prepared nodes retain their journals and
+resource fences across restart. Ordinary INI startup now initiates durable locking
+after all-member capability and matching-definition checks; local preparation
+alone does not enable dynamic commands.
+
+After local preparation of an existing durable freeze, the scheduler automatically
+collects readiness from every configured member and persists its barrier.
+`config status` can report `all-member readiness persisted; awaiting activation`
+while retaining frozen INI authority and resource/mutation fences. A valid barrier
+over revision-zero history also permits recovery of retained promises, request
+reservations and an accepted activation value with its exact request identity,
+without rewriting records or inferring commitment. In-memory
+collection timeouts can retry; uncertain persistence requires disk recovery.
+A learned revision-one activation can resume initial application after restart
+or on a running frozen node without restarting,
+using retained baseline cleanup, old-owner proof and fresh sync/quorum before
+admission. During baseline cleanup, local diagnostic format 5 reports JSON
+authority with committed revision 1, applied revision 0 and admission disabled;
+cleanup failures remain visible as blocked. After an existing durable freeze
+reaches readiness, a full member automatically
+proposes the unchanged baseline's schema-2 activation through majority agreement.
+Retries use fresh request IDs and higher ballots, preserving unknown reservations
+and recovering accepted values. Quorum-only members never initiate proposals.
+Ordinary INI startup now starts durable locking automatically once every
+configured member supports wire 6 and advertises matching complete definitions.
+
+An explicit durable freeze of a running INI generation blocks new acquisitions.
+Every member, including quorum-only voters, must confirm its durable reload lock
+before owners drain. Existing unexpired leases may renew while those confirmations
+are collected. The subsequent drain uses the retained hooks and dependency order;
+a lock confirmation alone cannot authorize initialization.
+FROZEN acknowledgements and local initialization wait for cleanup, workers and
+lease state to drain. Failed cleanup remains frozen and is reported by
+`config status`; repair/restart retains the baseline. Quorum-only nodes execute
+no backends. Automatic first-freeze initiation includes quorum-only members in the capability
+and definition checks; offline, unknown or older members block it. See [the live drain contract](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
+
+Use `lcs config request-status ID` or `lcs --json config request-status ID` to
+inspect a request's published local reservation/commit/admission facts. `committed` means
+its consensus decision was recorded, not resource application or final client
+success. `applied` records that this node actually completed configuration admission
+and persisted its receipt; it is historical completion, not current resource health
+or an acknowledgement from every peer. `reserved` leaves its eventual outcome unknown; `unknown` is not rejection,
+abort or permission to reuse the ID. Missing/poisoned history is identified
+explicitly. This read-only query remains available during recovery and transitions;
+see [request facts](resource-json.md#inspecting-a-requests-local-facts).
+Mutation failure reasons include the bound cleanup/projection or storage error
+when available, with repair instructions. Commitment with blocked admission stays
+pending; uncertain persistence stays unknown. An older/newer request's failure
+cannot change a recorded historical applied result. See
+[mutation failure diagnostics](resource-json.md#mutation-failure-diagnostics).
+Use `lcs config export` to save locally committed resource/group JSON, or
+`lcs config export applied` for locally applied definitions. With INI authority
+both export effective running definitions at revision zero. Export is read-only
+and available during recovery and blocked application; `--json` gives the same
+document. See [export details](resource-json.md#exporting-definitions).
+Use `lcs --request-id ID [--expected-revision N] config import FILE|-` for an
+atomic complete resource/group replacement on an admitted JSON full member.
+Import validates the whole document and assigns the next revision/identities;
+missing definitions are deleted. Retry requires the exact original file bytes.
+See [atomic bulk import](resource-json.md#atomic-bulk-import).
+Use `lcs --config /path/node.conf config validate FILE` for offline validation
+against that cluster's static context, or omit `--config` to use `/etc/lcs/lcs.conf`.
+`FILE` may be `-` for stdin; `--json` reports validity, revision and counts or an
+error. This checks document validity without contacting the daemon, running
+resources/hooks or changing state. It does not establish live transaction
+eligibility. See [validation details](resource-json.md#validating-a-document-offline).
+After startup recovery, activated nodes apply newly learned definitions live.
+Local mutations and automatic placement pause during that transition while
+backend, hook, lease and peer work continue. Projection/transport failures retain
+fences for retry; failed backend cleanup requires repair and verified restart
+cleanup. See [live application](resource-json.md#activated-startup-recovery).
+
 ---
 
 # Node roles
@@ -119,6 +227,17 @@ self-dependencies, and dependency cycles.
 Hook scripts are executed directly with `exec`, not through a shell. The following environment variables are provided to each hook:
 
 `LCS_CLUSTER`, `LCS_NODE`, `LCS_RESOURCE`, `LCS_RESOURCE_TYPE`, `LCS_SYSTEMD_UNIT`, `LCS_VIP`, `LCS_ADDRESS`, `LCS_INTERFACE`, `LCS_EVENT`, `LCS_EPOCH`, `LCS_LEASE_ID`, `LCS_HOOK_TIMEOUT_MS`
+
+Hooks must be foreground programs that wait for their work to finish. A process
+group supervisor cancels the hook and its foreground child commands on timeout,
+cancellation or daemon exit. Hook workers do not keep daemon sockets/storage
+open. Stop hooks should be idempotent because cleanup may need to repeat them.
+
+The startup cleanup runner for an already-activated durable catalog also
+sets `LCS_RECOVERY=1` and `LCS_CONFIG_REVISION` to the last-applied revision.
+Recovery uses saved applied and retained predecessor definitions with epoch/lease
+ID zero, since ownership is unknown. Retained stop-hook programs must remain
+usable and idempotent while recovery records reference them. See [startup cleanup](dynamic-config-application.md#explicit-startup-backend-cleanup).
 
 A hook must exit with status `0` to be considered successful. If `pre_start` fails or times out, activation is aborted and the lease is released. If `pre_stop` fails or times out, the failure is logged but the VIP is still removed. Hook execution runs asynchronously in the daemon event loop, so peer communication and lease renewal continue while a hook is running. If quorum is lost or the local lease expires during a hook, `lcsd` skips any remaining stop hooks and removes the VIP immediately.
 

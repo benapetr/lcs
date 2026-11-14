@@ -1,0 +1,1157 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "config_agreement.h"
+#include "config_application.h"
+#include "config_agreement_worker.h"
+#include "config_transfer.h"
+#include "config_runtime.h"
+#include "protocol.h"
+
+#include <assert.h>
+#include <errno.h>
+#include <jansson.h>
+#include <openssl/sha.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static int fail_sync;
+int __real_fsync(int fd);
+int __wrap_fsync(int fd)
+{
+    if (fail_sync && !--fail_sync)
+    {
+        errno = EIO;
+        return -1;
+    }
+    return __real_fsync(fd);
+}
+
+typedef struct
+{
+    char directory[80];
+    lcs_config_t cfg;
+    lcs_config_store_t store;
+    lcs_config_agreement_t state;
+} voter_t;
+
+static voter_t voters[3];
+static lcs_config_t baseline;
+static char error[256];
+
+static void initialize(void)
+{
+    lcs_config_init_defaults(&baseline);
+    snprintf(baseline.cluster_name, sizeof(baseline.cluster_name), "agreement-test");
+    snprintf(baseline.self_name, sizeof(baseline.self_name), "node0");
+    baseline.node_count = 3;
+    for (size_t i = 0; i < 3; i++)
+    {
+        snprintf(baseline.nodes[i].name, sizeof(baseline.nodes[i].name), "node%zu", i);
+        snprintf(baseline.nodes[i].address, sizeof(baseline.nodes[i].address), "127.0.0.1");
+        baseline.nodes[i].port = 3322;
+        baseline.nodes[i].role = i == 2 ? LCS_NODE_QUORUM_ONLY : LCS_NODE_FULL;
+    }
+    baseline.resource_count = 1;
+    snprintf(baseline.resources[0].name, sizeof(baseline.resources[0].name), "vip");
+    snprintf(baseline.resources[0].address, sizeof(baseline.resources[0].address), "192.0.2.1/24");
+    snprintf(baseline.resources[0].interface, sizeof(baseline.resources[0].interface), "eth0");
+    baseline.resources[0].type = LCS_RESOURCE_VIP;
+    assert(lcs_config_finalize(&baseline, error, sizeof(error)) == 0);
+    for (size_t i = 0; i < 3; i++)
+    {
+        voter_t *voter = &voters[i];
+        voter->cfg = baseline;
+        snprintf(voter->cfg.self_name, sizeof(voter->cfg.self_name), "node%zu", i);
+        snprintf(voter->directory, sizeof(voter->directory), "/tmp/lcs-agreement-voter.XXXXXX");
+        assert(mkdtemp(voter->directory));
+        assert(lcs_config_store_open(&voter->store, voter->directory, error, sizeof(error)) == 0);
+        assert(lcs_config_agreement_open(&voter->state, &voter->store,
+            &voter->cfg, false, error, sizeof(error)) == -1);
+        assert(strstr(error, "missing"));
+        assert(lcs_config_agreement_open(&voter->state, &voter->store,
+            &voter->cfg, true, error, sizeof(error)) == 0);
+    }
+    assert(lcs_config_value_equal(&voters[0].state.committed, &voters[2].state.committed));
+    assert(!strcmp(voters[0].state.membership, voters[2].state.membership));
+    /* Independently generated SHA-256 vector for the specified compact,
+     * ASCII-escaped, sorted-key membership representation. */
+    assert(!strcmp(voters[0].state.membership,
+        "9652bdedce99187b1b4adcf68aa03de1269536a1ffb252e74e3a8ebb32971480"));
+}
+
+static void reopen(size_t i)
+{
+    voter_t *voter = &voters[i];
+    lcs_config_agreement_close(&voter->state);
+    assert(lcs_config_agreement_open(&voter->state, &voter->store,
+                                     &voter->cfg, false, error, sizeof(error)) == 0);
+}
+
+static void cleanup(void)
+{
+    for (size_t i = 0; i < 3; i++)
+    {
+        voter_t *voter = &voters[i];
+        lcs_config_agreement_close(&voter->state);
+        assert(unlinkat(voter->store.directory_fd, "agreement.json", 0) == 0);
+        assert(unlinkat(voter->store.directory_fd, "lock", 0) == 0);
+        lcs_config_store_close(&voter->store);
+        assert(rmdir(voter->directory) == 0);
+    }
+}
+
+static lcs_config_value_t value(uint64_t revision, const char *request, const char *address)
+{
+    lcs_config_t cfg = baseline;
+    snprintf(cfg.resources[0].address, sizeof(cfg.resources[0].address), "%s", address);
+    char *document;
+    size_t length;
+    assert(lcs_resource_config_encode(&cfg, revision, &document, &length, error, sizeof(error)) == 0);
+    lcs_config_value_t result = {0};
+    assert(lcs_config_value_init(&result, &baseline, request, document, length, error, sizeof(error)) == 0);
+    free(document);
+    return result;
+}
+
+static int promise(lcs_config_proposal_t *proposal, size_t i)
+{
+    lcs_config_agreement_t *state = &voters[i].state;
+    int rc = lcs_config_agreement_prepare(state, proposal->revision, proposal->parent_digest,
+                                          proposal->ballot, error, sizeof(error));
+    if (rc)
+        return rc;
+    return lcs_config_proposal_promise(proposal, &voters[0].state, i,
+        proposal->revision, state->committed.digest, state->promised,
+        state->accepted_ballot, state->accepted.document ? &state->accepted : NULL);
+}
+
+static int accept_proposal(lcs_config_proposal_t *proposal, size_t i, const lcs_config_value_t *selected)
+{
+    int rc = lcs_config_agreement_accept(&voters[i].state, proposal->parent_digest,
+                                          proposal->ballot, selected, error, sizeof(error));
+    if (rc)
+        return rc;
+    return lcs_config_proposal_ack(proposal, &voters[0].state, i, proposal->ballot, selected);
+}
+
+static void test_recovery_of_chosen_value(void)
+{
+    initialize();
+    lcs_config_value_t a = value(1, "request-a", "192.0.2.2/24");
+    lcs_config_value_t b = value(1, "request-b", "192.0.2.3/24");
+    assert(strcmp(a.digest, b.digest));
+    lcs_config_proposal_t first = {0};
+    uint64_t ballot = lcs_config_agreement_next_ballot(&voters[0].state, 0);
+    assert(ballot == 32);
+    assert(lcs_config_proposal_init(&first, &voters[0].state, ballot, &a) == 0);
+    assert(promise(&first, 0) == 0);
+    assert(!lcs_config_proposal_seal(&first, &voters[0].state));
+    assert(promise(&first, 1) == 0);
+    const lcs_config_value_t *selected = lcs_config_proposal_seal(&first, &voters[0].state);
+    assert(selected && lcs_config_value_equal(selected, &a));
+    assert(accept_proposal(&first, 0, selected) == 0);
+    assert(!lcs_config_proposal_chosen(&first, &voters[0].state));
+    assert(accept_proposal(&first, 1, selected) == 0);
+    assert(lcs_config_proposal_chosen(&first, &voters[0].state));
+    /* Coordinator and both acceptors restart before anyone learns the result. */
+    lcs_config_proposal_clear(&first);
+    reopen(0); reopen(1); reopen(2);
+    assert(voters[1].state.accepted_ballot == ballot);
+    lcs_config_proposal_t replacement = {0};
+    uint64_t newer = lcs_config_agreement_next_ballot(&voters[2].state, ballot);
+    assert(lcs_config_proposal_init(&replacement, &voters[2].state, newer, &b) == 0);
+    assert(promise(&replacement, 2) == 0);
+    assert(promise(&replacement, 1) == 0);
+    selected = lcs_config_proposal_seal(&replacement, &voters[0].state);
+    assert(selected && lcs_config_value_equal(selected, &a));
+    assert(!lcs_config_value_equal(selected, &b));
+    assert(accept_proposal(&replacement, 1, selected) == 0);
+    assert(accept_proposal(&replacement, 2, selected) == 0);
+    assert(lcs_config_proposal_chosen(&replacement, &voters[0].state));
+    for (size_t i = 0; i < 3; i++)
+    {
+        assert(lcs_config_agreement_learn(&voters[i].state, replacement.parent_digest,
+            newer, replacement.acknowledgements, selected, error, sizeof(error)) == 0);
+        reopen(i);
+        assert(lcs_config_value_equal(&voters[i].state.committed, &a));
+        assert(voters[i].state.accepted.document == NULL);
+        assert(voters[i].state.promised >= newer);
+        assert(lcs_config_agreement_learn(&voters[i].state, replacement.parent_digest,
+            newer, replacement.acknowledgements, selected, error, sizeof(error)) == 0);
+        assert(lcs_config_agreement_learn(&voters[i].state, replacement.parent_digest,
+            newer, replacement.acknowledgements, &b, error, sizeof(error)) == LCS_CONFIG_REJECTED);
+    }
+    lcs_config_value_t next = value(2, "request-c", "192.0.2.4/24");
+    lcs_config_proposal_t second_slot = {0};
+    uint64_t last = lcs_config_agreement_next_ballot(&voters[0].state, newer);
+    assert(last > newer);
+    assert(lcs_config_proposal_init(&second_slot, &voters[0].state, last, &next) == 0);
+    assert(promise(&second_slot, 0) == 0 && promise(&second_slot, 2) == 0);
+    selected = lcs_config_proposal_seal(&second_slot, &voters[0].state);
+    assert(selected && lcs_config_value_equal(selected, &next));
+    assert(accept_proposal(&second_slot, 0, selected) == 0 && accept_proposal(&second_slot, 2, selected) == 0);
+    assert(lcs_config_agreement_learn(&voters[0].state, second_slot.parent_digest,
+        last, second_slot.acknowledgements, selected, error, sizeof(error)) == 0);
+    assert(lcs_config_agreement_accept(&voters[0].state, replacement.parent_digest,
+        newer, &a, error, sizeof(error)) == LCS_CONFIG_STALE);
+    lcs_config_value_clear(&next);
+    lcs_config_proposal_clear(&second_slot);
+    lcs_config_proposal_clear(&replacement);
+    lcs_config_value_clear(&a); lcs_config_value_clear(&b);
+    cleanup();
+}
+
+static void test_concurrent_proposals(void)
+{
+    initialize();
+    lcs_config_value_t a = value(1, "a", "192.0.2.2/24");
+    lcs_config_value_t b = value(1, "b", "192.0.2.3/24");
+    lcs_config_proposal_t old = {0}, newer = {0};
+    assert(lcs_config_proposal_init(&old, &voters[0].state, 32, &a) == 0);
+    assert(promise(&old, 0) == 0 && promise(&old, 1) == 0);
+    assert(lcs_config_proposal_seal(&old, &voters[0].state));
+    assert(lcs_config_proposal_init(&newer, &voters[1].state, 65, &b) == 0);
+    assert(promise(&newer, 1) == 0 && promise(&newer, 2) == 0);
+    assert(lcs_config_proposal_seal(&newer, &voters[0].state));
+    assert(accept_proposal(&old, 0, &a) == 0);
+    assert(accept_proposal(&old, 1, &a) == LCS_CONFIG_REJECTED);
+    assert(!lcs_config_proposal_chosen(&old, &voters[0].state));
+    assert(lcs_config_agreement_accept(&voters[0].state, old.parent_digest,
+        32, &b, error, sizeof(error)) == LCS_CONFIG_REJECTED);
+    assert(accept_proposal(&newer, 1, &b) == 0 && accept_proposal(&newer, 2, &b) == 0);
+    assert(lcs_config_proposal_chosen(&newer, &voters[0].state));
+    assert(lcs_config_agreement_learn(&voters[0].state, newer.parent_digest,
+        65, 1, &b, error, sizeof(error)) == -1);
+    assert(lcs_config_agreement_learn(&voters[0].state, newer.parent_digest,
+        65, 0x80000003u, &b, error, sizeof(error)) == -1);
+    for (size_t i = 0; i < 3; i++)
+        assert(lcs_config_agreement_learn(&voters[i].state, newer.parent_digest,
+            65, newer.acknowledgements, &b, error, sizeof(error)) == 0);
+    assert(lcs_config_proposal_ack(&newer, &voters[0].state, 0, 65, &a) == -1);
+    lcs_config_proposal_clear(&old); lcs_config_proposal_clear(&newer);
+    lcs_config_value_clear(&a); lcs_config_value_clear(&b);
+    cleanup();
+}
+
+static void test_failed_durable_write(void)
+{
+    initialize();
+    lcs_config_agreement_t *state = &voters[0].state;
+    char parent[65];
+    snprintf(parent, sizeof(parent), "%s", state->committed.digest);
+    fail_sync = 1;
+    assert(lcs_config_agreement_prepare(state, 1, parent, 32, error, sizeof(error)) == -1);
+    assert(state->poisoned && state->promised == 0);
+    assert(lcs_config_agreement_prepare(state, 1, parent, 64, error, sizeof(error)) == -1);
+    assert(lcs_config_agreement_next_ballot(state, 0) == 0);
+    reopen(0);
+    assert(!state->poisoned && state->promised == 0);
+    assert(lcs_config_agreement_prepare(state, 1, parent, 64, error, sizeof(error)) == 0);
+    lcs_config_value_t a = value(1, "a", "192.0.2.2/24");
+    assert(!strcmp(a.digest,
+        "f2faf60fa11e01e4f420474e363b0016b21743700ccc6cf813a992844d710208"));
+    lcs_config_value_t b = value(1, "b", "192.0.2.3/24");
+    fail_sync = 2; /* File replaced; fsync(directory) failed. */
+    assert(lcs_config_agreement_accept(state, parent, 64, &a, error, sizeof(error)) == -1);
+    assert(state->poisoned && state->accepted_ballot == 0);
+    reopen(0);
+    assert(state->accepted_ballot == 64 && lcs_config_value_equal(&state->accepted, &a));
+    assert(lcs_config_agreement_accept(state, parent, 64, &b, error, sizeof(error)) == LCS_CONFIG_REJECTED);
+    assert(lcs_config_agreement_prepare(state, 1, parent, 32, error, sizeof(error)) == LCS_CONFIG_REJECTED);
+    assert(lcs_config_agreement_next_ballot(state, UINT64_MAX) == 0);
+    assert(lcs_config_agreement_prepare(state, 1, parent, 31, error, sizeof(error)) == -1);
+    assert(lcs_config_agreement_prepare(state, 1, parent, 35, error, sizeof(error)) == -1);
+    assert(lcs_config_agreement_prepare(state, 2, parent, 96, error, sizeof(error)) == LCS_CONFIG_REJECTED);
+    lcs_config_value_clear(&a); lcs_config_value_clear(&b);
+    cleanup();
+}
+
+static void test_corrupt_and_foreign_journal(void)
+{
+    initialize();
+    voter_t *voter = &voters[0];
+    char *original;
+    size_t length;
+    assert(lcs_config_store_read(&voter->store, "agreement.json", &original,
+        &length, LCS_CONFIG_JOURNAL_MAX, error, sizeof(error)) == 0);
+    json_error_t parse_error;
+    json_t *root = json_loadb(original, length, 0, &parse_error);
+    assert(root);
+    assert(json_object_set_new(root, "promised", json_string("32")) == 0);
+    char *corrupt = json_dumps(root, JSON_COMPACT);
+    assert(corrupt);
+    lcs_config_agreement_close(&voter->state);
+    assert(lcs_config_store_write(&voter->store, "agreement.json", corrupt,
+        strlen(corrupt), error, sizeof(error)) == 0);
+    assert(lcs_config_agreement_open(&voter->state, &voter->store,
+        &voter->cfg, false, error, sizeof(error)) == -1);
+    assert(strstr(error, "corrupt"));
+    assert(lcs_config_store_write(&voter->store, "agreement.json", original,
+        length, error, sizeof(error)) == 0);
+    assert(lcs_config_agreement_open(&voter->state, &voter->store,
+        &voters[1].cfg, false, error, sizeof(error)) == -1);
+    voter->cfg.peer_timeout_ms++;
+    assert(lcs_config_agreement_open(&voter->state, &voter->store,
+        &voter->cfg, false, error, sizeof(error)) == -1);
+    voter->cfg.peer_timeout_ms--;
+    assert(lcs_config_agreement_open(&voter->state, &voter->store,
+        &voter->cfg, false, error, sizeof(error)) == 0);
+    free(original); free(corrupt); json_decref(root);
+    cleanup();
+}
+
+static void test_duplicate_and_conflicting_replies(void)
+{
+    initialize();
+    lcs_config_value_t a = value(1, "a", "192.0.2.2/24");
+    lcs_config_value_t b = value(1, "b", "192.0.2.3/24");
+    lcs_config_proposal_t proposal = {0};
+    assert(lcs_config_proposal_init(&proposal, &voters[0].state, 64, &a) == 0);
+    lcs_config_proposal_t wrong_owner = {0};
+    assert(lcs_config_proposal_init(&wrong_owner, &voters[1].state, 64, &a) == -1);
+    assert(lcs_config_proposal_promise(&proposal, &voters[0].state, 0, 1,
+        proposal.parent_digest, 64, 32, &a) == 0);
+    assert(lcs_config_proposal_promise(&proposal, &voters[0].state, 0, 1,
+        proposal.parent_digest, 64, 32, &a) == LCS_CONFIG_REJECTED);
+    assert(!lcs_config_proposal_seal(&proposal, &voters[0].state));
+    assert(lcs_config_proposal_promise(&proposal, &voters[0].state, 1, 1,
+        proposal.parent_digest, 64, 32, &b) == -1);
+    assert(proposal.failed && !lcs_config_proposal_seal(&proposal, &voters[0].state));
+    lcs_config_proposal_clear(&proposal);
+    lcs_config_value_clear(&a); lcs_config_value_clear(&b);
+    cleanup();
+}
+
+static int await_worker(lcs_config_agreement_worker_t *worker, lcs_config_agreement_t *state,
+                         int *result)
+{
+    for (unsigned i = 0; i < 5000; i++)
+    {
+        int rc = lcs_config_agreement_worker_poll(worker, state, result, error, sizeof(error));
+        if (rc)
+            return rc;
+        usleep(1000);
+    }
+    assert(!"storage worker timed out");
+    return -1;
+}
+
+static lcs_config_value_t large_value(uint64_t revision, const char *request)
+{
+    lcs_config_t cfg = baseline;
+    cfg.resource_count = 32;
+    memset(cfg.resources, 0, sizeof(cfg.resources));
+    for (size_t i = 0; i < 32; i++)
+    {
+        lcs_resource_config_t *resource = &cfg.resources[i];
+        snprintf(resource->name, sizeof(resource->name), "vip%02zu", i);
+        snprintf(resource->address, sizeof(resource->address), "192.0.2.%zu/32", i + 1);
+        snprintf(resource->interface, sizeof(resource->interface), "eth0");
+        resource->type = LCS_RESOURCE_VIP;
+        char *hooks[] = {resource->pre_start, resource->post_start,
+                         resource->pre_stop, resource->post_stop};
+        for (size_t j = 0; j < 4; j++)
+        {
+            memset(hooks[j], 'x', LCS_PATH_MAX);
+            hooks[j][0] = '/';
+            hooks[j][LCS_PATH_MAX] = '\0';
+        }
+    }
+    char *document;
+    size_t length;
+    assert(lcs_resource_config_encode(&cfg, revision, &document, &length, error, sizeof(error)) == 0);
+    lcs_config_value_t result = {0};
+    assert(lcs_config_value_init(&result, &baseline, request, document, length, error, sizeof(error)) == 0);
+    free(document);
+    return result;
+}
+
+static void test_background_durability(void)
+{
+    initialize();
+    lcs_config_agreement_t *state = &voters[0].state;
+    lcs_config_value_t first = large_value(1, "large-first");
+    char parent[65];
+    snprintf(parent, sizeof(parent), "%s", state->committed.digest);
+    assert(lcs_config_agreement_accept(state, parent, 32, &first, error, sizeof(error)) == 0);
+    assert(lcs_config_agreement_learn(state, parent, 32, 3, &first, error, sizeof(error)) == 0);
+    lcs_config_value_t second = large_value(2, "large-second");
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_ACCEPT,
+        .revision = 2, .ballot = 64, .value = &second };
+    snprintf(job.parent_digest, sizeof(job.parent_digest), "%s", state->committed.digest);
+    assert(lcs_config_agreement_worker_start(&worker, state, &job, error, sizeof(error)) == 0);
+    assert(state->promised == 32 && !state->accepted.document);
+    assert(lcs_config_agreement_worker_start(&worker, state, &job, error, sizeof(error)) == 1);
+    int result = -999;
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(state->promised == 64 && lcs_config_value_equal(&state->accepted, &second));
+    char *record;
+    size_t length;
+    assert(lcs_config_agreement_export(state, &record, &length, error, sizeof(error)) == 0);
+    assert(length > 65536); /* Result spans many nonblocking pipe reads. */
+    char *older_record = record;
+    size_t older_length = length;
+    reopen(0);
+    assert(lcs_config_value_equal(&state->accepted, &second));
+    assert(lcs_config_agreement_prepare(state, 2, state->committed.digest, 96,
+                                        error, sizeof(error)) == 0);
+    assert(lcs_config_agreement_import(state, older_record, older_length, error, sizeof(error)) == -1);
+    assert(state->poisoned && strstr(error, "newer durable state"));
+    free(older_record);
+    reopen(0);
+
+    job.action = LCS_CONFIG_PREPARE;
+    job.ballot = 128;
+    job.value = NULL;
+    assert(lcs_config_agreement_worker_start(&worker, state, &job, error, sizeof(error)) == 0);
+    lcs_config_agreement_worker_cancel(&worker, state);
+    assert(state->poisoned);
+    if (worker.pid > 0)
+        assert(await_worker(&worker, state, &result) == -1 && worker.pid == 0);
+    reopen(0);
+    assert(lcs_config_value_equal(&state->accepted, &second));
+    job.ballot = 160;
+    fail_sync = 1;
+    assert(lcs_config_agreement_worker_start(&worker, state, &job, error, sizeof(error)) == 0);
+    fail_sync = 0; /* The child inherited its independent injected failure. */
+    assert(await_worker(&worker, state, &result) == -1 && state->poisoned);
+    reopen(0);
+    assert(!state->poisoned && lcs_config_value_equal(&state->accepted, &second));
+    lcs_config_agreement_worker_cancel(&worker, state);
+    lcs_config_value_clear(&first); lcs_config_value_clear(&second);
+    cleanup();
+}
+
+static void test_snapshot_transfer(void)
+{
+    initialize();
+    lcs_config_value_t original = large_value(1, "snapshot-transfer"), decoded = {0};
+    lcs_config_transfer_metadata_t metadata = { .kind = LCS_CONFIG_TRANSFER_ACCEPT,
+        .id = 14, .revision = 1, .ballot = 32, .length = (uint32_t)original.length };
+    snprintf(metadata.membership, sizeof(metadata.membership), "%s", voters[0].state.membership);
+    snprintf(metadata.parent_digest, sizeof(metadata.parent_digest), "%s", voters[0].state.committed.digest);
+    snprintf(metadata.value_digest, sizeof(metadata.value_digest), "%s", original.digest);
+    snprintf(metadata.request_id, sizeof(metadata.request_id), "%s", original.request_id);
+    unsigned char begin[512], chunk[LCS_CONFIG_TRANSFER_CHUNK_MAX + 32];
+    size_t begin_len, chunk_len;
+    assert(lcs_config_transfer_encode_begin(&metadata, begin, sizeof(begin), &begin_len) == 0);
+    lcs_config_transfer_metadata_t incoming;
+    for (size_t i = 0; i < begin_len; i++)
+        assert(lcs_config_transfer_decode_begin(begin, i, &incoming) == -1);
+    assert(lcs_config_transfer_decode_begin(begin, begin_len, &incoming) == 0);
+    begin[begin_len] = 0;
+    assert(lcs_config_transfer_decode_begin(begin, begin_len + 1, &incoming) == -1);
+    begin[begin_len - 1] = 'x'; /* Nonzero padding is not a second identity. */
+    assert(lcs_config_transfer_decode_begin(begin, begin_len, &incoming) == -1);
+    begin[begin_len - 1] = 0;
+    begin[3] = 1;
+    assert(lcs_config_transfer_decode_begin(begin, begin_len, &incoming) == -1);
+    begin[3] = 0;
+    lcs_config_transfer_t transfer = {0};
+    assert(lcs_config_transfer_begin(&transfer, &metadata, metadata.membership, 100) == 0);
+    assert(lcs_config_transfer_encode_chunk(metadata.id, 0, original.document, 37,
+        chunk, sizeof(chunk), &chunk_len) == 0);
+    assert(chunk_len <= LCS_MAX_FRAME);
+    assert(lcs_config_transfer_chunk(&transfer, chunk, chunk_len, 101) == 0);
+    assert(transfer.used == 37);
+    uint64_t deadline = transfer.deadline_ms;
+    assert(lcs_config_transfer_begin(&transfer, &metadata, metadata.membership, 200) == 0);
+    assert(transfer.used == 37 && transfer.deadline_ms == deadline);
+    assert(lcs_config_transfer_chunk(&transfer, chunk, chunk_len, 300) == 0);
+    assert(transfer.used == 37 && transfer.deadline_ms == deadline);
+    chunk[chunk_len - 1] ^= 1;
+    assert(lcs_config_transfer_chunk(&transfer, chunk, chunk_len, 300) == -1);
+    chunk[chunk_len - 1] ^= 1;
+    incoming = metadata;
+    incoming.id++;
+    assert(lcs_config_transfer_begin(&transfer, &incoming, metadata.membership, 300) == 1);
+    assert(lcs_config_transfer_encode_chunk(metadata.id + 1, 37, original.document + 37, 10,
+        chunk, sizeof(chunk), &chunk_len) == 0);
+    assert(lcs_config_transfer_chunk(&transfer, chunk, chunk_len, 300) == -1);
+    assert(lcs_config_transfer_encode_chunk(metadata.id, 38, original.document + 38, 10,
+        chunk, sizeof(chunk), &chunk_len) == 0);
+    assert(lcs_config_transfer_chunk(&transfer, chunk, chunk_len, 300) == -1);
+    assert(lcs_config_transfer_finish(&transfer, metadata.id, &baseline, 300,
+        &decoded, error, sizeof(error)) == -1);
+    assert(transfer.document && !decoded.document);
+    for (size_t offset = 37; offset < original.length;)
+    {
+        size_t count = original.length - offset;
+        if (count > LCS_CONFIG_TRANSFER_CHUNK_MAX)
+            count = LCS_CONFIG_TRANSFER_CHUNK_MAX;
+        assert(lcs_config_transfer_encode_chunk(metadata.id, (uint32_t)offset,
+            original.document + offset, count, chunk, sizeof(chunk), &chunk_len) == 0);
+        assert(lcs_config_transfer_chunk(&transfer, chunk, chunk_len, 400) == 0);
+        offset += count;
+    }
+    assert(lcs_config_transfer_finish(&transfer, metadata.id + 1, &baseline, 401,
+        &decoded, error, sizeof(error)) == -1);
+    assert(lcs_config_transfer_finish(&transfer, metadata.id, &baseline, 401,
+        &decoded, error, sizeof(error)) == 0);
+    assert(lcs_config_value_equal(&decoded, &original) && !transfer.document);
+    lcs_config_value_clear(&decoded);
+
+    incoming = metadata;
+    incoming.length = LCS_RESOURCE_DOCUMENT_MAX + 1;
+    assert(lcs_config_transfer_begin(&transfer, &incoming, metadata.membership, 500) == -1);
+    incoming.length = LCS_RESOURCE_DOCUMENT_MAX;
+    assert(lcs_config_transfer_begin(&transfer, &incoming, metadata.membership, 500) == 0);
+    assert(!lcs_config_transfer_expire(&transfer, 500 + LCS_CONFIG_TRANSFER_TIMEOUT_MS - 1));
+    assert(lcs_config_transfer_expire(&transfer, 500 + LCS_CONFIG_TRANSFER_TIMEOUT_MS));
+    assert(!transfer.document);
+    assert(lcs_config_transfer_begin(&transfer, &metadata, metadata.membership, UINT64_MAX - 1) == -1);
+    char other_membership[65];
+    memset(other_membership, '0', 64); other_membership[64] = '\0';
+    assert(lcs_config_transfer_begin(&transfer, &metadata, other_membership, 600) == -1);
+    /* A valid JSON payload with a mismatched declared revision is not a value. */
+    incoming = metadata;
+    incoming.revision = 2;
+    assert(lcs_config_transfer_begin(&transfer, &incoming, incoming.membership, 600) == 0);
+    for (size_t offset = 0; offset < original.length;)
+    {
+        size_t count = original.length - offset;
+        if (count > LCS_CONFIG_TRANSFER_CHUNK_MAX)
+            count = LCS_CONFIG_TRANSFER_CHUNK_MAX;
+        assert(lcs_config_transfer_encode_chunk(metadata.id, (uint32_t)offset,
+            original.document + offset, count, chunk, sizeof(chunk), &chunk_len) == 0);
+        assert(lcs_config_transfer_chunk(&transfer, chunk, chunk_len, 601) == 0);
+        offset += count;
+    }
+    assert(lcs_config_transfer_finish(&transfer, metadata.id, &baseline, 602,
+        &decoded, error, sizeof(error)) == -1);
+    assert(!decoded.document && !transfer.document && strstr(error, "mismatch"));
+    lcs_config_transfer_clear(&transfer);
+    lcs_config_value_clear(&original);
+    cleanup();
+}
+
+static uint32_t random_state = UINT32_C(0xc0dec0de);
+static uint32_t next_random(void)
+{
+    random_state = random_state * UINT32_C(1664525) + UINT32_C(1013904223);
+    return random_state;
+}
+
+static void test_reordered_rounds_and_restarts(void)
+{
+    initialize();
+    lcs_config_value_t a = value(1, "schedule-a", "192.0.2.2/24");
+    lcs_config_value_t b = value(1, "schedule-b", "192.0.2.3/24");
+    lcs_config_value_t chosen = {0};
+    char parent[65];
+    snprintf(parent, sizeof(parent), "%s", voters[0].state.committed.digest);
+    uint64_t observed = 0, chosen_ballot = 0;
+    uint32_t chosen_votes = 0;
+    bool learned_one = false;
+    for (unsigned round = 0; round < 64; round++)
+    {
+        size_t coordinator = next_random() % 3;
+        const lcs_config_value_t *wanted = next_random() & 1 ? &a : &b;
+        uint64_t ballot = lcs_config_agreement_next_ballot(&voters[coordinator].state, observed);
+        lcs_config_proposal_t proposal = {0};
+        if (lcs_config_proposal_init(&proposal, &voters[coordinator].state, ballot, wanted))
+            continue; /* A node that already learned no longer proposes slot 1. */
+        observed = ballot;
+        /* Persist the coordinator's own promise before any remote request. */
+        assert(promise(&proposal, coordinator) == 0);
+        uint32_t prepare_mask = ((next_random() >> 8) & 7) | (1u << coordinator);
+        size_t first = next_random() % 3;
+        for (size_t step = 0; step < 3; step++)
+        {
+            size_t i = (first + step) % 3;
+            if (i != coordinator && (prepare_mask & (1u << i)))
+                assert(promise(&proposal, i) >= 0);
+            if ((next_random() & 3) == 0)
+                reopen(i);
+        }
+        const lcs_config_value_t *selected = lcs_config_proposal_seal(&proposal, &voters[0].state);
+        if (selected)
+        {
+            uint32_t accept_mask = (next_random() >> 8) & 7;
+            for (size_t step = 0; step < 3; step++)
+            {
+                size_t i = (first + step) % 3;
+                if (accept_mask & (1u << i))
+                    assert(accept_proposal(&proposal, i, selected) >= 0);
+                if ((next_random() & 3) == 0)
+                    reopen(i);
+            }
+            if (lcs_config_proposal_chosen(&proposal, &voters[0].state))
+            {
+                if (!chosen.document)
+                    assert(lcs_config_value_copy(&chosen, selected) == 0);
+                assert(lcs_config_value_equal(&chosen, selected));
+                chosen_ballot = ballot;
+                chosen_votes = proposal.acknowledgements;
+                if (!learned_one)
+                {
+                    size_t learner = next_random() % 3;
+                    assert(lcs_config_agreement_learn(&voters[learner].state, parent,
+                        ballot, chosen_votes, selected, error, sizeof(error)) == 0);
+                    reopen(learner);
+                    learned_one = true;
+                }
+            }
+        }
+        lcs_config_proposal_clear(&proposal);
+    }
+    assert(chosen.document && learned_one);
+    for (size_t i = 0; i < 3; i++)
+    {
+        assert(lcs_config_agreement_learn(&voters[i].state, parent, chosen_ballot,
+            chosen_votes, &chosen, error, sizeof(error)) == 0);
+        reopen(i);
+        assert(lcs_config_value_equal(&voters[i].state.committed, &chosen));
+    }
+    lcs_config_value_clear(&a); lcs_config_value_clear(&b); lcs_config_value_clear(&chosen);
+    cleanup();
+}
+
+static void test_32_member_masks(void)
+{
+    initialize();
+    lcs_config_t cfg = baseline;
+    cfg.node_count = 32;
+    snprintf(cfg.self_name, sizeof(cfg.self_name), "node00");
+    for (size_t i = 0; i < cfg.node_count; i++)
+    {
+        snprintf(cfg.nodes[i].name, sizeof(cfg.nodes[i].name), "node%02zu", i);
+        snprintf(cfg.nodes[i].address, sizeof(cfg.nodes[i].address), "127.0.0.1");
+        cfg.nodes[i].port = 3322;
+        cfg.nodes[i].role = i ? LCS_NODE_QUORUM_ONLY : LCS_NODE_FULL;
+    }
+    assert(lcs_config_finalize(&cfg, error, sizeof(error)) == 0);
+    char directory[] = "/tmp/lcs-agreement-mask.XXXXXX";
+    assert(mkdtemp(directory));
+    lcs_config_store_t store;
+    lcs_config_agreement_t state;
+    assert(lcs_config_store_open(&store, directory, error, sizeof(error)) == 0);
+    assert(lcs_config_agreement_open(&state, &store, &cfg, true, error, sizeof(error)) == 0);
+    lcs_config_value_t first = value(1, "mask-first", "192.0.2.2/24");
+    char parent[65];
+    snprintf(parent, sizeof(parent), "%s", state.committed.digest);
+    assert(lcs_config_agreement_learn(&state, parent, 32, 0xffffu, &first,
+                                      error, sizeof(error)) == -1);
+    assert(lcs_config_agreement_learn(&state, parent, 32, UINT32_MAX - 1, &first,
+                                      error, sizeof(error)) == -1); /* No full member. */
+    assert(lcs_config_agreement_learn(&state, parent, 32, 0x1ffffu, &first,
+                                      error, sizeof(error)) == 0);
+    lcs_config_value_t second = value(2, "mask-second", "192.0.2.3/24");
+    snprintf(parent, sizeof(parent), "%s", state.committed.digest);
+    assert(lcs_config_agreement_learn(&state, parent, 95, UINT32_MAX, &second,
+                                      error, sizeof(error)) == 0); /* Proposer index 31. */
+    lcs_config_agreement_close(&state);
+    assert(lcs_config_agreement_open(&state, &store, &cfg, false, error, sizeof(error)) == 0);
+    assert(state.committed_voters == UINT32_MAX);
+    lcs_config_agreement_close(&state);
+    lcs_config_value_clear(&first); lcs_config_value_clear(&second);
+    assert(unlinkat(store.directory_fd, "agreement.json", 0) == 0);
+    assert(unlinkat(store.directory_fd, "lock", 0) == 0);
+    lcs_config_store_close(&store);
+    assert(rmdir(directory) == 0);
+    cleanup();
+}
+
+static lcs_config_value_t configuration_value(const lcs_config_t *cfg, uint64_t revision,
+                                               const char *request)
+{
+    char *document;
+    size_t length;
+    assert(lcs_resource_config_encode(cfg, revision, &document, &length, error, sizeof(error)) == 0);
+    lcs_config_value_t result = {0};
+    assert(lcs_config_value_init(&result, &baseline, request, document, length, error, sizeof(error)) == 0);
+    free(document);
+    return result;
+}
+
+static void choose_identity_value(const lcs_config_value_t *selected, uint64_t ballot)
+{
+    char parent[65];
+    snprintf(parent, sizeof(parent), "%s", voters[0].state.committed.digest);
+    for (size_t i = 0; i < 2; i++)
+        assert(lcs_config_agreement_accept(&voters[i].state, parent, ballot, selected,
+                                            error, sizeof(error)) == 0);
+    for (size_t i = 0; i < 3; i++)
+    {
+        assert(lcs_config_agreement_learn(&voters[i].state, parent, ballot, 3, selected,
+                                           error, sizeof(error)) == 0);
+        reopen(i);
+        assert(lcs_config_value_equal(&voters[i].state.committed, selected));
+    }
+}
+
+static void test_incarnation_agreement(void)
+{
+    initialize();
+    static lcs_config_t active, next, forged;
+    assert(lcs_resource_config_assign_identities(&baseline, 0, &baseline,
+                                                  &active, error, sizeof(error)) == 0);
+    forged = active;
+    strcpy(forged.resources[0].address, "192.0.2.99/24");
+    lcs_config_value_t invalid = configuration_value(&forged, 1, "activation-edit");
+    assert(lcs_config_agreement_accept(&voters[0].state, voters[0].state.committed.digest,
+                                       32, &invalid, error, sizeof(error)) == -1);
+    assert(strstr(error, "preserve complete"));
+    lcs_config_value_clear(&invalid);
+    lcs_config_value_t activation = configuration_value(&active, 1, "activation");
+    choose_identity_value(&activation, 32);
+    lcs_config_value_clear(&activation);
+    /* A legacy successor remains syntactically valid, but no longer belongs to
+     * this activated history. Reject it before both acceptance and learning. */
+    invalid = value(2, "downgrade", "192.0.2.1/24");
+    char parent[65];
+    snprintf(parent, sizeof(parent), "%s", voters[0].state.committed.digest);
+    assert(lcs_config_agreement_accept(&voters[0].state, parent, 64, &invalid,
+                                       error, sizeof(error)) == -1);
+    assert(strstr(error, "revert"));
+    assert(lcs_config_agreement_learn(&voters[0].state, parent, 64, 3, &invalid,
+                                      error, sizeof(error)) == -1);
+    lcs_config_proposal_t proposal = {0};
+    assert(lcs_config_proposal_init(&proposal, &voters[0].state, 64, &invalid) == -1);
+    lcs_config_value_clear(&invalid);
+    const char *remove[] = {"resource", "delete", "vip"};
+    assert(lcs_resource_config_edit(&active, 1, 1, 3, remove, &next, error, sizeof(error)) == 0);
+    lcs_config_value_t deletion = configuration_value(&next, 2, "delete-vip");
+    choose_identity_value(&deletion, 64);
+    lcs_config_value_clear(&deletion);
+    active = next;
+    const char *create[] = {"resource", "create", "vip", "vip", "address=192.0.2.1/24", "interface=eth0"};
+    assert(lcs_resource_config_edit(&active, 2, 2, 6, create, &next, error, sizeof(error)) == 0);
+    assert(next.resources[0].birth_revision == 3);
+    forged = next;
+    forged.resources[0].birth_revision = 0; /* Attempt to revive old grants. */
+    invalid = configuration_value(&forged, 3, "revive-old-vip");
+    snprintf(parent, sizeof(parent), "%s", voters[0].state.committed.digest);
+    assert(lcs_config_agreement_accept(&voters[0].state, parent, 96, &invalid,
+                                       error, sizeof(error)) == -1);
+    assert(strstr(error, "incarnation"));
+    assert(!voters[0].state.accepted_ballot);
+    lcs_config_value_clear(&invalid);
+    lcs_config_value_t recreation = configuration_value(&next, 3, "recreate-vip");
+    assert(lcs_config_agreement_accept(&voters[0].state, parent, 96, &recreation,
+                                       error, sizeof(error)) == 0);
+    reopen(0); /* Accepted identities also survive journal restart. */
+    assert(lcs_config_value_equal(&voters[0].state.accepted, &recreation));
+    choose_identity_value(&recreation, 96);
+    lcs_config_value_clear(&recreation);
+    cleanup();
+}
+
+static void test_application_catalog(void)
+{
+    initialize();
+    lcs_config_application_t application = {0};
+    assert(lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)) == -1);
+    assert(lcs_config_application_open(&application, &voters[0].state, true, error, sizeof(error)) == 0);
+    assert(application.applied.revision == 0);
+    static lcs_config_t active, next, old, target;
+    lcs_config_application_plan_t plan;
+    assert(lcs_resource_config_assign_identities(&baseline, 0, &baseline, &active, error, sizeof(error)) == 0);
+    lcs_config_value_t selected = configuration_value(&active, 1, "activation");
+    choose_identity_value(&selected, 32);
+    lcs_config_value_clear(&selected);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(!plan.cleanup && !plan.drain && plan.new_to_old[0] == 0);
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == 0);
+    /* Add a dependent, and retain the old VIP's stop hook for future cleanup. */
+    next = active;
+    strcpy(next.resources[0].post_stop, "/bin/true");
+    next.resource_count = 3;
+    lcs_resource_config_t *app = &next.resources[1];
+    memset(app, 0, sizeof(*app));
+    app->type = LCS_RESOURCE_SERVICE;
+    strcpy(app->name, "app");
+    strcpy(app->systemd_unit, "app.service");
+    strcpy(app->depends_on_names[0], "vip");
+    app->depends_on_count = 1;
+    lcs_resource_config_t *frontend = &next.resources[2];
+    *frontend = *app;
+    strcpy(frontend->name, "frontend");
+    strcpy(frontend->systemd_unit, "frontend.service");
+    strcpy(frontend->depends_on_names[0], "app");
+    assert(lcs_resource_config_assign_identities(&active, 1, &next, &active, error, sizeof(error)) == 0);
+    selected = configuration_value(&active, 2, "create-dependent");
+    choose_identity_value(&selected, 64);
+    lcs_config_value_clear(&selected);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == 0);
+    next = active;
+    next.resources[0].depends_on_count = 0;
+    lcs_config_value_t policy = configuration_value(&next, 3, "dependency-edit");
+    lcs_config_application_t staged = application;
+    staged.pending = policy;
+    assert(lcs_config_application_plan(&staged, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(!plan.cleanup && plan.drain == 3); /* app plus transitive frontend. */
+    lcs_config_value_clear(&policy);
+    const char *replace[] = {"resource", "update", "vip", "address=192.0.2.9/24"};
+    assert(lcs_resource_config_edit(&active, 2, 2, 4, replace, &next, error, sizeof(error)) == 0);
+    active = next;
+    selected = configuration_value(&active, 3, "replace-vip");
+    choose_identity_value(&selected, 96);
+    lcs_config_value_clear(&selected);
+    fail_sync = 1;
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == -1);
+    assert(application.poisoned && !application.pending.document && application.applied.revision == 2);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == -1);
+    lcs_config_application_close(&application);
+    assert(lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)) == 0);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0); /* Retry. */
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(plan.cleanup == 4 && plan.drain == 7);
+    assert(!strcmp(old.resources[2].post_stop, "/bin/true"));
+    assert(!strcmp(old.resources[2].address, "192.0.2.1/24"));
+    assert(!strcmp(target.resources[2].address, "192.0.2.9/24"));
+    assert(plan.new_to_old[0] == 0 && plan.new_to_old[1] == 1 && plan.new_to_old[2] == -1);
+    /* Atomic bulk deletion of the dependent chain. */
+    next = active;
+    next.resources[0] = active.resources[2];
+    next.resource_count = 1;
+    assert(lcs_resource_config_assign_identities(&active, 3, &next, &next, error, sizeof(error)) == 0);
+    active = next;
+    selected = configuration_value(&active, 4, "delete-dependent");
+    choose_identity_value(&selected, 128);
+    lcs_config_value_clear(&selected);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 1);
+    assert(application.pending.revision == 3 && application.applied.revision == 2);
+    lcs_config_application_close(&application); /* Crash during cleanup. */
+    assert(lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)) == 0);
+    assert(application.pending.revision == 3 && application.applied.revision == 2);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(plan.cleanup == 4 && plan.drain == 7);
+    assert(lcs_config_application_finish(&application, "wrong", error, sizeof(error)) == -1);
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == 0);
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(plan.cleanup == 3 && plan.new_to_old[0] == 2);
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == 0);
+    const char *remove_vip[] = {"resource", "delete", "vip"};
+    assert(lcs_resource_config_edit(&active, 4, 4, 3, remove_vip, &next, error, sizeof(error)) == 0);
+    active = next;
+    selected = configuration_value(&active, 5, "delete-vip");
+    choose_identity_value(&selected, 160);
+    lcs_config_value_clear(&selected);
+    const char *create_vip[] = {"resource", "create", "vip", "vip", "address=192.0.2.9/24", "interface=eth0"};
+    assert(lcs_resource_config_edit(&active, 5, 5, 6, create_vip, &next, error, sizeof(error)) == 0);
+    active = next;
+    selected = configuration_value(&active, 6, "recreate-vip");
+    choose_identity_value(&selected, 192);
+    lcs_config_value_clear(&selected);
+    /* Catch up directly from 4 to 6: identical backend, different incarnation. */
+    assert(lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)) == 0);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == 0);
+    assert(plan.cleanup == 1 && plan.drain == 1 && plan.new_to_old[0] == -1);
+    assert(old.resources[0].birth_revision == 3 && target.resources[0].birth_revision == 6);
+    fail_sync = 2; /* Rename succeeded, directory fsync outcome uncertain. */
+    assert(lcs_config_application_finish(&application, application.pending.digest, error, sizeof(error)) == -1);
+    assert(application.poisoned && application.applied.revision == 4 && application.pending.revision == 6);
+    assert(lcs_config_application_plan(&application, &old, &target, &plan, error, sizeof(error)) == -1);
+    lcs_config_application_close(&application);
+    assert(lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)) == 0);
+    assert(application.applied.revision == 6 && !application.pending.document);
+    char *catalog;
+    size_t length;
+    assert(lcs_config_store_read(&voters[0].store, "application.json", &catalog, &length, 3 * 1024 * 1024,
+                                 error, sizeof(error)) == 0);
+    lcs_config_application_close(&application);
+    assert(lcs_config_store_write(&voters[2].store, "application.json", catalog, length, error, sizeof(error)) == 0);
+    lcs_config_application_t foreign = {0};
+    assert(lcs_config_application_open(&foreign, &voters[2].state, false, error, sizeof(error)) == -1);
+    assert(unlinkat(voters[2].store.directory_fd, "application.json", 0) == 0);
+    catalog[length / 2] ^= 1;
+    assert(lcs_config_store_write(&voters[0].store, "application.json", catalog, length, error, sizeof(error)) == 0);
+    assert(lcs_config_application_open(&application, &voters[0].state, true, error, sizeof(error)) == -1);
+    free(catalog);
+    assert(unlinkat(voters[0].store.directory_fd, "application.json", 0) == 0);
+    assert(lcs_config_application_open(&application, &voters[0].state, true, error, sizeof(error)) == -1);
+    assert(strstr(error, "missing"));
+    cleanup();
+}
+
+static void test_application_background_durability(void)
+{
+    initialize();
+    lcs_config_agreement_t *state = &voters[0].state;
+    lcs_config_application_t application = {0};
+    assert(lcs_config_application_open(&application, state, true, error, sizeof(error)) == 0);
+    static lcs_config_t active;
+    assert(lcs_resource_config_assign_identities(&baseline, 0, &baseline, &active, error, sizeof(error)) == 0);
+    lcs_config_value_t selected = configuration_value(&active, 1, "activation");
+    choose_identity_value(&selected, 32);
+    lcs_config_value_clear(&selected);
+    char *before, *pending;
+    size_t before_length, pending_length;
+    assert(lcs_config_application_export(&application, &before, &before_length, error, sizeof(error)) == 0);
+    lcs_config_agreement_worker_t worker;
+    lcs_config_agreement_worker_init(&worker);
+    lcs_config_agreement_job_t job = { .action = LCS_CONFIG_APPLICATION_BEGIN };
+    assert(lcs_config_agreement_worker_start(&worker, state, &job, error, sizeof(error)) == -1);
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    assert(!application.pending.document && application.applied.revision == 0);
+    /* Application and agreement writes share one serialization gate. */
+    lcs_config_agreement_job_t prepare = { .action = LCS_CONFIG_PREPARE, .revision = 2, .ballot = 64 };
+    strcpy(prepare.parent_digest, state->committed.digest);
+    assert(lcs_config_agreement_worker_start(&worker, state, &prepare, error, sizeof(error)) == 1);
+    int result;
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(application.pending.revision == 1 && application.applied.revision == 0);
+    assert(lcs_config_application_export(&application, &pending, &pending_length, error, sizeof(error)) == 0);
+    assert(lcs_config_application_import(&application, state, before, before_length, error, sizeof(error)) == -1);
+    assert(application.pending.revision == 1 && !application.poisoned);
+    assert(lcs_config_application_import(&application, state, pending, pending_length, error, sizeof(error)) == 0);
+    assert(lcs_config_application_import(&application, state, "{broken", 7, error, sizeof(error)) == -1);
+    job.action = LCS_CONFIG_APPLICATION_FINISH;
+    strcpy(job.application_digest, "wrong");
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == -1);
+    strcpy(job.application_digest, application.pending.digest);
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    assert(application.applied.revision == 0);
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(application.applied.revision == 1 && !application.pending.document);
+    assert(lcs_config_application_import(&application, state, pending, pending_length, error, sizeof(error)) == -1);
+    free(before); free(pending);
+    /* A failed child fsync poisons both handles; memory publication must wait. */
+    lcs_config_value_t large = large_value(2, "large-application");
+    static lcs_config_t proposed;
+    uint64_t revision;
+    assert(lcs_resource_config_decode(large.document, large.length, &baseline, &proposed,
+                                       &revision, error, sizeof(error)) == 0);
+    lcs_config_value_clear(&large);
+    assert(lcs_resource_config_assign_identities(&active, 1, &proposed, &active, error, sizeof(error)) == 0);
+    selected = configuration_value(&active, 2, "large-application");
+    choose_identity_value(&selected, 64);
+    lcs_config_value_clear(&selected);
+    job.action = LCS_CONFIG_APPLICATION_BEGIN;
+    fail_sync = 1;
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    fail_sync = 0;
+    assert(await_worker(&worker, state, &result) == -1);
+    assert(state->poisoned && application.poisoned && application.applied.revision == 1);
+    reopen(0);
+    lcs_config_application_close(&application);
+    assert(lcs_config_application_open(&application, state, false, error, sizeof(error)) == 0);
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(lcs_config_application_export(&application, &pending, &pending_length, error, sizeof(error)) == 0);
+    assert(pending_length > 8192); /* Exceeds a typical pipe capacity. */
+    free(pending);
+    job.action = LCS_CONFIG_APPLICATION_FINISH;
+    strcpy(job.application_digest, application.pending.digest);
+    fail_sync = 2; /* Rename durable result uncertain until recovery. */
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    fail_sync = 0;
+    assert(await_worker(&worker, state, &result) == -1);
+    assert(application.applied.revision == 1 && application.pending.revision == 2);
+    assert(application.history[0].document && !application.history[0].revision && !application.history[1].document);
+    reopen(0);
+    lcs_config_application_close(&application);
+    assert(lcs_config_application_open(&application, state, false, error, sizeof(error)) == 0);
+    assert(application.applied.revision == 2 && !application.pending.document);
+    assert(application.history[0].revision == 1 && application.history[1].document && !application.history[1].revision);
+    active.resources[0].priority++;
+    active.resources[0].priority_set = true;
+    selected = configuration_value(&active, 3, "large-policy-change");
+    choose_identity_value(&selected, 96);
+    lcs_config_value_clear(&selected);
+    job.action = LCS_CONFIG_APPLICATION_BEGIN;
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    assert(await_worker(&worker, state, &result) == 1 && result == 0);
+    assert(lcs_config_application_export(&application, &pending, &pending_length, error, sizeof(error)) == 0);
+    assert(pending_length > 65536); /* Retained snapshots exceed the poll budget. */
+    free(pending);
+    /* Cancellation never makes a possibly persisted result safe to reuse. */
+    job.action = LCS_CONFIG_APPLICATION_FINISH;
+    strcpy(job.application_digest, application.pending.digest);
+    assert(lcs_config_agreement_worker_start_application(&worker, state, &application, &job, error, sizeof(error)) == 0);
+    lcs_config_agreement_worker_cancel(&worker, state);
+    assert(application.poisoned && state->poisoned);
+    if (worker.pid > 0)
+        assert(await_worker(&worker, state, &result) == -1 && worker.pid == 0);
+    lcs_config_application_close(&application);
+    assert(unlinkat(voters[0].store.directory_fd, "application.json", 0) == 0);
+    cleanup();
+}
+
+static void test_daemon_configuration_recovery(void)
+{
+    initialize();
+    lcs_config_runtime_t runtime;
+    lcs_config_agreement_t *state = &voters[0].state;
+    /* A journal without its application history cannot be bootstrapped anew. */
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == -1);
+    assert(strstr(error, "catalog missing"));
+    lcs_config_application_t application = {0};
+    assert(lcs_config_application_open(&application, state, true, error, sizeof(error)) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == 0);
+    assert(runtime.requires_recovery && runtime.base != &voters[0].cfg);
+    assert(runtime.agreement.base == runtime.base && runtime.application.base == runtime.base);
+    assert(runtime.application.applied.revision == 0);
+    /* The handles do not borrow mutable daemon resource arrays. */
+    voters[0].cfg.resources[0].priority++;
+    assert(runtime.base->resources[0].priority == baseline.resources[0].priority);
+    voters[0].cfg = baseline;
+    lcs_config_runtime_close(&runtime);
+    static lcs_config_t active;
+    assert(lcs_resource_config_assign_identities(&baseline, 0, &baseline, &active, error, sizeof(error)) == 0);
+    lcs_config_value_t selected = configuration_value(&active, 1, "activation");
+    choose_identity_value(&selected, 32);
+    lcs_config_value_clear(&selected);
+    assert(lcs_config_application_begin(&application, state, error, sizeof(error)) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == 0);
+    assert(runtime.requires_recovery && runtime.agreement.committed.revision == 1);
+    assert(runtime.application.applied.revision == 0 && runtime.application.pending.revision == 1);
+    lcs_config_runtime_close(&runtime);
+    lcs_config_application_close(&application);
+    char *journal, *catalog;
+    size_t journal_length, catalog_length;
+    assert(lcs_config_store_read(&voters[0].store, "agreement.json", &journal, &journal_length,
+                                 LCS_CONFIG_JOURNAL_MAX, error, sizeof(error)) == 0);
+    assert(lcs_config_store_read(&voters[0].store, "application.json", &catalog, &catalog_length,
+                                 LCS_CONFIG_APPLICATION_MAX, error, sizeof(error)) == 0);
+    assert(unlinkat(voters[0].store.directory_fd, "agreement.json", 0) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == -1);
+    assert(strstr(error, "journal is missing"));
+    assert(faccessat(voters[0].store.directory_fd, "agreement.json", F_OK, 0) == -1);
+    assert(lcs_config_store_write(&voters[0].store, "agreement.json", journal, journal_length, error, sizeof(error)) == 0);
+    catalog[catalog_length / 2] ^= 1;
+    assert(lcs_config_store_write(&voters[0].store, "application.json", catalog, catalog_length, error, sizeof(error)) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == -1);
+    assert(strstr(error, "catalog"));
+    assert(unlinkat(voters[0].store.directory_fd, "application.json", 0) == 0);
+    journal[journal_length / 2] ^= 1;
+    assert(lcs_config_store_write(&voters[0].store, "agreement.json", journal, journal_length, error, sizeof(error)) == 0);
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == -1);
+    assert(unlinkat(voters[0].store.directory_fd, "agreement.json", 0) == 0);
+    /* Only genuinely absent records enter the legacy path; open performs no writes. */
+    assert(lcs_config_runtime_open(&runtime, &voters[0].store, &voters[0].cfg, error, sizeof(error)) == 0);
+    assert(!runtime.requires_recovery && !runtime.base);
+    assert(faccessat(voters[0].store.directory_fd, "agreement.json", F_OK, 0) == -1);
+    assert(faccessat(voters[0].store.directory_fd, "application.json", F_OK, 0) == -1);
+    lcs_config_runtime_close(&runtime);
+    journal[journal_length / 2] ^= 1;
+    assert(lcs_config_store_write(&voters[0].store, "agreement.json", journal, journal_length, error, sizeof(error)) == 0);
+    free(journal); free(catalog);
+    cleanup();
+}
+
+
+static char *catalog_with_checksum(json_t *root)
+{
+    json_object_del(root, "checksum");
+    char *canonical = json_dumps(root, JSON_SORT_KEYS | JSON_COMPACT | JSON_ENSURE_ASCII); assert(canonical);
+    unsigned char digest[SHA256_DIGEST_LENGTH]; char hash[65];
+    assert(SHA256((const unsigned char *)canonical, strlen(canonical), digest)); free(canonical);
+    for (size_t i = 0; i < sizeof(digest); i++) snprintf(hash + i * 2, 3, "%02x", digest[i]);
+    assert(!json_object_set_new(root, "checksum", json_string(hash)));
+    char *record = json_dumps(root, JSON_SORT_KEYS | JSON_INDENT(2) | JSON_ENSURE_ASCII); assert(record);
+    return record;
+}
+
+static void test_completed_application_history(void)
+{
+    initialize(); lcs_config_application_t application = {0};
+    assert(!lcs_config_application_open(&application, &voters[0].state, true, error, sizeof(error)));
+    static lcs_config_t active, candidate, next;
+    active = baseline;
+    char *replay = NULL; size_t replay_length = 0;
+    for (uint64_t revision = 1; revision <= 4; revision++)
+    {
+        candidate = active;
+        if (revision == 2) strcpy(candidate.resources[0].address, "192.0.2.9/24");
+        if (revision == 3) candidate.resource_count = 0;
+        if (revision == 4) { candidate.resources[0] = baseline.resources[0]; candidate.resource_count = 1; }
+        assert(!lcs_resource_config_assign_identities(&active, revision - 1, &candidate, &next, error, sizeof(error)));
+        char request[32]; snprintf(request, sizeof(request), "history-%llu", (unsigned long long)revision);
+        lcs_config_value_t value = configuration_value(&next, revision, request);
+        choose_identity_value(&value, revision * 32); active = next;
+        assert(!lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)));
+        assert(!lcs_config_application_finish(&application, value.digest, error, sizeof(error)));
+        assert(application.history[0].revision == revision - 1);
+        assert(revision == 1 ? !application.history[1].document : application.history[1].revision == revision - 2);
+        lcs_config_application_close(&application);
+        assert(!lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)));
+        assert(application.history[0].revision == revision - 1 && application.applied.revision == revision);
+        if (revision == 2) assert(!lcs_config_application_export(&application, &replay, &replay_length, error, sizeof(error)));
+        lcs_config_value_clear(&value);
+    }
+    assert(application.history[0].revision == 3 && application.history[1].revision == 2);
+    assert(lcs_config_application_import(&application, &voters[0].state, replay, replay_length, error, sizeof(error)) < 0);
+    free(replay);
+    char *record; size_t length;
+    assert(!lcs_config_application_export(&application, &record, &length, error, sizeof(error)));
+    json_error_t parse_error; json_t *root = json_loadb(record, length, 0, &parse_error); assert(root);
+    assert(json_integer_value(json_object_get(root, "record_version")) == 2);
+    for (unsigned variant = 0; variant < 8; variant++)
+    {
+        json_t *bad = json_deep_copy(root), *history = json_object_get(bad, "history"); assert(bad);
+        if (variant == 0) assert(!json_array_remove(history, 1));
+        if (variant == 1) assert(!json_array_set_new(history, 0, json_null()));
+        if (variant == 2) assert(!json_array_set(history, 1, json_array_get(history, 0)));
+        if (variant == 3)
+        {
+            json_t *a = json_incref(json_array_get(history, 0)), *b = json_incref(json_array_get(history, 1));
+            assert(!json_array_set_new(history, 0, b)); assert(!json_array_set_new(history, 1, a));
+        }
+        if (variant == 4) assert(!json_array_set(history, 0, json_object_get(bad, "applied")));
+        if (variant == 5) assert(!json_object_set_new(json_array_get(history, 0), "digest", json_string("wrong")));
+        if (variant == 6) assert(!json_object_set_new(bad, "record_version", json_integer(3)));
+        if (variant == 7) assert(!json_object_set_new(json_array_get(history, 0), "extra", json_true()));
+        char *changed = catalog_with_checksum(bad);
+        assert(!lcs_config_store_write(&voters[0].store, "application.json", changed, strlen(changed), error, sizeof(error)));
+        lcs_config_application_t reopened = {0};
+        assert(lcs_config_application_open(&reopened, &voters[0].state, false, error, sizeof(error)) < 0);
+        assert(!reopened.applied.document && !reopened.history[0].document);
+        free(changed); json_decref(bad);
+    }
+    assert(!lcs_config_store_write(&voters[0].store, "application.json", record, length, error, sizeof(error)));
+    /* Read old format 1 conservatively. Worker import may not erase known history. */
+    json_object_del(root, "history"); assert(!json_object_set_new(root, "record_version", json_integer(1)));
+    char *legacy = catalog_with_checksum(root);
+    assert(lcs_config_application_import(&application, &voters[0].state, legacy, strlen(legacy), error, sizeof(error)) < 0);
+    assert(application.history[0].revision == 3);
+    assert(!lcs_config_store_write(&voters[0].store, "application.json", legacy, strlen(legacy), error, sizeof(error)));
+    lcs_config_application_close(&application);
+    assert(!lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)));
+    assert(application.applied.revision == 4 && !application.history[0].document);
+    free(record); record = NULL;
+    assert(!lcs_config_application_export(&application, &record, &length, error, sizeof(error)));
+    json_t *exported = json_loadb(record, length, 0, &parse_error); assert(exported);
+    assert(json_integer_value(json_object_get(exported, "record_version")) == 1 && !json_object_get(exported, "history"));
+    json_decref(exported); free(record);
+    assert(!lcs_resource_config_assign_identities(&active, 4, &active, &next, error, sizeof(error)));
+    lcs_config_value_t fifth = configuration_value(&next, 5, "history-5"); choose_identity_value(&fifth, 160);
+    assert(!lcs_config_application_begin(&application, &voters[0].state, error, sizeof(error)));
+    assert(!application.history[0].document);
+    assert(!lcs_config_application_finish(&application, fifth.digest, error, sizeof(error)));
+    lcs_config_application_close(&application);
+    assert(!lcs_config_application_open(&application, &voters[0].state, false, error, sizeof(error)));
+    assert(application.applied.revision == 5 && application.history[0].revision == 4 && !application.history[1].document);
+    lcs_config_value_clear(&fifth); free(legacy); json_decref(root);
+    lcs_config_application_close(&application);
+    assert(!unlinkat(voters[0].store.directory_fd, "application.json", 0)); cleanup();
+}
+
+int main(void)
+{
+    test_recovery_of_chosen_value();
+    test_concurrent_proposals();
+    test_failed_durable_write();
+    test_corrupt_and_foreign_journal();
+    test_duplicate_and_conflicting_replies();
+    test_background_durability();
+    test_snapshot_transfer();
+    test_reordered_rounds_and_restarts();
+    test_32_member_masks();
+    test_incarnation_agreement();
+    test_application_catalog();
+    test_completed_application_history();
+    test_application_background_durability();
+    test_daemon_configuration_recovery();
+    puts("durable configuration agreement unit tests passed");
+    return 0;
+}

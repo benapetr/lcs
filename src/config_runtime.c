@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "config_runtime.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static bool preparation_pristine(const lcs_config_runtime_t *runtime)
+{
+    return runtime && runtime->requires_recovery && runtime->base &&
+        runtime->activation.base == runtime->base && runtime->activation.requests_required &&
+        lcs_config_barrier_local_ready(&runtime->activation, &runtime->agreement, &runtime->application) &&
+        !runtime->barrier.poisoned && !runtime->agreement.committed_ballot &&
+        !runtime->agreement.committed_voters && !*runtime->agreement.parent_digest &&
+        runtime->requests.store == runtime->activation.store && runtime->requests.base == runtime->base &&
+        !runtime->requests.poisoned && !runtime->requests.count &&
+        !strcmp(runtime->requests.member, runtime->activation.member) &&
+        !strcmp(runtime->requests.membership, runtime->activation.membership);
+}
+
+bool lcs_config_runtime_initialization_prepared(const lcs_config_runtime_t *runtime)
+{
+    return preparation_pristine(runtime) && !runtime->barrier.store;
+}
+
+bool lcs_config_runtime_readiness_prepared(const lcs_config_runtime_t *runtime)
+{
+    return preparation_pristine(runtime) &&
+        lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application);
+}
+
+/* runtime_open has already validated the journals and dynamic accepted value.
+ * This narrower startup gate admits only the undecided activation slot. */
+bool lcs_config_runtime_activation_pending(const lcs_config_runtime_t *runtime)
+{
+    if (!runtime || !runtime->requires_recovery || !runtime->base ||
+        runtime->activation.base != runtime->base || !runtime->activation.requests_required ||
+        !lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) ||
+        runtime->agreement.committed.revision || runtime->agreement.committed_ballot ||
+        runtime->agreement.committed_voters || *runtime->agreement.parent_digest ||
+        runtime->application.pending.document ||
+        !lcs_config_value_equal(&runtime->activation.baseline, &runtime->agreement.committed) ||
+        !lcs_config_value_equal(&runtime->activation.baseline, &runtime->application.applied) ||
+        runtime->requests.store != runtime->activation.store || runtime->requests.base != runtime->base ||
+        runtime->requests.poisoned || runtime->requests.count > LCS_CONFIG_REQUEST_HISTORY_MAX ||
+        strcmp(runtime->requests.member, runtime->activation.member) ||
+        strcmp(runtime->requests.membership, runtime->activation.membership)) return false;
+    for (size_t i = 0; i < runtime->requests.count; i++)
+    {
+        const lcs_config_request_record_t *record = &runtime->requests.records[i];
+        if (record->base_revision || record->committed || record->applied ||
+            strcmp(record->base_digest, runtime->activation.baseline.digest)) return false;
+    }
+    if (runtime->agreement.accepted.document)
+    {
+        const lcs_config_request_record_t *record = lcs_config_requests_find(&runtime->requests,
+            runtime->agreement.accepted.request_id);
+        if (!record || runtime->agreement.accepted.revision != 1 ||
+            strcmp(record->value_digest, runtime->agreement.accepted.digest)) return false;
+    }
+    return true;
+}
+
+bool lcs_config_runtime_activation_chosen(const lcs_config_runtime_t *runtime)
+{
+    return runtime && runtime->requires_recovery && runtime->base &&
+        runtime->activation.base == runtime->base && runtime->activation.requests_required &&
+        lcs_config_barrier_valid(&runtime->barrier, &runtime->activation, &runtime->agreement, &runtime->application) &&
+        runtime->agreement.committed.revision == 1 && runtime->agreement.committed_ballot &&
+        runtime->agreement.committed_voters &&
+        !strcmp(runtime->agreement.parent_digest, runtime->activation.baseline.digest) &&
+        lcs_config_value_equal(&runtime->application.applied, &runtime->activation.baseline) &&
+        (!runtime->application.pending.document ||
+         lcs_config_value_equal(&runtime->application.pending, &runtime->agreement.committed)) &&
+        !runtime->application.history[0].document && !runtime->application.history[1].document &&
+        runtime->requests.store == runtime->activation.store && runtime->requests.base == runtime->base &&
+        !runtime->requests.poisoned &&
+        !strcmp(runtime->requests.member, runtime->activation.member) &&
+        !strcmp(runtime->requests.membership, runtime->activation.membership);
+}
+
+void lcs_config_runtime_close(lcs_config_runtime_t *runtime)
+{
+    lcs_config_requests_close(&runtime->requests);
+    lcs_config_barrier_close(&runtime->barrier);
+    lcs_config_application_close(&runtime->application);
+    lcs_config_agreement_close(&runtime->agreement);
+    lcs_config_activation_close(&runtime->activation);
+    free(runtime->base);
+    memset(runtime, 0, sizeof(*runtime));
+}
+
+int lcs_config_runtime_open(lcs_config_runtime_t *runtime,
+                             lcs_config_store_t *store, const lcs_config_t *cfg,
+                             char *err, size_t err_len)
+{
+    memset(runtime, 0, sizeof(*runtime));
+    /* Use the same bounded, no-follow/ownership-checked reads as recovery. A
+     * malformed or unsafe file is not evidence of a never-initialized node. */
+    char *record = NULL;
+    size_t length;
+    int requests = lcs_config_store_read(store, "requests.json", &record, &length,
+                                          LCS_CONFIG_REQUEST_RECORD_MAX, err, err_len);
+    free(record);
+    record = NULL;
+    if (requests < 0)
+        return -1;
+    int barrier = lcs_config_store_read(store, "barrier.json", &record, &length,
+                                        LCS_CONFIG_BARRIER_MAX, err, err_len);
+    free(record);
+    record = NULL;
+    if (barrier < 0)
+        return -1;
+    int intent = lcs_config_store_read(store, "activation.json", &record, &length,
+                                       LCS_CONFIG_ACTIVATION_MAX, err, err_len);
+    free(record);
+    record = NULL;
+    if (intent < 0)
+        return -1;
+    if (!intent)
+    {
+        runtime->base = malloc(sizeof(*runtime->base));
+        if (!runtime->base)
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: out of memory retaining frozen base");
+            return -1;
+        }
+        int result = lcs_config_activation_open(&runtime->activation, store, cfg, runtime->base,
+                                                 false, err, err_len);
+        if (!result && runtime->activation.phase == LCS_CONFIG_ACTIVATION_FROZEN)
+        {
+            /* Freeze alone is not all-member initialization permission. Opening
+             * it already verified there is no contradictory durable history. */
+            runtime->requires_recovery = true;
+            return 0;
+        }
+        if (!result && !barrier && runtime->activation.phase != LCS_CONFIG_ACTIVATION_PREPARED)
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: barrier without prepared initialization");
+            result = -1;
+        }
+        if (!result)
+            result = lcs_config_activation_resume(&runtime->activation, &runtime->agreement,
+                                                    &runtime->application, err, err_len);
+        if (!result && !barrier)
+            result = lcs_config_barrier_open(&runtime->barrier, &runtime->activation,
+                &runtime->agreement, &runtime->application, NULL, err, err_len);
+        if (!result)
+            result = requests && !runtime->activation.requests_required ? 0 :
+                lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len);
+        if (!result && runtime->requests.store)
+            result = lcs_config_requests_check_application(&runtime->requests, &runtime->application, err, err_len);
+        if (result)
+        {
+            lcs_config_runtime_close(runtime);
+            return -1;
+        }
+        runtime->requires_recovery = true;
+        return 0;
+    }
+    if (!barrier)
+    {
+        if (err && err_len)
+            snprintf(err, err_len, "configuration recovery: activation barrier exists without its frozen initialization; recovery required");
+        return -1;
+    }
+    int journal = lcs_config_store_read(store, "agreement.json", &record, &length,
+                                        LCS_CONFIG_JOURNAL_MAX, err, err_len);
+    free(record);
+    if (journal < 0)
+        return -1;
+    record = NULL;
+    int catalog = lcs_config_store_read(store, "application.json", &record, &length,
+                                        LCS_CONFIG_APPLICATION_MAX, err, err_len);
+    free(record);
+    if (catalog < 0)
+        return -1;
+    if (journal == 1 && catalog == 1)
+    {
+        if (!requests)
+        {
+            if (err && err_len)
+                snprintf(err, err_len, "configuration recovery: orphan request history without agreement/application state; recovery required");
+            return -1;
+        }
+        return 0;
+    }
+    runtime->base = malloc(sizeof(*runtime->base));
+    if (!runtime->base)
+    {
+        if (err && err_len)
+            snprintf(err, err_len, "configuration recovery: out of memory retaining static base");
+        return -1;
+    }
+    *runtime->base = *cfg;
+    if (lcs_config_agreement_open(&runtime->agreement, store, runtime->base,
+                                  false, err, err_len) ||
+        lcs_config_application_open(&runtime->application, &runtime->agreement,
+                                    false, err, err_len) ||
+        (!requests && (lcs_config_requests_recover(&runtime->requests, &runtime->agreement, false, err, err_len) ||
+         lcs_config_requests_check_application(&runtime->requests, &runtime->application, err, err_len))))
+    {
+        lcs_config_runtime_close(runtime);
+        return -1;
+    }
+    runtime->requires_recovery = true;
+    return 0;
+}

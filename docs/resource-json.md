@@ -1,0 +1,690 @@
+# Resource JSON format and bootstrap implementation
+
+Resource JSON stores resource/group definitions for
+[dynamic distributed configuration](dynamic-config-plan.md). While a cluster
+uses INI authority, the daemon prepares a local JSON snapshot. Mixed wire-5/6
+upgrades retain INI resource management. After every configured member, including
+quorum-only voters, supports wire 6 and advertises matching complete definitions,
+the daemon automatically starts durable locking, owner draining, all-member
+readiness and majority activation. Human-maintained INI files remain untouched.
+Conversion temporarily drains old resources before JSON admission restores hosting.
+
+Admitted full members with healthy request history support runtime definition
+commands. Quorum-only members retain the catalog and vote without hosting backends
+or initiating edits. Existing durable catalogs resume through startup recovery.
+Bootstrap metadata alone never establishes dynamic authority; explicit durable
+proofs and agreement remain mandatory. Do not manufacture activation records or
+delete state to enable commands.
+
+Initiation also waits for every member's legacy startup cleanup and lease-voting
+recovery. Explicit freeze requests defer until local physical cleanup is verified;
+startup cleanup failures can retry before migration installs resource-frame fences.
+
+## Storage and upgrades
+
+Starting `lcsd` automatically prepares `/etc/lcs/resources.json` from the effective
+groups and resources in `/etc/lcs/lcs.conf`. It leaves the INI file untouched.
+It also creates `/var/lib/lcs/bootstrap.state`, recording initialization and
+cluster identity, and holds an exclusive `/var/lib/lcs/lock` while running.
+Packages create `/var/lib/lcs/` with mode `0700` before service restart; generated
+files use mode `0600`. Jansson (MIT license) is the JSON parser; OpenSSL libcrypto
+provides SHA-256 for agreement identities and journal checksums. Development
+builds require `libjansson-dev` and `libssl-dev` on Debian/Ubuntu, or
+`jansson-devel` and `openssl-devel` on RPM systems, plus `pkg-config`.
+The CLI also links Jansson for offline validation through the same parser as the
+daemon. The existing LCS package already requires this runtime library.
+
+A custom configuration `/path/node.conf` uses `/path/node.conf.resources.json`
+and `/path/node.conf.state/`. Paths are derived from the resolved INI filename,
+so relative aliases use the same lock. Multiple configurations in one directory
+have independent state. The daemon user must own both directories, which must
+not be writable by group or others. Direct execution creates the state directory
+without requiring systemd; its parent must already exist.
+
+Successful coordinated INI reloads schedule a background snapshot refresh.
+Writes and filesystem syncs run outside the lease-processing event loop.
+Concurrent refresh requests are serialized, with the latest applied INI
+configuration prepared after the current worker completes. Refresh failure is
+logged and does not undo an already committed legacy reload.
+
+An interrupted first initialization can resume automatically. Once initialization
+is recorded as prepared, missing or invalid JSON causes startup to fail with a
+diagnostic instead of silently reimporting INI. An unknown initialization record,
+cluster mismatch, or nonzero JSON revision is also rejected by this bootstrap-only
+implementation. These conditions require investigation/recovery, not deletion of
+state files to force conversion. Packages do not overwrite generated snapshots
+or remove populated state directories during normal upgrades/removal.
+
+Normal legacy startup writes bootstrap metadata only. Before any INI
+snapshot refresh or opening listeners, startup checks for `activation.json`, `barrier.json`, `agreement.json` and
+`application.json` in the state directory and validates existing records against
+the local node and membership. Partial, corrupt, foreign or conflicting records
+fail recovery without replacing snapshots or recreating missing records. Valid
+Pristine mandatory-history revision-zero PREPARED records and healthy format-3
+freezes resume coordination with resource voting/placement fenced. An authorized
+INITIALIZING intent can finish its existing preparation first. A valid all-member
+barrier permits fenced recovery of the undecided activation slot, including
+promises, reservations and a validated accepted revision-one activation value.
+The accepted value requires its exact retained request identity. These records
+remain unchanged; missing history/proof still fails closed. A learned schema-2 revision-one activation also resumes initial application
+from the retained revision-zero baseline, with no pending value or that exact
+pending value. Cleanup/old-owner proof precedes generation installation and
+FINISH; fresh synchronization and quorum precede admission. Failed cleanup keeps
+fences and durable evidence for repair/restart. A running frozen coordinator also hands a learned activation to this recovery
+controller without restarting, once existing writer/backend work drains and
+stopped/unowned tables are confirmed. Sessions, transaction state, epochs and
+private promises are retained; no new proposal is inferred from advertisements.
+After admission, edits use normal majority quorum and offline members catch up.
+Existing durable freezes now automatically propose activation after all-member
+readiness, using the lowest-index connected full member and a current wire-6
+majority. Candidates preserve complete frozen definitions. Retries allocate fresh
+instance/attempt identities, retain unknown request reservations and recover
+previously accepted values through higher-ballot phase one. Full/poisoned history
+blocks progress; it is never pruned to make room for retries. Ordinary running INI
+clusters now initiate durable locking after all-member capability and matching
+definition checks, using the drain described below.
+Supported activated catalogs resume as described below. Preserve those records;
+do not delete them to force INI fallback. Mixed wire-5 startup/reload retains INI authority; after every member upgrades,
+automatic conversion creates these records through the shared storage writer. If an interrupted initialization intent is present, startup
+resumes local preparation using its complete frozen baseline, even if INI resource
+sections changed. It never recreates missing records once that intent is prepared.
+A present readiness barrier must match that prepared baseline and include every
+configured voter; orphan, premature, partial or foreign proof blocks recovery.
+Missing proof does not permit configuration voting. This is recovery infrastructure
+for future coordinated activation, not an operator migration procedure. See [durable agreement](dynamic-config-agreement.md). Local atomic
+replacement is not evidence of cluster agreement. Files are synced before
+replacement, followed by a directory sync; a failed sync after replacement is
+reported as an uncertain outcome.
+An explicit durable freeze of a running INI generation blocks new acquisitions.
+Every member, including quorum-only voters, must confirm its durable reload lock
+before owners drain. Existing unexpired leases may renew while those confirmations
+are collected. The subsequent drain uses the retained hooks and dependency order;
+a lock confirmation alone cannot authorize initialization.
+FROZEN acknowledgements and local initialization wait for cleanup, workers and
+lease state to drain. Failed cleanup remains frozen and is reported by
+`config status`; repair/restart retains the baseline. Quorum-only nodes execute
+no backends. Automatic first-freeze initiation includes quorum-only members in the capability
+and definition checks; offline, unknown or older members block it. See [the live drain contract](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
+
+
+Explicit wire-6 readiness queries are separate from diagnostic status. A normal
+INI-only daemon answers not-ready without creating initialization or barrier
+records. Collection is available internally after durable local initialization;
+the scheduler starts it automatically for pristine mandatory-history preparation
+after a durable freeze. Once the round completes, the
+scheduler persists its proof through the shared storage worker before local
+configuration-vote eligibility is available. Neither collection nor proof changes
+authority or applies resources. Frozen definitions reject legacy INI resource reloads. See
+[the readiness contract](dynamic-config-agreement.md#durable-all-member-activation-barrier).
+
+Wire-6 acceptor transactions can persist promises, accepted successors and
+majority decisions after durable readiness. INI-only nodes refuse them without
+creating state. Learning remains separate from application: it does not start
+resources, change authority or enable dynamic commands. An internal network
+proposer can explicitly submit a whole snapshot and recover previously accepted
+values through correlated promises. Nodes with a valid durable readiness barrier
+can pull latest committed checkpoints across multiple revisions while retaining
+old applied/pending cleanup snapshots. Automatic activation follows separate all-member locking/readiness and majority
+agreement; activated catalogs support live application. See
+[network agreement handling](dynamic-config-agreement.md#network-acceptor-and-majority-decision-handling).
+
+The internal reconciliation sequencer persists pending cleanup before invoking
+backend/owner/install barriers and records applied state before generation
+admission. It retains old pending targets across newer checkpoints and blocks
+votes on failures. The activated daemon manager now drives live application;
+automatic activation uses separate all-member locking/readiness and majority agreement. See [application ordering](dynamic-config-application.md#internal-reconciliation-sequencer).
+
+Dynamic resource-generation framing and explicit install/admit APIs now reject
+stale resource traffic before dispatch or RPC completion, while keeping config
+catch-up available. The activation and live application controllers use these APIs; see [generation framing](dynamic-config-application.md#implemented-resource-generation-framing).
+
+The explicit local backend adapter now drains affected resources with old hooks,
+waits for dependents and indexed workers, and remaps matching incarnations without
+changing their ownership or promises. Its concrete asynchronous publisher writes
+the latest learned snapshot through the shared storage worker; file errors block
+application for retry without changing configuration authority. The activated
+daemon manager drives these callbacks for learned-definition updates, following
+startup recovery. See [projection durability](dynamic-config-application.md#durable-projection-publisher)
+and [local backend transitions](dynamic-config-application.md#local-backend-drain-and-runtime-adapter).
+Internal [old-owner proof primitives](dynamic-config-application.md#old-owner-proof-primitives)
+now bind explicit full-member stop receipts to exact transitions and daemon
+instances. The [explicit network adapter](dynamic-config-application.md#explicit-owner-network-adapter)
+connects transport and local drain. Exact all-full-member application confirmation
+now retires stop receipts while retaining completion evidence for slow peers;
+missing mandatory history still requires recovery; automatic activation cannot
+recreate it.
+The [explicit startup cleanup runner](dynamic-config-application.md#explicit-startup-backend-cleanup)
+uses the applied and two preceding complete snapshots with old hooks. After
+verified cleanup it can restore exact completed/pending scopes under a new daemon
+instance, retaining evidence for slow peers. The daemon manager invokes it for
+supported activated catalogs and separately requires fresh restart synchronization
+before lease voting. See [catalog history and compatibility](dynamic-config-application.md#durable-completed-predecessor-history).
+
+## Required request history during initialization
+
+The coordinated initialization worker now uses format 2 of `activation.json`.
+It persists the frozen baseline intent first, then agreement, application and
+empty request history before marking the intent prepared. An interrupted
+initializing intent can resume creation from its frozen baseline. Once prepared,
+missing/corrupt request history fails startup before listeners and is never
+recreated from an empty/pristine agreement: an earlier request may have reserved
+its ID without reaching PREPARE. Restore/recover the retained state instead.
+
+Format-1 initialization records remain readable with their earlier missing-history
+compatibility. They are not silently upgraded to authorize a new empty journal.
+The initializer publishes its in-memory handles only after its child verifies
+all required state and exits successfully, and it refuses to publish an empty
+journal over existing reservations. Daemons resume existing durable freezes through
+fresh all-member confirmation and this writer, including quorum-only voters.
+Ordinary INI startup initiates durable locking only after every configured member
+has a current wire-6 session and matching complete-definition metadata. Separate
+explicit lock, drain, readiness and agreement proofs precede JSON admission.
+
+The local freeze responder primitive uses format 3 with phase `frozen` before
+initialization authorization. It retains the exact INI baseline and prevents
+reloads, but creates no agreement/application/request history. Only an explicit
+all-member round may promote it to format-2 initialization; collector expiry or
+restart cannot thaw it. The daemon can resume this pre-activation state for
+wire-6 coordination and read-only CLI access, retaining resource voting/placement,
+reload and mutation fences. It installs the frozen definitions before startup
+cleanup, ignoring later valid INI resource edits; quorum-only nodes do no backend
+work. Normal INI parsing/static validation still applies. `config status` reports
+`application_state: frozen`, no admission and no dynamic command capability;
+read-only export returns the frozen baseline. Contradictory records still fail
+before listeners. Existing durable freezes automatically collect current
+confirmations from every configured member before local initialization. Pristine
+prepared members keep confirming the same freeze while others catch up; they
+preserve history on restart. A separate automatic all-member readiness round
+persists its barrier before configuration-vote eligibility. Failed/expired
+in-memory collection may retry; uncertain persistence requires recovery. A valid
+barrier survives restart with resource voting/placement fenced. This does not
+enable resource hosting, JSON authority or dynamic commands. Automatic first-freeze initiation now connects ordinary INI startup to this
+sequence after all-member capability and definition checks.
+Explicit wire-6 freeze queries now reach this writer after validating the admitted
+source/destination instances, exact definitions, all-member support and reload
+exclusion. Successful durable publication permits LOCKED; FROZEN also requires owner drain. Pristine prepared
+members may reaffirm that persistent freeze; advanced/reserved state cannot.
+Ordinary INI startup now initiates conversion automatically after all-member
+capability and matching-definition checks. It never infers activation from
+advertisements alone.
+See [durable reload freeze](dynamic-config-agreement.md#durable-reload-freeze-before-initialization).
+
+## Activated startup recovery
+
+The separate [request-fact journal core](dynamic-config-agreement.md#local-durable-request-fact-journal-core)
+supports startup recovery, local proposal reservations and acceptor identity
+checks. Successful LEARN/checkpoint writes also record their exact current outcome
+when history exists; checkpoint gaps do not invent skipped request outcomes.
+Consensus completion is separate from history durability, backend admission and
+client success. Observation failure fences configuration progress for recovery
+without undoing a learned decision.
+Startup recovers an existing `requests.json` against the frozen static context
+and rejects corrupt, orphaned or locally contradictory history before listeners
+open. Older format-1 catalogs without it retain unavailable request history; startup does
+not create an empty file or infer earlier outcomes. Ordinary operation does not
+automatically initialize `requests.json` yet. Explicit internal proposals require
+healthy existing history and reserve original intent before PREPARE; known IDs
+cannot be resubmitted with a new transport ID. ACCEPT also requires healthy
+history and persists/checks its selected identity before acceptance and ACK. Older catalogs without history
+still support recovery/application but cannot submit new definitions. Its
+reservation/commit facts are not final client outcomes; final client outcome
+tracking remains incomplete; definition commands use the guarded transaction path below.
+
+Startup now resumes existing schema-2 applied catalogs with valid durable
+all-member readiness. Full members also require retained predecessor history;
+older catalogs without it and revision-zero initialization remain unsupported.
+This path recovers a previously activated cluster. Ordinary INI upgrades instead
+enter the automatic all-member freeze/readiness and majority activation sequence.
+Do not manufacture activation records or delete state to bypass recovery.
+
+Before opening listeners, the daemon restores the exact last-applied JSON
+definitions and fences resource grants, configuration votes and CLI mutations.
+It cleans applied and retained historical backends using their saved hooks,
+honors an interrupted pending revision even when a newer revision is learned,
+collects exact fresh full-member cleanup/application evidence, and publishes the
+latest learned JSON through the shared storage writer. Quorum-only members
+participate in configuration and synchronization without running cleanup hooks or
+backends. Edited INI resource sections cannot replace the activated definitions.
+A missing projection is recreated from the validated journal; it does not
+authorize INI fallback or reconstruction of missing agreement/application records.
+
+Recovery retries blocked cleanup/projection/owner rounds with fresh evidence.
+Unavailable full members or failed cleanup keep recovery blocked; a timeout
+never substitutes for proof. Once caught up, the daemon requires the restart
+waiting period, fresh matching-generation synchronization and quorum before
+releasing fences and allowing normal placement. Shutdown cancels recovery and
+waits for its workers before releasing storage handles.
+
+`lcs status` and `lcs --json status` remain available during recovery. Mutating
+CLI requests are rejected until admission. `lcs config status` reports explicit
+JSON authority, committed/applied/pending revisions and digests, application state,
+admission and blocked cleanup errors. Recovery progress and admission
+revision are logged. After admission, newly learned definitions are applied live
+through the same shared writer and exact old-owner barriers, without restarting
+full members. No peer or CLI protocol version change accompanies this wiring.
+
+During live application, normal backend/hook/lease/peer progress continues, while
+automatic placement and local mutations pause. Old definitions/hooks remain in
+use until affected backends drain and every full member supplies exact stop proof.
+Latest JSON publication, incarnation remapping, durable FINISH and fresh generation
+admission precede placement. Consecutive transitions retain request serials and
+old-owner receipts; a new checkpoint cannot erase an older pending cleanup target.
+Repairable projection errors and failed transport collections retry with fences
+held. Failed backend cleanup never becomes success on a timer: repair the backend
+and restart for verified startup cleanup. Uncertain catalog writes or lost
+coordinator authority stop the daemon with fences held for restart recovery.
+Read-only config status reports live progress using the existing application-state
+fields. Public definition commands use this path on admitted JSON full members;
+automatic activation uses separate all-member locking/readiness and majority agreement.
+
+## Inspecting preparation across members
+
+For activated catalogs, `lcs config status` additionally reports **local** durable
+committed, applied and pending revisions with their complete value digests.
+JSON output uses `authority: "json"`, `application_state` (`recovering`, `blocked`,
+`admitting`, `active`, `failed` or `stopping`), `admitted`, and
+`committed_revision`/`committed_digest`, `applied_revision`/`applied_digest`,
+`pending_revision`/`pending_digest`, and `error`. Absent pending work and errors
+are JSON `null`. `admitted` means recovery released its fences for normal placement;
+it is not a claim that quorum is currently available or that a resource is owned.
+Use ordinary `lcs status` for current quorum/ownership. These diagnostics are
+in-memory observations of validated durable state, without reading or changing
+files. Definition submissions separately report their local client outcome.
+
+`dynamic_commands` reports local full-member admission/history capability.
+`activation_ready` remains false: it does not expose activation authorization,
+and prepared-peer counts never prove it.
+Peer entries still describe advisory bootstrap metadata, not remote applied
+revisions. Format-2 local responses encode JSON authority explicitly; format 3
+adds enabled command capability. Older clients reject unsupported formats. Legacy INI responses and peer metadata retain format 1.
+
+Run `lcs config status` or `lcs --json config status` to inspect INI authority,
+local preparation, the canonical membership and bootstrap-value digests, and the
+prepared/matching counts across every configured member, including quorum-only
+nodes. Each node entry reports its connection, negotiated peer protocol, whether
+metadata is known, and its prepared digest. The local entry's protocol is this
+daemon's maximum supported version. Unknown/offline members have no prepared
+observation; a connected wire-5 peer remains usable for legacy leases/reload but
+cannot supply this wire-6 metadata.
+
+Successful HELLO uses the released layout. Metadata is exchanged separately,
+after establishment, and is discarded when that session closes. Full snapshot
+digests include properties omitted from legacy voting fingerprints, such as
+hooks: existing INI configurations may continue peering while this diagnostic
+reports differing prepared definitions. A successful coordinated INI reload and
+background refresh update the advertised digests. During reload or preparation,
+the local snapshot is reported as unprepared.
+
+These are advisory observations, not votes or durable readiness acknowledgements.
+Even `matching_members == configured_members` does not activate dynamic authority:
+`dynamic_commands` stays false for INI authority and `activation_ready` remains
+false. Automatic activation must confirm durable readiness explicitly and
+serialize it with reload and storage workers. This command makes no configuration
+changes. Old daemons return an unsupported-command error.
+
+## Inspecting a request's local facts
+
+`lcs config request-status ID` (also with `--json`) reads published local request
+history from daemon memory. It works during startup recovery, blocked application
+and configuration transitions, without querying peers, opening files, initializing
+history, running resources or retrying proposals. IDs contain 1–63 letters, digits,
+underscores, dots or hyphens.
+
+The response has `scope: local`, a `history` state (`available`, `unavailable`, or
+`recovery-required`) and a request `state`:
+
+- `applied`: this node completed configuration admission for that exact value,
+  then durably recorded the receipt. This is a historical completion fact, not
+  current resource availability or a claim that every peer acknowledged it.
+- `committed`: the journal records that exact request's learned consensus decision.
+- `reserved`: its immutable expected base and value were recorded; its eventual
+  outcome is unknown to this journal, including while observation is pending.
+- `unknown`: there is no usable published record. Missing history, checkpoint
+  gaps and poisoned history do not establish rejection or abort.
+
+Known records include `base_revision`, `value_revision`, `base_digest` and
+`value_digest`; unknown records return JSON null for these fields. Unavailable or
+poisoned history never exposes fingerprints as current facts. Unknown/reserved
+states do not authorize request-ID reuse or resubmission. Committed does not mean
+resources were applied, admission was acknowledged, or the client operation
+finished successfully. `applied` adds the completed local application/admission
+barrier; quorum-only nodes record metadata admission, never backend execution.
+Fresh admission callbacks issue receipts; catalog FINISH, an already-current
+shortcut or a higher revision alone cannot create one. Receipts survive restart
+and later configuration changes without being interpreted as current health.
+
+Exit status 0 means the local query succeeded, including an unknown result;
+1 means a connection, daemon or protocol error; 2 means invalid arguments.
+Older daemons reject the new local query as unsupported. Automatic first
+initialization/activation remains disabled. Definition commands are described below.
+
+## Exporting definitions
+
+`lcs config export` writes the latest locally committed canonical resource/group
+JSON document to stdout. `lcs config export applied` selects the exact definitions
+already applied locally; `lcs config export committed` is the explicit default.
+For INI authority both selections export effective running definitions as schema 1,
+revision zero. Activated catalogs export schema 2 with revision and incarnation
+identities. `--json` produces the same JSON document, without a status envelope.
+
+Exports remain available without quorum and during startup recovery or blocked
+live application. A committed document can be ahead of applied definitions;
+`config status` reports that difference. Every export pins one complete in-memory
+snapshot at request time, so changes during transfer cannot mix revisions. Separate
+requests can observe later progress. The daemon streams bounded chunks for large
+documents, queues one frame at a time and uses a fixed ten-second connection
+deadline. The client checks sequence, selection, authority, revision, total size
+and contiguous offsets, then writes stdout only after complete receipt. Transfer
+errors return exit status 1; invalid command syntax returns 2.
+
+Export reads effective/validated memory without opening configuration or journal
+files, refreshing a projection, initializing state or submitting a transaction.
+The document contains resource/group definitions; static daemon settings and
+agreement/application recovery records are managed separately. Use shell
+redirection to save it, for example `lcs config export > resources-export.json`.
+Offline validation is described below; [atomic import](#atomic-bulk-import) submits
+a complete replacement through the distributed transaction path.
+
+## Validating a document offline
+
+Run `lcs config validate resources-export.json` to validate resource/group JSON
+against `/etc/lcs/lcs.conf`. For a custom cluster use
+`lcs --config /path/node.conf config validate resources-export.json` (or `-c`).
+Use `-` as the document filename to read stdin, for example
+`lcs -c /path/node.conf --json config validate - < resources-export.json`.
+
+The selected INI file is read through the normal configuration loader and supplies
+the static cluster/node context. Its resource/group arrays are replaced privately
+by the document for validation. The shared parser checks schema 1 and 2, cluster
+identity, revision/incarnation bounds, unknown/duplicate fields, backend options,
+home-node eligibility, group references and dependency validity/cycles. Input is
+bounded to 512 KiB, including when read from stdin. Valid JSON may contain trailing
+whitespace within that bound. The INI file must also pass its normal syntax and
+configuration checks.
+
+This command runs without a daemon connection or quorum. It reads the selected
+files and performs no writes, resource/hook execution, activation or transactions.
+`--socket` is rejected for this offline command; `--config` is scoped to validation.
+Success reports the schema, revision and resource/group counts. JSON output has
+`valid: true`, `schema_version`, `revision`, `resource_count` and `group_count`;
+validation/context/input errors return `valid: false` with `error`. Exit codes are
+0 for a valid document, 1 for validation or input/context errors, and 2 for command
+syntax errors. Plain failures are written to stderr; JSON results go to stdout.
+
+Validation establishes document validity in that static context. It does not
+check a live expected revision, historical incarnation lineage, agreement/quorum,
+backend permissions, hook availability or whether a future import can commit.
+Validation does not submit definitions. Use [atomic import](#atomic-bulk-import)
+or the definition edits below for live changes.
+
+## Schema version 2: backend incarnations
+
+The library and agreement core also support schema 2 for future dynamic authority.
+The running daemon still prepares schema-1 bootstrap snapshots; merely placing a
+schema-2 file on disk does not activate the feature.
+
+Schema 2 has the same envelope and resource fields as schema 1, plus a required
+integer `birth_revision` on every resource. It ranges from zero to the snapshot
+revision. Schema-2 snapshots require a positive revision. Bootstrap incarnations
+have birth zero; activation changes only schema/authority metadata and must
+preserve the complete resource/group definitions, including explicit defaults.
+
+Subsequent creation, or changing a resource type, VIP address/interface or service
+unit, assigns the new committed revision as birth. Edits to hooks, dependencies,
+priorities and groups preserve birth. Deletion followed by recreation always
+allocates a new birth even when the name and backend properties are identical.
+Full-snapshot catch-up carries births explicitly, so an offline node cannot infer
+identity from identical endpoint definitions. Resource identity is `(name, birth)`
+within one activated history; array indices are not persistent identities.
+
+The internal candidate editor assigns these fields. Clients cannot set them.
+Acceptor and learner validation reject invalid successor identities, definition
+changes bundled into activation, and schema-2-to-1 downgrade attempts. Agreement
+journals and canonical digests retain identities across restart. Schema 1 rejects
+`birth_revision` rather than silently discarding it. These checks do not replace
+future message generation gates, application catalogs or backend cleanup; see
+[the application contract](dynamic-config-application.md).
+
+## Schema version 1
+
+```json
+{
+  "schema_version": 1,
+  "cluster": "production",
+  "revision": 0,
+  "groups": {
+    "web": {
+      "type": "keep-together",
+      "mode": "best-effort"
+    }
+  },
+  "resources": {
+    "public-vip": {
+      "type": "vip",
+      "address": "192.168.10.100/24",
+      "interface": "eth0",
+      "group": "web",
+      "priority": 2,
+      "home_node": "node1",
+      "depends_on": []
+    },
+    "nginx": {
+      "type": "service",
+      "systemd_unit": "nginx.service",
+      "group": "web",
+      "priority": 1,
+      "depends_on": ["public-vip"]
+    }
+  }
+}
+```
+
+All five top-level fields are required. `cluster` must match the local static
+configuration. `revision` is an integer from zero through `9223372036854775807`;
+zero is reserved for bootstrap. Unknown schema versions and unknown fields are
+rejected. Empty `groups` and `resources` objects are valid.
+
+Group names and resource names are object keys and follow the existing INI name
+and length restrictions. Groups require `type` (`keep-together` or
+`anti-affinity`) and `mode` (`strict` or `best-effort`). Resources require `type`
+(`vip` or `service`) and the existing backend-specific mandatory fields.
+
+Supported resource properties are `address`, `interface`, `systemd_unit`, `group`,
+`home_node`, `priority`, `depends_on`, `pre_start`, `post_start`, `pre_stop`, and
+`post_stop`. VIPs cannot specify `systemd_unit`; services cannot specify `address`
+or `interface`. Hooks must be empty or absolute paths. `priority` is a positive
+32-bit integer; omission retains the existing sorted-order default.
+`depends_on` is an array of unique resource names; omission means no dependencies.
+The common configuration validator resolves groups, home nodes, dependencies,
+unique priorities, and dependency cycles before accepting a candidate.
+
+Documents are limited to 512 KiB and existing compiled group/resource/dependency
+limits. Duplicate object keys, embedded null characters, invalid UTF-8, trailing
+data, and incorrect value types are rejected. Decoding constructs a candidate
+without changing the running configuration or importing daemon settings.
+
+Encoding sorts object keys and dependencies and writes indented JSON. Derived
+runtime indexes are not serialized. Files do not contain node credentials,
+leases, ownership, epochs, or temporary administrative stop flags. The canonical
+snapshot preserves resource interfaces and hook paths even though the legacy
+peering fingerprint intentionally omits those node-local fields; future
+activation must explicitly resolve any such differences between nodes.
+
+## Runtime definition commands
+
+On an already-activated JSON cluster, admitted full members with healthy request
+history accept these commands through the local Unix socket. Prefix each form
+with `lcs` and optional `--socket PATH`, `--json`, `--request-id ID`,
+`--expected-revision N` and `--expected-digest SHA256`. All edits construct and
+validate one complete replacement snapshot, then use durable majority agreement
+and the existing resource transition/admission barriers. Quorum-only members
+retain definitions and vote, but cannot initiate edits. Normal INI clusters and
+mixed-version pre-activation upgrades reject definition submissions.
+
+```text
+resource create NAME vip address=CIDR interface=INTERFACE [key=value ...]
+resource create NAME service systemd_unit=UNIT [key=value ...]
+resource update NAME key=value ...
+resource delete NAME
+resource remove NAME
+resource group add GROUP RESOURCE ...
+resource group remove GROUP [RESOURCE ...]
+resource group delete GROUP [RESOURCE ...]
+resource group create GROUP [type=TYPE] [mode=MODE]
+resource group update GROUP key=value ...
+```
+
+Resource creation/update/deletion and group membership forms follow the structure
+of the [upstream pcs command definitions](https://github.com/ClusterLabs/pcs/blob/main/pcs/usage.py).
+Empty update values remove an option; `depends_on` uses comma-separated names.
+Repeated/unknown options, stale expected revisions, missing required backend
+fields, and invalid resulting dependencies are rejected. Resource type cannot
+be changed through update. Deleting a resource does not implicitly delete its
+dependents. No `--no-stop` or forced unsafe deletion is supported.
+
+Group `add` creates the group when absent, using `keep-together` and `best-effort`
+defaults, and assigns existing resources to it. Group `remove`/`delete` with no
+resource arguments ungroups its members and removes the group without deleting
+resources. With resource arguments it removes only those memberships, deleting
+the group if it becomes empty. Group `create` and `update` are LCS extensions for
+explicit group definitions and policies, including `anti-affinity` and `strict`.
+LCS group placement does not imply Pacemaker's ordered-group semantics or
+arbitrary Pacemaker constraints/resource agents. Group placement priority remains
+the resource's `priority` field; it is not inferred from CLI argument order.
+
+
+For example:
+
+```sh
+lcs --json --request-id add-public --expected-revision 7 resource create public vip address=192.0.2.10/32 interface=eth0
+lcs --request-id group-public resource group add frontends public
+lcs --request-id policy-public resource group update frontends type=anti-affinity mode=best-effort
+lcs --request-id clear-home resource update public home_node=
+lcs --request-id remove-public resource delete public
+```
+
+These forms were compared against the upstream pcs resource create/update/delete
+and group add/remove/delete help. LCS `vip` and `service` are native types; no OCF
+agent name, clones, bundles, arbitrary constraints, ordered-group scheduling,
+`--before`/`--after`, force or `--no-stop` compatibility is implied. Unlike pcs
+resource deletion, LCS resource delete accepts one resource and never cascades
+through a group. Moving members with group add leaves an emptied source group
+explicitly defined. Empty optional fields remove/reset their override; removing
+required fields, changing type/name/incarnation, or leaving dangling dependencies
+is rejected. Resource options are `address`, `interface`, `systemd_unit`, `group`,
+`home_node`, `priority`, `depends_on`, `pre_start`, `post_start`, `pre_stop`,
+`post_stop`. Group options are `type` and `mode`; see the schema for allowed values.
+
+Omitted base options resolve atomically to the current committed revision/digest
+for a new ID. For a known ID they resolve to its original expected base. Repeating
+an ID requires the exact original ordered arguments, including `delete` versus
+`remove`; changed arguments/base conflict without altering the original request.
+Origin descriptor evidence is local: another node may know commitment/admission
+but cannot verify the original command. Retry there returns unknown and directs
+you to the original coordinator. Missing/corrupt history never authorizes reuse,
+a new proposal, or automatic journal initialization. A full journal rejects new
+IDs without evicting old outcomes.
+
+The CLI generates an ID if omitted and prints it to stderr before sending. Supply
+your own ID when interruption recovery matters. It waits up to 30 seconds on the
+server (35-second socket timeout) for the durable local admission receipt. Exact
+known retries return recorded facts immediately without another proposal:
+
+| Result | Exit | Meaning |
+| --- | --- | --- |
+| `applied` | 0 | Exact decision and completed local configuration admission recorded. |
+| `rejected` | 1 | This submission was not admitted; inspect the reason. An ID conflict does not abort the original. |
+| `pending` | 2 | Exact commitment known; local admission incomplete. |
+| `unknown` | 3 | Outcome/descriptor unproven, or timeout/disconnect/invalid response; never an abort. |
+
+Usage errors retain exit 2. JSON responses include `scope: local`, `request_id`,
+`result`, `committed_revision`, `committed_digest`, `applied_revision` and `reason`;
+unproven values are null. Admission is historical and local, not current backend
+health or all-member acknowledgement. A disconnected waiter never cancels storage,
+consensus, cleanup or application. Query `lcs config request-status ID` and retry
+the same ID/arguments on the origin, rather than issuing another edit blindly.
+Malformed, unsupported and uncorrelated replies produce an unknown result with
+the original ID. Read-only request-status keeps its separate exit-0 query semantics.
+`config status` reports `dynamic_commands` only for locally admitted full members
+with healthy history; quorum, idle writer and peer capability checks still apply
+at submission. Automatic activation uses separate all-member lock/readiness
+proofs and majority agreement.
+
+
+## Mutation failure diagnostics
+
+A mutation's `reason` includes the local blocking error and the next recovery
+step when that evidence is available. A committed edit with failed cleanup stays
+`pending`, identifying the resource and requiring verified cleanup/fencing and
+restart where appropriate. Repairable projection failures can retry after the
+file/path problem is corrected. New submissions are rejected while that fence
+remains, with the current blocking cause. Use `config status` and daemon logs for
+full details; the response reason is bounded.
+
+An exact retry includes a cleanup/projection error only when its request ID,
+revision and digest match the actual blocked application attempt. A node can
+still be cleaning an older target after learning a later value: that older error
+is not attributed to the newer request, and an unrelated later failure does not
+undo an already-recorded historical `applied` result. A committed request with no
+matching admission receipt keeps that uncertainty explicit.
+
+Uncertain journal/storage failures retain `unknown`, the original ID and repair/
+restart instructions; they never become rejection or permission to submit a new
+ID blindly. Fatal configuration failure shuts down the daemon. Before closing,
+it attempts to send existing mutation waiters a small diagnostic without blocking,
+accepting further commands or delaying safe shutdown. A disconnected or slow
+reader may receive only the CLI's structured transport-unknown result. Retain the
+state files, repair the cause, restart and query the same ID. Never delete the
+journal to reset an uncertain outcome.
+
+## Atomic bulk import
+
+```sh
+lcs config export > resources.json
+# Edit the complete resources/groups document, then submit with a fresh ID:
+lcs --json --request-id replace-definitions --expected-revision 7 config import resources.json
+# Input can also come from stdin:
+lcs --request-id replace-from-stdin config import - < resources.json
+```
+
+`config import FILE|-` replaces the entire resource and group definition in one
+majority transaction. Omitted resources/groups are deleted; this is not a merge.
+An empty `resources` and `groups` object deliberately removes all definitions.
+The old-owner cleanup, projection and admission barriers also apply to imports;
+dependent resources can be removed together only when the final complete document
+has valid dependencies. Resource/group/backend validation is shared with the
+individual commands. The file must belong to the same cluster and satisfy schema
+1 or 2. Unknown fields, invalid references, duplicate JSON keys and collection
+limits fail without a request reservation or partial edit. Static membership,
+networking, secrets, daemon options and other INI settings cannot be imported.
+There is no automatic activation, fallback to INI, or initialization of missing
+request history through import.
+
+Source revision/incarnation fields must be valid for the input schema but do not
+authorize a rollback, jump or identity reuse. The daemon assigns exactly the next
+committed revision. Unchanged backends retain their current birth revision; new or
+replaced backends receive the new revision, regardless of imported identities.
+Policy/group changes keep backend identities as with individual updates.
+
+The options `--request-id`, `--expected-revision` and `--expected-digest` and the
+four mutation outcomes/exits are the same as for resource edits. The expected
+base is checked after the complete upload; an intervening edit can therefore
+cause a conflict. Import retry identity binds the exact input bytes, including
+whitespace, along with the original expected base, membership and ID. Local file
+names are not part of the identity: retrying an identical copy from another path
+or stdin is allowed. Byte-different input with the same ID conflicts, even if its
+JSON is semantically equivalent. Keep the original file until the outcome is
+resolved, and retry on the original coordinator. A known exact retry never
+reapplies an old document after subsequent edits or restart.
+
+Input is limited to 512 KiB, read fully before connection. Local file/input errors
+return exit 1 before any submission (`--json` reports `ok: false` and `message`).
+The daemon accepts a bounded, contiguous upload with a fixed 10-second deadline;
+chunks cannot extend it. Malformed, interleaved, oversized or incomplete uploads
+are discarded without reservation or proposal. The daemon validates and proposes
+only after receiving every byte, then uses the normal 30-second admission wait.
+A receiver that disconnects or rejects the import while it is still being
+streamed also leaves a structured unknown result with the original request ID.
+An uncertain transport result is not an abort. No peer wire or
+package dependency changes are required; import uses the existing local Unix
+socket access policy and wire-6 configuration transaction path.

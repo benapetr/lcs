@@ -20,7 +20,10 @@ start_node node3
 wait_for_socket node1
 wait_for_socket node2
 wait_for_socket node3
-wait_for_quorum node1
+# Automatic conversion also performs verified cleanup through these deliberately
+# slow workers before lease voting resumes. Keep the ordinary short timeout
+# assertions below for steady-state worker responsiveness.
+wait_until 90 "node1 quorum after slow automatic conversion" node_status_has node1 "quorum: yes"
 
 wait_until 10 "delayed VIP add to start" \
     grep -Fq "asynchronous VIP operation resource=vip1 op=1" \

@@ -88,6 +88,12 @@ wait_for_socket node1
 wait_for_socket node2
 wait_for_socket node3
 wait_for_quorum node1
+# Conversion installs generation-bound sessions before every peer has completed
+# its fresh synchronization. Wait for the healthy monitoring state to settle.
+wait_until 45 "all members healthy after automatic conversion" \
+    "$LCS" -s "$(node_socket node1)" nrpe
+# The first admitted full member may acquire before node1 finishes conversion.
+"$LCS" -s "$(node_socket node2)" resource move vip1 node1 >/dev/null
 wait_for_owner node1 node1
 run_nrpe node1 0 "OK - quorum=yes"
 
@@ -98,6 +104,9 @@ run_nrpe node2 1 "WARNING - quorum=yes"
 
 cleanup_cluster
 LCS_PIDS=()
+# This is a different cluster definition, not a restart of the JSON-authority
+# catalog above. Give it fresh durable state rather than reusing activation.
+TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lcs-it-critical.XXXXXX")"
 write_config()
 {
     write_critical_config "$1"

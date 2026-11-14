@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#ifndef LCS_CONFIG_RECOVERY_LIVE_H
+#define LCS_CONFIG_RECOVERY_LIVE_H
+#include "config_recovery.h"
+#include "config_projection.h"
+
+typedef struct
+{
+    lcs_config_recovery_t *recovery;
+    lcs_config_projection_t projection;
+    int epoll_fd;
+    uint64_t attempt;
+    char digest[LCS_CONFIG_DIGEST_SIZE];
+    bool prepared, synchronizing, admitted;
+} lcs_config_recovery_live_t;
+
+/* Zero-initialize the adapter and an unstarted controller.
+ * Explicit pre-listener bootstrap for an activated schema-2 catalog or a
+ * validated learned revision-one activation with revision zero still applied.
+ * Requires pristine daemon resource/grant tables, no sessions/ordinary workers,
+ * valid recovered authority, frozen bootstrap storage and a new adapter. Install
+ * exact last-applied definitions (never current INI/pending), fence every resource
+ * and publish an unadmitted wire-6 generation for nonzero applied revisions.
+ * A chosen activation retains its baseline without inventing a revision-zero
+ * generation; installation requires cleanup and old-owner proof first. Does not
+ * initialize a coordinator, clean a backend or authorize leases/votes. */
+int lcs_config_recovery_live_prepare(lcs_config_recovery_live_t *live,
+                                       lcs_config_recovery_t *recovery, int epoll_fd,
+                                       char *err, size_t err_len);
+/* Attach a fresh controller to an already running frozen revision-zero node
+ * after a learned activation. No sessions, tables, epochs or coordinator state
+ * are reset. Requires exact global fences/baseline; returns 1 while the shared
+ * writer, ordinary cleanup/backend/lease work or residual ownership must drain.
+ * Success only prepares callbacks; recovery_start acquires the application hold. */
+int lcs_config_recovery_live_attach_activation(lcs_config_recovery_live_t *live,
+                                                lcs_config_recovery_t *recovery, int epoll_fd,
+                                                char *err, size_t err_len);
+/* Mandatory recovery-controller install callback. Requires verified physical
+ * cleanup and the controller's exact immutable attempt/plan. Normalize observed
+ * ownership to stopped, retain safety epochs/private grants and runtime policies
+ * only for matching incarnations/backends, and reset replacements/new resources.
+ * Publish the latest learned resources.json through the shared writer before
+ * installation, even for an older pending target. Bootstrap/directory handles
+ * must remain immutable and open until writer shutdown.
+ * Cancel old indexed traffic before remapping. No admission or backend activation;
+ * closing generation sessions may require a fresh explicit owner-proof retry. */
+int lcs_config_recovery_live_install(void *context, const lcs_config_reconcile_view_t *view,
+                                       char *err, size_t err_len);
+/* Explicit final handoff after READY. The controller drives matching-generation
+ * state synchronization while every resource and configuration vote stays fenced.
+ * Completion requires the ordinary restart floor, fresh admitted peer sync and
+ * quorum. New learning/cancellation re-fences before recovery resumes. Only a
+ * successful controller transfer releases resource fences; never starts backends
+ * or changes epochs/promises. Daemon scheduler/startup wiring remains separate. */
+int lcs_config_recovery_live_admission_receipt(const lcs_config_recovery_live_t *live,
+                                                lcs_config_request_admission_t *receipt);
+int lcs_config_recovery_live_begin_admission(lcs_config_recovery_live_t *live, char *err, size_t err_len);
+#endif

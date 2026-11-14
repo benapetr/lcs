@@ -21,6 +21,9 @@ int main(void)
     assert(lcs_protocol_negotiate(5, 8, 7, 6, &effective) != 0);
     assert(lcs_protocol_negotiate(5, 8, 5, 8, NULL) != 0);
     assert(strcmp(lcs_peer_protocol_release(5), "1.1.0") == 0);
-    assert(lcs_peer_protocol_release(6) == NULL);
+    assert(strcmp(lcs_peer_protocol_release(6), "unreleased") == 0);
+    assert(lcs_peer_protocol_release(7) == NULL);
+    assert(lcs_protocol_negotiate(LCS_PEER_PROTO_MIN_VERSION, LCS_PEER_PROTO_VERSION, 5, 5, &effective) == 0);
+    assert(effective == 5);
     return 0;
 }

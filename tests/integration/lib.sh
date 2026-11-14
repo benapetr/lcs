@@ -58,6 +58,14 @@ require_binaries()
     [[ -x "$LCS" ]] || die "missing lcs binary at $LCS; run make first"
 }
 
+# Tests specifically exercising pre-upgrade INI reloads retain a wire-5
+# cluster. Normal integration cases continue to use the production wire-6 daemon.
+use_wire5_daemon()
+{
+    LCSD="$(python3 "$ROOT_DIR/tests/integration/helpers/wire5_daemon.py")"
+    require_binaries
+}
+
 node_port()
 {
     if [[ "$1" =~ ^node([0-9]+)$ ]]; then
@@ -188,10 +196,18 @@ node_status_has()
     status_text "$node" 2>/dev/null | grep -Fq "$pattern"
 }
 
+node_socket_ready()
+{
+    local node="$1"
+    # SIGKILL leaves the previous socket inode behind. Wait for the new daemon
+    # to serve requests, not merely for an old pathname to exist.
+    test -S "$(node_socket "$node")" && status_text "$node" >/dev/null 2>&1
+}
+
 wait_for_socket()
 {
     local node="$1"
-    wait_until 8 "$node socket" test -S "$(node_socket "$node")"
+    wait_until 8 "$node responsive socket" node_socket_ready "$node"
 }
 
 wait_for_quorum()

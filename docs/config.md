@@ -5,6 +5,96 @@ should be used on every node, with only the local `[cluster]` `node` value
 changed per host. Lines starting with `#` or `;` are comments; inline comments
 after values are also supported.
 
+## Prepared resource JSON
+
+The daemon automatically prepares a local JSON resource snapshot and initialization
+metadata on startup and refreshes the snapshot after successful resource reloads.
+Mixed wire-5/6 upgrades retain INI authority. After every configured member
+supports wire 6 and advertises matching definitions, conversion starts automatically
+through durable locking, draining, readiness and majority agreement. Existing
+JSON catalogs resume through fenced recovery. See
+[resource JSON and storage](resource-json.md) for paths, permissions, recovery
+behavior, and the schema. `lcs config status` (also with `--json`) reports
+prepared snapshots and matching members; these observations do not activate
+dynamic management. For activated catalogs, it also
+reports local committed/applied/pending revisions and digests, recovery/admission
+state and cleanup errors. These read-only observations do not authorize edits. Admitted JSON full members
+with healthy request history support [runtime definition commands](resource-json.md#runtime-definition-commands)
+through the local Unix socket; automatic upgrade activation starts once every configured member supports wire 6
+and advertises matching definitions.
+New coordinated format-2 initialization makes request history mandatory before
+preparation: missing/corrupt history after that point requires recovery, never
+empty-journal recreation. Older format-1 catalogs keep their existing read-only
+compatibility. See [required initialization history](resource-json.md#required-request-history-during-initialization).
+
+Automatic initiation waits for every member's legacy startup cleanup and
+lease-voting recovery. Startup cleanup failures can retry before migration
+installs resource-frame fences.
+
+A recovered format-3 freeze uses its retained resource/group definitions despite
+later valid INI resource edits. It opens wire-6 coordination and read-only CLI
+access with resource voting/placement, reload and mutations fenced. `config status`
+reports `application_state: frozen`. Existing freezes resume local initialization
+after fresh all-member confirmation, while pristine prepared restarts preserve
+their journals and fences. Ordinary INI startup now initiates this sequence automatically after all-member
+capability and definition checks. INI syntax/static validation still runs before recovery.
+
+After local preparation of an existing durable freeze, the scheduler automatically
+collects readiness from every configured member and persists its barrier.
+`config status` can report `all-member readiness persisted; awaiting activation`
+while retaining frozen INI authority and resource/mutation fences. A valid barrier
+over revision-zero history also permits recovery of retained promises, request
+reservations and an accepted activation value with its exact request identity,
+without rewriting records or inferring commitment. In-memory
+collection timeouts can retry; uncertain persistence requires disk recovery.
+A learned revision-one activation can resume initial application after restart
+or on a running frozen node without restarting,
+using retained baseline cleanup, old-owner proof and fresh sync/quorum before
+admission. During baseline cleanup, local diagnostic format 5 reports JSON
+authority with committed revision 1, applied revision 0 and admission disabled;
+cleanup failures remain visible as blocked. After an existing durable freeze
+reaches readiness, a full member automatically
+proposes the unchanged baseline's schema-2 activation through majority agreement.
+Retries use fresh request IDs and higher ballots, preserving unknown reservations
+and recovering accepted values. Quorum-only members never initiate proposals.
+Ordinary INI startup now starts durable locking automatically once every
+configured member supports wire 6 and advertises matching complete definitions.
+
+An explicit durable freeze of a running INI generation blocks new acquisitions.
+Every member, including quorum-only voters, must confirm its durable reload lock
+before owners drain. Existing unexpired leases may renew while those confirmations
+are collected. The subsequent drain uses the retained hooks and dependency order;
+a lock confirmation alone cannot authorize initialization.
+FROZEN acknowledgements and local initialization wait for cleanup, workers and
+lease state to drain. Failed cleanup remains frozen and is reported by
+`config status`; repair/restart retains the baseline. Quorum-only nodes execute
+no backends. Automatic first-freeze initiation includes quorum-only members in the capability
+and definition checks; offline, unknown or older members block it. See [the live drain contract](dynamic-config-agreement.md#draining-a-running-ini-generation-after-freezing).
+
+`lcs config request-status ID` (also with `--json`) reads published local request
+facts during normal operation or recovery. Missing/poisoned history and unrecorded
+outcomes remain unknown; a committed fact does not establish application or final
+client success. An `applied` fact additionally records completed local admission,
+not current resource health or acknowledgements from every peer. The query does
+not initialize files or retry requests. See
+[request facts](resource-json.md#inspecting-a-requests-local-facts).
+Mutation reasons expose exact blocked-attempt cleanup/projection errors and
+storage-recovery instructions without changing pending/unknown outcomes. Fatal
+shutdown makes a nonblocking best-effort diagnostic attempt; a lost connection
+still means unknown. See [failure diagnostics](resource-json.md#mutation-failure-diagnostics).
+`lcs config import FILE|-` submits one complete resource/group replacement through
+the same guarded transaction path; it cannot import static daemon/node settings.
+Source revision/identity metadata is validated but reallocated against the current
+committed predecessor. See [atomic bulk import](resource-json.md#atomic-bulk-import)
+for expected-base checks, deletion semantics, input limits and exact-byte retries.
+`lcs config export [committed|applied]` writes the corresponding resource/group
+JSON document from running memory. With INI authority both views describe effective
+INI definitions at revision zero. See [export details](resource-json.md#exporting-definitions).
+`lcs --config /path/node.conf config validate FILE` validates JSON offline using
+that INI file as the static cluster/node context. Use `-` for stdin and `--json`
+for structured results. It neither contacts a daemon nor changes files/resources;
+see [validation details](resource-json.md#validating-a-document-offline).
+
 ## Live resource reload
 
 Deploy the edited configuration file to every currently online node, then run
@@ -56,6 +146,18 @@ resource configuration. A restarted daemon has forgotten the previously active
 configuration and treats the edited file as active immediately, so existing
 members reject it as a configuration mismatch. Reload and wait for the
 candidate to commit before restarting any daemon.
+
+## Hook execution
+
+The `pre_start`, `post_start`, `pre_stop` and `post_stop` programs must run in the
+foreground and wait for child commands to finish. Their process group is
+cancelled on timeout, cancellation or daemon exit. Stop hooks should be idempotent
+so cleanup can repeat safely. See the [hook environment](manual.md#vip-hooks).
+The explicit future dynamic startup path also supplies recovery context; it does
+not currently enable automatic distributed recovery. See
+[startup cleanup](dynamic-config-application.md#explicit-startup-backend-cleanup).
+
+## Full template
 
 ```ini
 # /etc/lcs/lcs.conf

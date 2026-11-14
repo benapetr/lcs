@@ -2,8 +2,85 @@
 
 ## Next
 
+- Added an explicit local request-fact journal core with immutable ID/base/value bindings, idempotent reservations, exact learned-decision observation, checksummed atomic persistence and monotonic worker imports. Added restart/process-exit, sync-uncertainty, corrupt/foreign state, conflict and capacity regressions. No automatic eviction or fabricated outcomes: worker/startup/transaction integration, completed-client outcomes and public mutation commands remain unfinished.
+
+- Added offline `lcs [-c CONFIG] [--json] config validate FILE|-` using the shared strict resource JSON parser and static INI context. It validates both schemas, roles/groups/dependencies and size bounds without contacting a daemon or changing files/resources. The CLI now links the Jansson runtime already required by the package. Bulk import and public definition mutations remain unfinished.
+
+- Added read-only `lcs config export [committed|applied]` for effective INI and activated JSON definitions, including recovery/blocked application. Large snapshots use bounded local chunks pinned to one value; clients reject incomplete/inconsistent streams before emitting stdout. Added strict codec, large-export and malformed-stream coverage. Public definition mutations, validation and bulk import remain unfinished.
+
+- Connected learned-definition updates to the activated daemon manager and scheduler: apply through shared storage, old-definition drain, exact owner proof, remapping and fresh generation admission while full members remain running. Added projection repair and consecutive live replacement/creation/priority/deletion integration coverage. Placement/CLI mutations pause during application; failed cleanup proof stays blocked and uncertain persistence requires restart recovery. Public definition commands and automatic activation remain unfinished.
+
+- Hardened explicit live definition application before manager integration: recheck latest-learned JSON publication at installation, require fresh matching-generation peer synchronization for admission, and fence all grants until the sequencer transfers its hold. Superseding decisions, failed admission, authority loss and shutdown cancel synchronization and retain fences. Added repair, stale-peer and cancellation regressions; normal live manager wiring remains unfinished.
+
+- Added activated JSON configuration diagnostics to `lcs config status` and `--json`: local committed/applied/pending revisions and digests, recovery/admission state and blocked errors. JSON authority uses a distinct local response format; legacy INI status and peer metadata remain compatible. Dynamic definition commands remain disabled.
+
+- Connected already-activated JSON catalogs to daemon startup and scheduler recovery, including differing pending revisions, historical cleanup, projection repair, exact owner barriers and fresh generation/quorum admission. CLI mutations and normal placement remain fenced during recovery; shutdown retains workers/storage until reaped. Added real three-process recovery/restart coverage. Automatic activation, missing-history recovery and normal live definition commands remain unfinished.
+
+- Added explicit two-stage recovery admission: permit matching-generation restart sync under resource/configuration-vote fences, then require restart waiting, fresh peer synchronization and quorum before transferring the coordinator/owner network and releasing fences. New learning, authority loss and shutdown re-fence; successful transfer preserves private promises, request serials and the latest completion scope. Daemon startup/scheduler wiring remains unfinished.
+
+- Recovery table installation now requires publication of the latest learned resources.json through the shared writer, including older pending targets, quorum-only nodes and idempotent retries. Added projection-error repair, superseded-completion and stopped-writer cancellation coverage while retaining catalog/lease fences. Automatic daemon startup and final generation/restart admission remain unfinished.
+
+- Added the concrete fenced recovery table adapter: restore exact last-applied JSON definitions before listeners, validate pristine startup state, remap matching incarnation epochs/private grants/policies after verified cleanup, and reset new/replaced resources. Generation-session closure requires fresh owner proof; retries preserve promises without repeated remapping. Automatic startup, projection and generation/lease admission remain unfinished.
+
+- Added an explicit nonblocking startup recovery controller using the shared catalog writer, asynchronous cleanup, exact all-full-member receipt barriers, fresh proof handoffs and a mandatory fenced table-installation callback. It handles differing pending revisions, checkpoint wake-up, repair retries and cancellation while keeping votes/leases fenced even when caught up. Automatic daemon startup/admission and missing-history transfer remain unfinished.
+
+- Added a single-use startup-cleanup handoff after durable catalog progress, preserving owner request IDs and peer-instance observations while rebuilding exact scopes and discarding stale rounds/replies. Added a two-member recovery regression with separate stores and differing pending/applied targets; missing-history transfer and automatic manager/admission remain gated.
+
+- Added an explicit recovery provider for differing old-generation owner scopes backed by physically cleaned retained snapshots. Exact digest/drain checks and send-time revalidation prevent fabricated or stale cleanup replies; APPLIED requires the exact current durable target. Missing-history recovery, differing-target coordination and automatic daemon admission remain gated.
+
+- Added application catalog format 2 with two complete predecessor snapshots retained atomically by FINISH. Startup cleanup now covers historical backends/hooks and can restore exact completed scopes and the preceding completion record under a new instance before fresh all-member confirmation. Format-1 catalogs remain readable without invented history; missing-history/differing-generation catch-up and automatic startup/admission remain gated.
+
+- Added an explicit startup cleanup runner using recovered last-applied backend definitions and old hooks in dependency order, with bounded asynchronous workers, retry/cancellation and catalog-bound completion. Verified cleanup can recreate a pending stop scope under a new daemon instance; completed-history recovery and automatic startup/admission remain unfinished. Backend and supervised hook process groups now terminate with their daemon to prevent late orphan work.
+
+- Added exact all-full-member application confirmation before retiring old-owner stop receipts. A retained completion scope serves slow peers across subsequent transitions and is replaced only after every full member applies the next scope. Failed/expired collections retain receipts; restart/catch-up recovery and automatic application remain unfinished.
+
+- Connected explicit old-owner stop collection to wire-6 peer message 38 and local drain callbacks for one pinned transition. Added bounded pending responses, retry/deadline handling, session-change invalidation, cleanup-failure revocation and a final pre-install proof check. Receipt release/history, startup recovery and automatic application remain unfinished.
+
+- Added internal old-owner stop-proof primitives with exact catalog/drain scopes, pinned instance-bound receipts, strict message codecs and all-full-member collection. Missing peers, failed cleanup, conflicting evidence and timeouts cannot become success. Peer transport, receipt lifecycle, startup recovery and automatic application remain unfinished.
+
+- Added an asynchronous learned-resource projection publisher through the shared configuration writer, including revision-bound completion, safe file replacement, retryable projection errors and an explicit local-adapter initializer. Distributed old-owner proof, startup reconciliation and automatic activation remain unfinished.
+
+- Added explicit local application callbacks for definition fencing, backend drain with old hooks/dependency ordering, and incarnation-aware runtime remapping. Unchanged ownership/private promises are preserved, replacements start with fresh identity state, and existing leases cannot be extended through missing quorum/admission. Distributed old-owner proof remains a mandatory unfinished provider; startup recovery and automatic activation remain disabled.
+
+- Added wire-6 resource-generation envelopes binding lease/state-sync/control traffic and voting heartbeats to the applied snapshot, membership and daemon instances before dispatch or RPC completion. Different generations retain configuration catch-up access without resource votes. Explicit install/admit APIs fence traffic around indexed-operation cancellation and durable matching applied state; live adapters and automatic activation remain unfinished.
+
+- Added an internal reconciliation sequencer with durable cleanup intent, explicit backend/old-owner/install barriers, and a voting hold through durable application and generation admission. Pending cleanup survives newer checkpoints; quorum-only nodes skip backend work, and failed barriers or uncertain writes stay fenced. Live daemon adapters, startup reconciliation and automatic activation remain unfinished.
+
+- Added wire-6 committed checkpoint pulls across revision gaps, with fixed deadlines, instance/membership/baseline binding and original majority validation. Catch-up retains higher promises and old applied/pending cleanup definitions, including delete/recreate identities, and shares the existing storage writer. Prepared nodes poll admitted peers after the durable readiness barrier; automatic activation and live resource application remain unfinished.
+
+- Added an internal wire-6 configuration proposer that coordinates durable prepare/accept/learn operations, correlates instance-bound replies, and recovers complete previously accepted values. Fixed deadlines, duplicate-vote protection and unknown-outcome retries are covered by the three-node transport harness. Automatic activation, synchronization and live resource application remain unfinished.
+
+- Added wire-6 configuration acceptor/learner messages with instance/proposer admission, bounded snapshot transfer, durable PROMISE/ACK/LEARNED replies and majority-decision validation. Session loss does not cancel an in-flight write; uncertain persistence reports outcome-unknown. Learned decisions keep further votes blocked until application catches up. Automatic network proposal, activation and dynamic commands remain unfinished.
+
+- Connected explicit peer readiness collection to durable barrier persistence through the scheduler and shared configuration writer. Local PREPARE/ACCEPT jobs now have coordinator-level readiness/application gates and activation successor checks. Cancellation and shutdown retain storage until child exit; automatic migration, peer transaction votes and dynamic commands remain unfinished.
+
+- Added explicit wire-6 readiness queries/replies with strict peer/instance admission, attempt correlation, and a fixed deadline for all-member collection. INI-only nodes reply not-ready without creating state; frozen definitions reject legacy resource reloads. Automatic initialization, activation, and live configuration mutation remain unfinished.
+
+- Added the local durable all-member activation barrier and its shared storage worker, binding explicit readiness to the frozen baseline and every configured voter, including quorum-only members. Recovery validates barrier records before INI refresh; configuration voting remains blocked without proof or while local application is behind. Peer readiness exchange, automatic activation and live dynamic commands remain unfinished.
+
+- Added background frozen-baseline initialization through the shared configuration storage worker. Initialization excludes INI refresh, publishes prepared handles only after successful child exit, and requires disk recovery after uncertain writes or cancellation. Automatic distributed activation remains unfinished.
+
+- Added crash-safe local initialization for future dynamic activation: persist the complete frozen baseline before journal/catalog creation, resume partial initialization across restarts, and prevent INI refresh or missing-record regeneration after preparation. Coordinated automatic activation and dynamic mutation commands remain unfinished.
+
+- Added negotiated wire-6 bootstrap metadata and read-only `lcs config status` with JSON output, reporting prepared and matching full definitions across configured members. Wire-5 HELLO, lease and reload compatibility is retained; matching metadata does not activate dynamic configuration or enable mutation commands. Wire 6 is labelled `unreleased` until its first release.
+
+- Daemon startup now validates existing distributed agreement/application records before INI snapshot refresh or listener creation. Incomplete or unsupported distributed recovery blocks startup and preserves stored state instead of falling back to INI.
+
+- Added background application-catalog begin/finish writes through the shared configuration storage worker, with monotonic result import and recovery after uncertain writes. Live dynamic configuration coordination remains unfinished.
+
+- Fixed quorum-loss cleanup of asynchronous resource dependency chains: parent resources continue shutting down after dependent stops finish, instead of retaining active VIPs without quorum. Added a regression covering cleanup and recovery.
+
+- Fixed final peer replies being discarded when readable data and connection closure arrive in the same epoll event, including committed configuration proofs needed by stale nodes.
+
+- Added the local durable application catalog for future dynamic configuration, retaining old and pending backend definitions through cleanup/restart and planning incarnation/dependency drains. It is not yet connected to the daemon resource coordinator.
+
+- Added schema-2 resource incarnation snapshots and successor validation for the future dynamic authority, including deletion/recreation and backend replacement identities persisted through agreement restart. Live activation and runtime message gating remain pending; legacy bootstrap still uses schema 1.
+
+- Added the durable configuration-agreement core, majority proposal tracking, background storage workers, and bounded snapshot-transfer codecs. These are not yet connected to live peer transactions or activation; INI remains authoritative. Agreement hashing adds an OpenSSL libcrypto build dependency.
+- Added the JSON resource snapshot and durable local bootstrap foundation for distributed configuration, including automatic preparation, background refresh after INI reload, and state-directory packaging. INI remains authoritative and runtime definition commands are not enabled yet. Building the daemon now requires Jansson development files.
+- Added a validated internal candidate editor for future pcs-style resource and group commands, including affinity policies and revision checks. This is not yet exposed through the runtime CLI.
 - Added optional `peers_only` source checking, disabled by default. When enabled, every node requires an explicit numeric IP address, incoming sources must match configured peers, and HELLO identities must match their source IPs. It works alongside `allow_from` and requires daemon restart to change.
-- Added an incoming peer source-IP allowlist. Defaults accept RFC 1918 private IPv4 ranges only; configure `allow_from` for localhost, IPv6, or public peer networks, or set `0.0.0.0/0` to disable filtering for both address families. Disallowed sources are rejected before HELLO processing. Policy changes require daemon restart; wire protocol remains version 5.
+- Added an incoming peer source-IP allowlist. Defaults accept RFC 1918 private IPv4 ranges only; configure `allow_from` for localhost, IPv6, or public peer networks, or set `0.0.0.0/0` to disable filtering for both address families. Disallowed sources are rejected before HELLO processing. Policy changes require daemon restart.
 
 ## v1.1.1
 
